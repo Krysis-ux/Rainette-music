@@ -1,0 +1,106 @@
+/* ==========================================================================
+   Rainette product tokens (--rw-*)
+   Default is the restored warm/light workspace. The previous graphite palette
+   remains available as dark mode via body.rw-theme-dark.
+   ========================================================================== */
+
+:root {
+	--rainette-nav-open: 188px;
+	--rainette-nav-peek: 30px;
+
+	/* Surfaces */
+	--rw-bg:             oklch(96% 0.018 82);
+	--rw-bg-sunken:      oklch(92% 0.024 82);
+	--rw-surface:        oklch(99% 0.010 82);
+	--rw-surface-raised: oklch(100% 0 0);
+
+	/* Text */
+	--rw-text:        oklch(25% 0.026 56);
+	--rw-text-soft:   oklch(42% 0.035 56);
+	--rw-text-muted:  oklch(58% 0.030 56);
+
+	/* Accent */
+	--rw-accent:        oklch(64% 0.120 38);
+	--rw-accent-strong: oklch(50% 0.130 35);
+	--rw-accent-soft:   oklch(91% 0.050 42);
+	--rw-on-accent:     oklch(99% 0.010 80);
+
+	/* Quiet category accents */
+	--rw-teal:        oklch(58% 0.095 176);
+	--rw-teal-soft:   oklch(90% 0.045 176);
+	--rw-purple:      oklch(58% 0.090 292);
+	--rw-purple-soft: oklch(91% 0.045 292);
+	--rw-danger:      oklch(55% 0.155 25);
+	--rw-danger-soft: oklch(92% 0.055 25);
+	--rw-warn:        oklch(64% 0.115 78);
+	--rw-warn-soft:   oklch(92% 0.060 78);
+
+	/* Borders */
+	--rw-border:        oklch(84% 0.022 75);
+	--rw-border-strong: oklch(72% 0.030 68);
+
+	/* Depth */
+	--rw-shadow-sm: 0 1px 2px oklch(30% 0.04 55 / 0.08), 0 5px 16px oklch(35% 0.04 55 / 0.08);
+	--rw-shadow-md: 0 1px 2px oklch(30% 0.04 55 / 0.10), 0 10px 28px oklch(35% 0.04 55 / 0.12);
+	--rw-shadow-lg: 0 2px 4px oklch(30% 0.04 55 / 0.12), 0 18px 52px oklch(35% 0.04 55 / 0.16);
+
+	/* Shape */
+	--rw-radius-bubble:  16px;
+	--rw-radius-control: 10px;
+	--rw-radius-pill:    999px;
+
+	/* Type */
+	--rw-font: Inter, "Segoe UI", system-ui, sans-serif;
+	--rw-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+
+	/* Motion */
+	--rw-ease: cubic-bezier(0.22, 1, 0.36, 1);
+	--rw-fast: 140ms;
+	--rw-med:  220ms;
+
+	/* Webcam stage stays dark so camera contrast is reliable in both modes. */
+	--rw-stage-bg:      oklch(15% 0.015 260);
+	--rw-stage-surface: oklch(20% 0.018 260);
+	--rw-stage-border:  oklch(35% 0.02 260 / 0.55);
+	--rw-stage-text:    oklch(90% 0.01 220);
+	--rw-stage-muted:   oklch(65% 0.015 230);
+	--rw-stage-accent:  oklch(80% 0.11 195);
+}
+
+body.rw-theme-dark {
+	/* Surfaces */
+	--rw-bg:             oklch(15.5% 0.012 255);
+	--rw-bg-sunken:      oklch(12.5% 0.010 255);
+	--rw-surface:        oklch(19%   0.014 255);
+	--rw-surface-raised: oklch(23%   0.016 255);
+
+	/* Text */
+	--rw-text:        oklch(92% 0.008 240);
+	--rw-text-soft:   oklch(74% 0.012 240);
+	--rw-text-muted:  oklch(58% 0.014 240);
+
+	/* Accent */
+	--rw-accent:        oklch(78% 0.105 205);
+	--rw-accent-strong: oklch(69% 0.100 205);
+	--rw-accent-soft:   oklch(27% 0.050 205);
+	--rw-on-accent:     oklch(12% 0.015 245);
+
+	/* Quiet category accents */
+	--rw-teal:        oklch(76% 0.095 175);
+	--rw-teal-soft:   oklch(27% 0.045 175);
+	--rw-purple:      oklch(76% 0.085 290);
+	--rw-purple-soft: oklch(27% 0.042 290);
+	--rw-danger:      oklch(70% 0.150 25);
+	--rw-danger-soft: oklch(25% 0.060 25);
+	--rw-warn:        oklch(80% 0.110 75);
+	--rw-warn-soft:   oklch(27% 0.055 75);
+
+	/* Borders */
+	--rw-border:        oklch(31% 0.018 255);
+	--rw-border-strong: oklch(40% 0.022 250);
+
+	/* Depth */
+	--rw-shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.30), 0 1px 8px oklch(0% 0 0 / 0.18);
+	--rw-shadow-md: 0 1px 2px oklch(0% 0 0 / 0.34), 0 8px 24px oklch(0% 0 0 / 0.24);
+	--rw-shadow-lg: 0 2px 4px oklch(0% 0 0 / 0.38), 0 14px 42px oklch(0% 0 0 / 0.34);
+}

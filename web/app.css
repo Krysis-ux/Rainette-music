@@ -1,0 +1,49 @@
+/* Standalone-app overrides.
+
+   In jarvis the music page is one route surface among many, offset by a nav
+   gutter and layered over the classic UI. Here it is the whole app, so the
+   page fills the window and the body carries the base surface. */
+
+html, body {
+	height: 100%;
+	margin: 0;
+}
+
+body {
+	background: var(--rw-bg);
+	color: var(--rw-text);
+	font-family: var(--rw-font);
+	overflow: hidden;
+}
+
+/* Remove the jarvis nav gutter so the page spans the full window width. */
+:root {
+	--rainette-nav-peek: 0px;
+	--rainette-nav-open: 0px;
+}
+
+/* The page host is the only route surface — pin it to the whole window. */
+#rwMusicPage.rainette-page {
+	inset: 0;
+	z-index: 1;
+}
+
+/* Reopen-player button (native two-window mode only). */
+#rwOpenPlayer {
+	position: fixed;
+	right: 20px;
+	bottom: 20px;
+	z-index: 1200;
+	appearance: none;
+	border: 1px solid var(--rw-accent);
+	background: var(--rw-accent-soft);
+	color: var(--rw-accent-strong);
+	font: 700 12px/1 var(--rw-font);
+	letter-spacing: 0.04em;
+	padding: 10px 16px;
+	border-radius: var(--rw-radius-pill);
+	box-shadow: var(--rw-shadow-md);
+	cursor: pointer;
+	transition: transform var(--rw-fast), filter var(--rw-fast);
+}
+#rwOpenPlayer:hover { transform: translateY(-1px); filter: brightness(1.03); }

@@ -1,0 +1,20 @@
+# Rainette Music — standalone app dependencies.
+
+# Local HTTP + WebSocket server.
+aiohttp>=3.9
+
+# Search + ad-free audio-stream extraction (YouTube etc.).
+# No upper bound on purpose — yt-dlp ships frequent extractor fixes as sites
+# change, and pinning it would silently break playback over time.
+yt-dlp>=2024.1
+
+# Artist / album / song catalog metadata (optional but recommended;
+# the app degrades to yt-dlp-only search without it).
+ytmusicapi>=1.12
+
+# Native desktop window (WebView2 on Windows). Optional — the app falls back
+# to Edge --app mode or the default browser if this is missing.
+pywebview>=5.0
+
+# Only needed to (re)build "Rainette Music.exe" — see build_exe.bat.
+pyinstaller>=6.0

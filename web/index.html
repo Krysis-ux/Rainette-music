@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Rainette Music</title>
+	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+	<link rel="stylesheet" href="./rainette_tokens.css">
+	<link rel="stylesheet" href="./rainette_pages.css">
+	<link rel="stylesheet" href="./app.css">
+	<script>
+		// In the pywebview app the transport lives in a separate native window,
+		// so this (browser) window runs in "remote" mode: it sends play commands
+		// over the socket instead of hosting its own <audio>. A plain browser tab
+		// has no ?remote flag and keeps the docked in-page mini-player.
+		window.RW_REMOTE = new URLSearchParams(location.search).has('remote');
+	</script>
+</head>
+<body>
+	<!-- The music page mounts here (RainetteRouter.register('music', …) → mount). -->
+	<div id="rwMusicPage" class="rainette-page active"></div>
+
+	<!-- The persistent draggable mini-player mounts here (browser/fallback only). -->
+	<div id="rwMusicPlayer"></div>
+
+	<!-- Reopen the detached player window if it was hidden (native mode only). -->
+	<button id="rwOpenPlayer" type="button" title="Show player window" hidden>♪ Player</button>
+	<script>
+		(function () {
+			if (!window.RW_REMOTE) return;
+			var btn = document.getElementById('rwOpenPlayer');
+			btn.hidden = false;
+			btn.addEventListener('click', function () {
+				try { window.pywebview && window.pywebview.api && window.pywebview.api.show_player(); } catch (e) {}
+			});
+		})();
+	</script>
+
+	<script type="module" src="./rainette_music_player.js"></script>
+	<script type="module" src="./rainette_music.js"></script>
+</body>
+</html>
