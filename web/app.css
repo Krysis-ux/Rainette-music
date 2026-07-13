@@ -14,6 +14,8 @@ body {
 	color: var(--rw-text);
 	font-family: var(--rw-font);
 	overflow: hidden;
+	/* Capacitor runs edge-to-edge on modern phones; preserve gesture areas. */
+	padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* Remove the Rainette nav gutter so the page spans the full window width. */

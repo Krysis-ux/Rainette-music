@@ -24,6 +24,9 @@
 	--rw-accent-strong: oklch(50% 0.130 35);
 	--rw-accent-soft:   oklch(91% 0.050 42);
 	--rw-on-accent:     oklch(99% 0.010 80);
+	/* Stable reference for the Settings accent-swatch preview — unlike
+	   --rw-accent, this never gets remapped by .rw-accent-teal/-purple. */
+	--rw-accent-default: oklch(64% 0.120 38);
 
 	/* Quiet category accents */
 	--rw-teal:        oklch(58% 0.095 176);
@@ -67,7 +70,49 @@
 	--rw-stage-accent:  oklch(80% 0.11 195);
 }
 
-body.rw-theme-dark {
+/* Explicit alias for :root's values - never toggled onto <html> itself
+   (the default cascade already covers that), but gives the Settings theme
+   swatches something to apply directly to themselves for an accurate live
+   preview, since a swatch with no class would otherwise inherit whatever
+   theme is *currently* active on <html> instead of previewing Light. */
+/* Bare class selectors, not html.rw-theme-* - these need to work when
+   applied to any element (e.g. the Settings theme-swatch preview spans),
+   not just <html>. Custom properties cascade regardless of tag name, so
+   this is functionally identical everywhere they're toggled on <html>. */
+.rw-theme-light {
+	--rw-bg:             oklch(96% 0.018 82);
+	--rw-bg-sunken:      oklch(92% 0.024 82);
+	--rw-surface:        oklch(99% 0.010 82);
+	--rw-surface-raised: oklch(100% 0 0);
+
+	--rw-text:        oklch(25% 0.026 56);
+	--rw-text-soft:   oklch(42% 0.035 56);
+	--rw-text-muted:  oklch(58% 0.030 56);
+
+	--rw-accent:        oklch(64% 0.120 38);
+	--rw-accent-strong: oklch(50% 0.130 35);
+	--rw-accent-soft:   oklch(91% 0.050 42);
+	--rw-on-accent:     oklch(99% 0.010 80);
+	--rw-accent-default: oklch(64% 0.120 38);
+
+	--rw-teal:        oklch(58% 0.095 176);
+	--rw-teal-soft:   oklch(90% 0.045 176);
+	--rw-purple:      oklch(58% 0.090 292);
+	--rw-purple-soft: oklch(91% 0.045 292);
+	--rw-danger:      oklch(55% 0.155 25);
+	--rw-danger-soft: oklch(92% 0.055 25);
+	--rw-warn:        oklch(64% 0.115 78);
+	--rw-warn-soft:   oklch(92% 0.060 78);
+
+	--rw-border:        oklch(84% 0.022 75);
+	--rw-border-strong: oklch(72% 0.030 68);
+
+	--rw-shadow-sm: 0 1px 2px oklch(30% 0.04 55 / 0.08), 0 5px 16px oklch(35% 0.04 55 / 0.08);
+	--rw-shadow-md: 0 1px 2px oklch(30% 0.04 55 / 0.10), 0 10px 28px oklch(35% 0.04 55 / 0.12);
+	--rw-shadow-lg: 0 2px 4px oklch(30% 0.04 55 / 0.12), 0 18px 52px oklch(35% 0.04 55 / 0.16);
+}
+
+.rw-theme-dark {
 	/* Surfaces */
 	--rw-bg:             oklch(15.5% 0.012 255);
 	--rw-bg-sunken:      oklch(12.5% 0.010 255);
@@ -84,6 +129,7 @@ body.rw-theme-dark {
 	--rw-accent-strong: oklch(69% 0.100 205);
 	--rw-accent-soft:   oklch(27% 0.050 205);
 	--rw-on-accent:     oklch(12% 0.015 245);
+	--rw-accent-default: oklch(78% 0.105 205);
 
 	/* Quiet category accents */
 	--rw-teal:        oklch(76% 0.095 175);
@@ -103,4 +149,89 @@ body.rw-theme-dark {
 	--rw-shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.30), 0 1px 8px oklch(0% 0 0 / 0.18);
 	--rw-shadow-md: 0 1px 2px oklch(0% 0 0 / 0.34), 0 8px 24px oklch(0% 0 0 / 0.24);
 	--rw-shadow-lg: 0 2px 4px oklch(0% 0 0 / 0.38), 0 14px 42px oklch(0% 0 0 / 0.34);
+}
+
+/* Monochrome — true grayscale (chroma 0 throughout, including danger/warn:
+   a jarring saturated red would defeat the point of a monochrome theme, and
+   error states already carry an explicit text label, not just a color cue). */
+.rw-theme-mono {
+	--rw-bg:             oklch(94% 0 0);
+	--rw-bg-sunken:      oklch(88% 0 0);
+	--rw-surface:        oklch(98% 0 0);
+	--rw-surface-raised: oklch(100% 0 0);
+
+	--rw-text:        oklch(20% 0 0);
+	--rw-text-soft:   oklch(38% 0 0);
+	--rw-text-muted:  oklch(55% 0 0);
+
+	--rw-accent:        oklch(30% 0 0);
+	--rw-accent-strong: oklch(18% 0 0);
+	--rw-accent-soft:   oklch(90% 0 0);
+	--rw-on-accent:     oklch(98% 0 0);
+	--rw-accent-default: oklch(30% 0 0);
+
+	--rw-teal:        oklch(35% 0 0);
+	--rw-teal-soft:   oklch(90% 0 0);
+	--rw-purple:      oklch(35% 0 0);
+	--rw-purple-soft: oklch(90% 0 0);
+	--rw-danger:      oklch(28% 0 0);
+	--rw-danger-soft: oklch(89% 0 0);
+	--rw-warn:        oklch(40% 0 0);
+	--rw-warn-soft:   oklch(90% 0 0);
+
+	--rw-border:        oklch(82% 0 0);
+	--rw-border-strong: oklch(68% 0 0);
+
+	--rw-shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.08), 0 5px 16px oklch(0% 0 0 / 0.08);
+	--rw-shadow-md: 0 1px 2px oklch(0% 0 0 / 0.10), 0 10px 28px oklch(0% 0 0 / 0.12);
+	--rw-shadow-lg: 0 2px 4px oklch(0% 0 0 / 0.12), 0 18px 52px oklch(0% 0 0 / 0.16);
+}
+
+/* Midnight — deeper and cooler than the default dark theme (near-black
+   surfaces, a richer blue accent) rather than a variant of the same graphite. */
+.rw-theme-midnight {
+	--rw-bg:             oklch(9% 0.010 260);
+	--rw-bg-sunken:      oklch(6% 0.008 260);
+	--rw-surface:        oklch(12% 0.012 260);
+	--rw-surface-raised: oklch(16% 0.014 260);
+
+	--rw-text:        oklch(94% 0.006 240);
+	--rw-text-soft:   oklch(76% 0.010 240);
+	--rw-text-muted:  oklch(56% 0.012 240);
+
+	--rw-accent:        oklch(72% 0.140 250);
+	--rw-accent-strong: oklch(62% 0.150 250);
+	--rw-accent-soft:   oklch(22% 0.060 250);
+	--rw-on-accent:     oklch(10% 0.015 250);
+	--rw-accent-default: oklch(72% 0.140 250);
+
+	--rw-teal:        oklch(74% 0.100 190);
+	--rw-teal-soft:   oklch(20% 0.050 190);
+	--rw-purple:      oklch(74% 0.110 300);
+	--rw-purple-soft: oklch(20% 0.050 300);
+	--rw-danger:      oklch(68% 0.170 22);
+	--rw-danger-soft: oklch(20% 0.070 22);
+	--rw-warn:        oklch(78% 0.120 80);
+	--rw-warn-soft:   oklch(20% 0.060 80);
+
+	--rw-border:        oklch(24% 0.014 260);
+	--rw-border-strong: oklch(32% 0.018 255);
+
+	--rw-shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.40), 0 1px 10px oklch(0% 0 0 / 0.24);
+	--rw-shadow-md: 0 1px 2px oklch(0% 0 0 / 0.44), 0 10px 30px oklch(0% 0 0 / 0.30);
+	--rw-shadow-lg: 0 2px 4px oklch(0% 0 0 / 0.48), 0 18px 56px oklch(0% 0 0 / 0.40);
+}
+
+/* Accent presets (Settings → Appearance). Only remap the accent role itself —
+   --rw-on-accent stays whatever the active light/dark theme already defines,
+   since both alternates sit at a similar lightness to the default accent. */
+html.rw-accent-teal {
+	--rw-accent:        var(--rw-teal);
+	--rw-accent-strong: color-mix(in oklab, var(--rw-teal) 78%, black);
+	--rw-accent-soft:   var(--rw-teal-soft);
+}
+html.rw-accent-purple {
+	--rw-accent:        var(--rw-purple);
+	--rw-accent-strong: color-mix(in oklab, var(--rw-purple) 78%, black);
+	--rw-accent-soft:   var(--rw-purple-soft);
 }
