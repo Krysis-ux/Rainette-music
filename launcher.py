@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 
 
 def _app_dir() -> str:
@@ -37,19 +38,39 @@ def _find_pythonw() -> list[str] | None:
 
 def main() -> int:
     here = _app_dir()
+    _log(f"launcher start frozen={getattr(sys, 'frozen', False)} executable={sys.executable}")
     main_py = os.path.join(here, "main.py")
     if not os.path.isfile(main_py):
         _fail(f"main.py not found next to the launcher:\n{main_py}")
         return 1
 
     runner = _find_pythonw()
+    _log(f"runner={runner!r} main={main_py}")
     if runner is None:
         _fail("Python was not found on PATH.\n\nInstall Python 3.10+ and run:\n  pip install -r requirements.txt")
         return 1
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen(runner + [main_py], cwd=here, creationflags=creationflags)
+    try:
+        child = subprocess.Popen(runner + [main_py], cwd=here, creationflags=creationflags)
+        _log(f"spawned pid={child.pid}")
+    except Exception as exc:
+        _log(f"spawn failed: {exc!r}")
+        _fail(f"Could not start Rainette Music:\n{exc}")
+        return 1
     return 0
+
+
+def _log(message: str) -> None:
+    try:
+        app_data = os.environ.get("LOCALAPPDATA") or _app_dir()
+        log_dir = os.path.join(app_data, "Rainette Music")
+        os.makedirs(log_dir, exist_ok=True)
+        path = os.path.join(log_dir, "rainette-launcher.log")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {message}\n")
+    except Exception:
+        pass
 
 
 def _fail(message: str) -> None:

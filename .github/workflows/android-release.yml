@@ -1,0 +1,84 @@
+name: Publish signed Android APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify signing secrets
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "${ANDROID_KEYSTORE_BASE64}" || { echo "ANDROID_KEYSTORE_BASE64 is not configured" >&2; exit 1; }
+          test -n "${ANDROID_KEYSTORE_PASSWORD}" || { echo "ANDROID_KEYSTORE_PASSWORD is not configured" >&2; exit 1; }
+          test -n "${ANDROID_KEY_ALIAS}" || { echo "ANDROID_KEY_ALIAS is not configured" >&2; exit 1; }
+          test -n "${ANDROID_KEY_PASSWORD}" || { echo "ANDROID_KEY_PASSWORD is not configured" >&2; exit 1; }
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install mobile dependencies
+        working-directory: mobile
+        run: npm ci
+
+      - name: Sync Capacitor Android project
+        working-directory: mobile
+        run: npx cap sync android
+
+      - name: Decode release keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: printf '%s' "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "${RUNNER_TEMP}/rainette-release.jks"
+
+      - name: Build signed release APK
+        working-directory: mobile/android
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/rainette-release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease
+
+      - name: Add Android signing tools to PATH
+        shell: bash
+        run: |
+          APKSIGNER_PATH="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -n "${APKSIGNER_PATH}" || { echo "apksigner was not found" >&2; exit 1; }
+          echo "$(dirname "${APKSIGNER_PATH}")" >> "${GITHUB_PATH}"
+
+      - name: Verify and prepare signed APK
+        shell: bash
+        run: |
+          apksigner verify --print-certs mobile/android/app/build/outputs/apk/release/app-release.apk
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk rainette-music-android.apk
+
+      - name: Publish GitHub Release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rainette-music-android.apk

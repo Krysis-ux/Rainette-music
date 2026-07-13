@@ -1,0 +1,17 @@
+{
+  "name": "rainette-mobile",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "sync": "npx cap sync android",
+    "open:android": "npx cap open android"
+  },
+  "dependencies": {
+    "@capacitor/core": "^7.4.3"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^7.4.3",
+    "@capacitor/cli": "^7.4.3",
+    "typescript": "~5.7.3"
+  }
+}

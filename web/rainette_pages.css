@@ -107,7 +107,18 @@
 
 .rw-page-head {
 	display: flex; align-items: center; gap: 14px;
-	padding: 22px 30px 14px;
+	padding: 22px 30px 16px;
+	/* Persistent chrome: a faint frosted band separated from scrolling content
+	   by a hairline, so the title + tab bar feel anchored without stealing
+	   emphasis from the page body below. */
+	background: linear-gradient(
+		to bottom,
+		color-mix(in oklab, var(--rw-surface) 55%, transparent),
+		color-mix(in oklab, var(--rw-surface) 20%, transparent)
+	);
+	-webkit-backdrop-filter: blur(8px) saturate(1.1);
+	backdrop-filter: blur(8px) saturate(1.1);
+	border-bottom: 1px solid color-mix(in oklab, var(--rw-border) 70%, transparent);
 }
 .rw-page-title { font-size: 21px; font-weight: 650; letter-spacing: -0.2px; margin: 0; }
 .rw-page-sub   { font-size: 13px; color: var(--rw-text-soft); margin: 2px 0 0; }
@@ -119,11 +130,17 @@
 .rw-head-spacer { flex: 1; }
 
 /* ── Bubble card ────────────────────────────────────────────────────────── */
+/* Subtle liquid-glass lift consistent with the mini player: a translucent
+   raised surface, a soft blur, and a layered shadow with an inset top
+   highlight so the card catches light along its top edge. Kept restrained so
+   long stacked lists of track cards stay legible and calm. */
 .rw-bubble {
-	background: var(--rw-surface);
+	background: color-mix(in oklab, var(--rw-surface-raised) 82%, transparent);
+	-webkit-backdrop-filter: blur(10px) saturate(1.15);
+	backdrop-filter: blur(10px) saturate(1.15);
 	border: 1px solid var(--rw-border);
 	border-radius: var(--rw-radius-bubble);
-	box-shadow: var(--rw-shadow-sm);
+	box-shadow: var(--rw-shadow-sm), inset 0 1px 0 oklch(100% 0 0 / 0.5);
 }
 .rw-bubble-pad { padding: 18px 20px; }
 
@@ -140,17 +157,19 @@
 	transition: background var(--rw-fast) var(--rw-ease), transform var(--rw-fast) var(--rw-ease), box-shadow var(--rw-fast) var(--rw-ease);
 	box-shadow: var(--rw-shadow-sm);
 }
-.rw-btn:hover  { background: var(--rw-surface-raised); box-shadow: var(--rw-shadow-md); }
-.rw-btn:active { transform: scale(0.98); }
+.rw-btn:hover  { background: var(--rw-surface-raised); box-shadow: var(--rw-shadow-md); transform: translateY(-1px); border-color: var(--rw-border-strong); }
+.rw-btn:active { transform: translateY(0) scale(0.985); box-shadow: var(--rw-shadow-sm); }
 .rw-btn:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
-.rw-btn[disabled] { opacity: 0.5; cursor: default; box-shadow: none; }
+.rw-btn[disabled] { opacity: 0.5; cursor: default; box-shadow: none; transform: none; }
+.rw-btn[disabled]:hover { transform: none; box-shadow: none; }
 
 .rw-btn-primary {
 	background: var(--rw-accent);
 	border-color: var(--rw-accent-strong);
 	color: var(--rw-on-accent);
+	box-shadow: var(--rw-shadow-sm), inset 0 1px 0 oklch(100% 0 0 / 0.22);
 }
-.rw-btn-primary:hover { background: var(--rw-accent-strong); }
+.rw-btn-primary:hover { background: var(--rw-accent-strong); box-shadow: var(--rw-shadow-md), inset 0 1px 0 oklch(100% 0 0 / 0.22); }
 
 .rw-btn-danger {
 	background: var(--rw-danger-soft);
@@ -159,7 +178,8 @@
 }
 
 .rw-btn-ghost { background: transparent; border-color: transparent; box-shadow: none; }
-.rw-btn-ghost:hover { background: var(--rw-bg-sunken); box-shadow: none; }
+.rw-btn-ghost:hover { background: var(--rw-bg-sunken); box-shadow: none; transform: translateY(-1px); }
+.rw-btn-ghost:active { transform: translateY(0) scale(0.985); }
 
 /* ── Inputs ─────────────────────────────────────────────────────────────── */
 .rw-input, .rw-textarea {
@@ -228,6 +248,7 @@
 	border: 1px solid var(--rw-border);
 	border-radius: var(--rw-radius-control);
 	padding: 3px;
+	box-shadow: inset 0 1px 2px oklch(0% 0 0 / 0.05);
 }
 .rw-segment button {
 	appearance: none; border: 0; cursor: pointer;
@@ -236,12 +257,18 @@
 	background: transparent;
 	border-radius: 9px;
 	padding: 7px 14px;
-	transition: all var(--rw-fast) var(--rw-ease);
+	transition: background var(--rw-med) var(--rw-ease), color var(--rw-med) var(--rw-ease), box-shadow var(--rw-med) var(--rw-ease);
 }
+/* Inactive tabs warm up on hover so the control feels responsive before a
+   selection lands. */
+.rw-segment button:not(.on):hover { color: var(--rw-text); background: color-mix(in oklab, var(--rw-surface) 60%, transparent); }
+.rw-segment button:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
+/* Active pill: a crisp raised surface with a top highlight and an accent-tinted
+   label for unambiguous state, transitioning smoothly on tab switch. */
 .rw-segment button.on {
-	background: var(--rw-surface);
-	color: var(--rw-text);
-	box-shadow: var(--rw-shadow-sm);
+	background: var(--rw-surface-raised);
+	color: var(--rw-accent-strong);
+	box-shadow: var(--rw-shadow-sm), inset 0 1px 0 oklch(100% 0 0 / 0.55);
 }
 
 /* ── Chat page ──────────────────────────────────────────────────────────── */
@@ -302,6 +329,14 @@
 @keyframes rwMsgInUser { from { opacity: 0; transform: translateY(9px) translateX(6px) scale(0.985); } to { opacity: 1; transform: none; } }
 
 .rw-status-line { font: 500 12px var(--rw-font); color: var(--rw-text-muted); padding: 0 4px; min-height: 16px; }
+#rwMusicBanner[data-kind="playback-error"] {
+	color: var(--rw-danger) !important;
+	background: var(--rw-danger-soft);
+	border-left: 3px solid var(--rw-danger);
+	border-radius: var(--rw-radius-control);
+	padding: 8px 10px;
+	margin-bottom: 10px;
+}
 
 .rw-composer {
 	display: flex; gap: 10px; align-items: flex-end;
@@ -403,11 +438,32 @@
 	margin: auto;
 	max-width: 420px;
 	text-align: center;
-	padding: 36px 30px;
+	padding: 44px 30px;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	animation: rwEmptyIn var(--rw-med) var(--rw-ease);
 }
-.rw-empty .rw-empty-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.75; }
-.rw-empty h3 { font-size: 16px; font-weight: 650; margin: 0 0 6px; }
-.rw-empty p  { font-size: 13.5px; line-height: 1.55; color: var(--rw-text-soft); margin: 0 0 16px; }
+@keyframes rwEmptyIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+/* Glyph gets a soft accent-tinted disc behind it so the empty state reads as
+   a designed moment rather than orphaned text. */
+.rw-empty .rw-empty-icon {
+	display: grid;
+	place-items: center;
+	width: 78px;
+	height: 78px;
+	margin-bottom: 20px;
+	font-size: 34px;
+	line-height: 1;
+	color: var(--rw-accent-strong);
+	background:
+		radial-gradient(circle at 50% 38%, color-mix(in oklab, var(--rw-accent-soft) 90%, var(--rw-surface)) 0%, color-mix(in oklab, var(--rw-accent-soft) 40%, transparent) 70%);
+	border: 1px solid color-mix(in oklab, var(--rw-accent) 30%, transparent);
+	border-radius: 50%;
+	box-shadow: var(--rw-shadow-sm), inset 0 1px 0 oklch(100% 0 0 / 0.5);
+}
+.rw-empty h3 { font-size: 16.5px; font-weight: 650; margin: 0 0 8px; letter-spacing: -0.15px; }
+.rw-empty p  { font-size: 13.5px; line-height: 1.6; color: var(--rw-text-soft); margin: 0 0 18px; max-width: 34ch; }
 
 /* ── Coder page ─────────────────────────────────────────────────────────── */
 .rw-coder-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; }
@@ -474,12 +530,15 @@
 .rw-mem-item:hover .rw-mem-actions, .rw-mem-item.editing .rw-mem-actions { opacity: 1; }
 .rw-icon-btn {
 	appearance: none; border: 1px solid var(--rw-border); background: var(--rw-surface);
-	border-radius: 9px; width: 30px; height: 30px; cursor: pointer;
+	border-radius: 9px; width: 34px; height: 34px; cursor: pointer;
 	font-size: 13px; color: var(--rw-text-soft);
+	flex: 0 0 34px;
 	display: inline-flex; align-items: center; justify-content: center;
 	transition: all var(--rw-fast) var(--rw-ease);
 }
-.rw-icon-btn:hover { color: var(--rw-text); border-color: var(--rw-border-strong); box-shadow: var(--rw-shadow-sm); }
+.rw-icon-btn:hover { color: var(--rw-text); border-color: var(--rw-border-strong); background: var(--rw-surface-raised); box-shadow: var(--rw-shadow-sm); transform: translateY(-1px); }
+.rw-icon-btn:active { transform: translateY(0) scale(0.94); box-shadow: none; }
+.rw-icon-btn:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
 .rw-icon-btn.danger:hover { color: var(--rw-danger); border-color: var(--rw-danger); background: var(--rw-danger-soft); }
 
 #rwMemGraphHost { flex: 1; min-height: 0; position: relative; border-radius: var(--rw-radius-bubble); overflow: hidden; background: oklch(18% 0.02 270); border: 1px solid var(--rw-border); }
@@ -605,9 +664,14 @@
 .rw-trace-muted  .rw-trace-icon { color: var(--rw-text-muted); }
 @keyframes rwTraceIn { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: translateY(0); } }
 
-/* ── Custom select (CustomSelect / .rh-selectx) on warm pages ───────────── */
-.rainette-page .rh-selectx { position: relative; display: inline-block; min-width: 150px; }
-.rainette-page .rh-selectx-button {
+/* ── Custom select (CustomSelect / .rh-selectx) ──────────────────────────
+   Deliberately unscoped (no .rainette-page ancestor prefix): call sites
+   include modal dialogs (rainette_modal.js), which attach straight to
+   document.body outside .rainette-page, same reasoning as .rw-modal-backdrop
+   below. A scoped version silently lost all styling - including the
+   display:none default - inside those dialogs. */
+.rh-selectx { position: relative; display: inline-block; min-width: 150px; }
+.rh-selectx-button {
 	appearance: none; cursor: pointer; width: 100%;
 	font: 600 12.5px/1 var(--rw-font);
 	color: var(--rw-text);
@@ -620,7 +684,7 @@
 	box-shadow: var(--rw-shadow-sm);
 	transition: border-color var(--rw-fast) var(--rw-ease), box-shadow var(--rw-fast) var(--rw-ease);
 }
-.rainette-page .rh-selectx-button::after {
+.rh-selectx-button::after {
 	content: ""; position: absolute; right: 12px; top: 50%;
 	width: 7px; height: 7px;
 	border-right: 1.5px solid var(--rw-text-muted);
@@ -629,12 +693,21 @@
 	transition: transform var(--rw-fast) var(--rw-ease);
 	pointer-events: none;
 }
-.rainette-page .rh-selectx.open .rh-selectx-button { border-color: var(--rw-accent); box-shadow: 0 0 0 3px var(--rw-accent-soft); }
-.rainette-page .rh-selectx.open .rh-selectx-button::after { transform: translateY(-30%) rotate(225deg); }
-.rainette-page .rh-selectx-list {
+.rh-selectx.open .rh-selectx-button { border-color: var(--rw-accent); box-shadow: 0 0 0 3px var(--rw-accent-soft); }
+.rh-selectx-button:focus-visible { outline: none; border-color: var(--rw-accent); box-shadow: 0 0 0 3px var(--rw-accent-soft); }
+.rh-selectx.open .rh-selectx-button::after { transform: translateY(-30%) rotate(225deg); }
+.rh-selectx-list {
 	display: none;
-	position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
-	min-width: 100%; max-height: 280px; overflow-y: auto;
+	/* position/left/top/width are computed and set inline by
+	   rainette_select.js's positionList(). Fixed positioning alone still gets
+	   clipped by an overflow:auto ancestor (e.g. the smart-playlist dialog) -
+	   an element stays clipped by a scrolling ancestor's box regardless of its
+	   own position value as long as it's still a DOM descendant of it. So
+	   openSelf() also reparents this to document.body while open, which is
+	   why visibility is keyed off a class on the list itself, not a
+	   .rh-selectx.open ancestor selector (that wouldn't match once detached). */
+	position: fixed; z-index: 2100;
+	max-height: 280px; overflow-y: auto;
 	background: var(--rw-surface-raised);
 	border: 1px solid var(--rw-border);
 	border-radius: var(--rw-radius-control);
@@ -642,8 +715,8 @@
 	padding: 5px;
 	box-sizing: border-box;
 }
-.rainette-page .rh-selectx.open .rh-selectx-list { display: flex; flex-direction: column; gap: 2px; }
-.rainette-page .rh-selectx-item {
+.rh-selectx-list.open { display: flex; flex-direction: column; gap: 2px; }
+.rh-selectx-item {
 	appearance: none; cursor: pointer; border: 0; text-align: left;
 	font: 500 12.5px/1.3 var(--rw-font);
 	color: var(--rw-text);
@@ -652,8 +725,8 @@
 	padding: 8px 11px;
 	white-space: nowrap;
 }
-.rainette-page .rh-selectx-item:hover { background: var(--rw-bg-sunken); }
-.rainette-page .rh-selectx-item.selected { background: var(--rw-accent-soft); color: var(--rw-accent-strong); font-weight: 600; }
+.rh-selectx-item:hover { background: var(--rw-bg-sunken); }
+.rh-selectx-item.selected { background: var(--rw-accent-soft); color: var(--rw-accent-strong); font-weight: 600; }
 
 /* ── Page coherence: classic overlay chrome stays out of page views ─────── */
 /* While a full page is open, the classic HUD (status pills, hand banner,
@@ -676,17 +749,169 @@ body.rw-page-open #infoPanel {
 }
 
 /* ── Music page ─────────────────────────────────────────────────────────── */
-/* #rwMusicBody is the scroll boundary: a flex column so toolbars/search bars
-   stay put and only .rw-track-list (the actual content) scrolls beneath them —
-   same pattern as .rw-mem-list on the Memory page. */
-#rwMusicBody { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* #rwMusicBody is the single page scroll boundary. Lists expand naturally so
+   cards are never clipped by a second, shorter scrolling viewport. */
+#rwMusicPage {
+	--rw-docked-clearance: 0px;
+	background:
+		linear-gradient(135deg, color-mix(in oklab, var(--rw-accent-soft) 28%, transparent), transparent 34%),
+		var(--rw-bg);
+}
+#rwMusicPage.rainette-page { font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; }
+
+.rw-music-shell {
+	flex: 1;
+	min-height: 0;
+	display: grid;
+	grid-template-columns: 232px minmax(0, 1fr);
+}
+.rw-music-sidebar {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 18px;
+	padding: 22px 16px;
+	background: color-mix(in oklab, var(--rw-surface) 72%, var(--rw-bg));
+	border-right: 1px solid color-mix(in oklab, var(--rw-border) 78%, transparent);
+	box-shadow: inset -1px 0 0 oklch(100% 0 0 / 0.34);
+}
+.rw-music-brand {
+	display: flex;
+	align-items: center;
+	gap: 11px;
+	padding: 4px 4px 12px;
+}
+.rw-music-mark {
+	width: 38px;
+	height: 38px;
+	border-radius: 12px;
+	display: grid;
+	place-items: center;
+	color: var(--rw-on-accent);
+	background: linear-gradient(150deg, var(--rw-accent), var(--rw-accent-strong));
+	box-shadow: var(--rw-shadow-sm), inset 0 1px 0 oklch(100% 0 0 / 0.22);
+	font: 750 17px/1 var(--rw-font);
+	overflow: hidden;
+}
+.rw-music-mark img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.rw-music-brand-text { min-width: 0; }
+.rw-music-brand-name { font-size: 15px; font-weight: 720; letter-spacing: -0.1px; }
+.rw-music-brand-sub { margin-top: 2px; font-size: 11.5px; color: var(--rw-text-muted); }
+.rw-music-nav {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+.rw-music-nav button {
+	appearance: none;
+	width: 100%;
+	min-height: 40px;
+	border: 1px solid transparent;
+	border-radius: 11px;
+	background: transparent;
+	color: var(--rw-text-soft);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	padding: 0 12px;
+	text-align: left;
+	font: 650 13px/1 var(--rw-font);
+	transition: background var(--rw-fast) var(--rw-ease), color var(--rw-fast) var(--rw-ease), border-color var(--rw-fast) var(--rw-ease), transform var(--rw-fast) var(--rw-ease);
+}
+.rw-music-nav button:hover {
+	background: color-mix(in oklab, var(--rw-surface-raised) 72%, transparent);
+	color: var(--rw-text);
+}
+.rw-music-nav button:active { transform: translateY(1px); }
+.rw-music-nav button:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
+.rw-music-nav button.on {
+	background: var(--rw-surface-raised);
+	border-color: var(--rw-border);
+	color: var(--rw-accent-strong);
+	box-shadow: var(--rw-shadow-sm), inset 0 1px 0 oklch(100% 0 0 / 0.55);
+}
+.rw-music-sidebar-foot {
+	margin-top: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 9px;
+	padding-top: 14px;
+	border-top: 1px solid color-mix(in oklab, var(--rw-border) 80%, transparent);
+}
+.rw-sidebar-label {
+	font: 700 10.5px/1 var(--rw-font);
+	color: var(--rw-text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	padding: 0 4px;
+}
+.rw-sidebar-action {
+	width: 100%;
+	justify-content: center;
+}
+.rw-layout-segment { width: 100%; box-sizing: border-box; }
+.rw-layout-segment button { flex: 1; }
+.rw-music-main {
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+#rwMusicPage .rw-page-head {
+	padding: 24px 34px 18px;
+	background: color-mix(in oklab, var(--rw-surface) 58%, transparent);
+}
+#rwMusicPage .rw-page-eyebrow {
+	margin-bottom: 7px;
+	font: 720 11px/1 var(--rw-font);
+	color: var(--rw-accent-strong);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+}
+#rwMusicPage .rw-page-title {
+	font-size: 26px;
+	line-height: 1.12;
+	font-weight: 760;
+	letter-spacing: 0;
+	text-wrap: balance;
+}
+#rwMusicPage .rw-page-sub {
+	max-width: 64ch;
+	margin-top: 6px;
+	line-height: 1.45;
+	text-wrap: pretty;
+}
+#rwMusicPage .rw-page-body { padding: 18px 34px 0; overflow: hidden; }
+#rwMusicBody {
+	flex: 1; min-height: 0; display: flex; flex-direction: column;
+	overflow-y: auto; overflow-x: hidden;
+	padding: 1px 3px calc(28px + var(--rw-docked-clearance)) 0;
+	box-sizing: border-box;
+	overscroll-behavior: contain;
+}
+#rwMusicBody .rw-browser-grid,
+#rwMusicBody .rw-browser-list,
+#rwMusicBody .rw-queue-list { min-height: auto; overflow: visible; }
+/* Enter transition applied by applyTab()/animatePageEnter() on real tab or
+   detail-view changes (not same-view data re-renders). */
+@keyframes rwPageEnter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+#rwMusicBody.rw-page-enter { animation: rwPageEnter var(--rw-med) var(--rw-ease); }
 
 .rw-track-list {
-	display: flex; flex-direction: column; gap: 8px; margin-top: 10px;
-	flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 4px;
+	display: flex; flex-direction: column; gap: 10px; margin-top: 10px;
+	flex: 0 0 auto; min-height: auto; overflow: visible; padding: 1px 2px 12px 0;
 }
-.rw-track-card { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
-.rw-track-card:hover { box-shadow: var(--rw-shadow-md); }
+.rw-track-card {
+	display: flex; align-items: center; gap: 13px; padding: 11px 14px;
+	min-width: 0;
+	transition: box-shadow var(--rw-fast) var(--rw-ease), transform var(--rw-fast) var(--rw-ease), border-color var(--rw-fast) var(--rw-ease);
+}
+.rw-track-card:hover {
+	transform: translateY(-1px);
+	border-color: var(--rw-border-strong);
+	box-shadow: var(--rw-shadow-md), inset 0 1px 0 oklch(100% 0 0 / 0.55);
+}
 .rw-track-thumb {
 	width: 44px; height: 44px; border-radius: 10px; flex-shrink: 0;
 	background: var(--rw-bg-sunken); display: grid; place-items: center;
@@ -696,7 +921,17 @@ body.rw-page-open #infoPanel {
 .rw-track-meta { flex: 1; min-width: 0; }
 .rw-track-title { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rw-track-sub { font-size: 12px; color: var(--rw-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rw-track-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.rw-track-actions {
+	display: flex;
+	gap: 7px;
+	flex: 0 0 78px;
+	max-width: 78px;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	align-items: center;
+}
+.rw-artist-card .rw-track-actions { flex: 0 0 auto; max-width: none; flex-wrap: nowrap; }
+.rw-follow-btn.on { color: var(--rw-accent-strong); background: var(--rw-accent-soft); }
 .rw-section-title {
 	display: flex; align-items: baseline; justify-content: space-between;
 	gap: 12px; margin: 12px 2px 2px; color: var(--rw-text-muted);
@@ -712,16 +947,335 @@ body.rw-page-open #infoPanel {
 }
 .rw-inline-link:hover { text-decoration: underline; }
 .rw-detail-head { flex-shrink: 0; }
+.rw-filter-toolbar { flex-shrink: 0; align-items: center; }
+.rw-filter-input { flex: 1 1 220px; min-width: 160px; }
+
+.rw-pinned-playlists {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	min-height: 0;
+}
+.rw-pinned-playlist {
+	appearance: none;
+	border: 0;
+	border-radius: 9px;
+	background: transparent;
+	color: var(--rw-text-soft);
+	cursor: pointer;
+	min-height: 31px;
+	padding: 0 10px;
+	text-align: left;
+	font: 600 12px/1 var(--rw-font);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.rw-pinned-playlist:hover {
+	background: var(--rw-bg-sunken);
+	color: var(--rw-text);
+}
+
+.rw-playlist-groups {
+	flex: 0 0 auto;
+	min-height: auto;
+	overflow: visible;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 2px 2px 12px 0;
+}
+.rw-playlist-group {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.rw-playlist-group-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 2px 3px;
+}
+.rw-playlist-group-title {
+	appearance: none;
+	border: 0;
+	background: transparent;
+	color: var(--rw-text);
+	cursor: pointer;
+	font: 740 11px/1 var(--rw-font);
+	letter-spacing: 1.1px;
+	text-transform: uppercase;
+	padding: 6px 0;
+	text-align: left;
+}
+.rw-playlist-list {
+	flex: 0 0 auto;
+	min-height: auto;
+	overflow: visible;
+	margin-top: 0;
+}
+
+.rw-browser-grid {
+	flex: 1;
+	min-height: 0;
+	display: grid;
+	grid-template-columns: minmax(160px, 0.85fr) minmax(170px, 0.95fr) minmax(260px, 1.6fr);
+	gap: 12px;
+}
+.rw-browser-col {
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	border: 1px solid var(--rw-border);
+	border-radius: var(--rw-radius-control);
+	background: color-mix(in oklab, var(--rw-surface) 74%, transparent);
+	padding: 10px;
+}
+.rw-browser-list {
+	min-height: 0;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.rw-browser-item {
+	appearance: none;
+	border: 1px solid transparent;
+	border-radius: 9px;
+	background: transparent;
+	color: var(--rw-text);
+	cursor: pointer;
+	padding: 9px 10px;
+	text-align: left;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	min-width: 0;
+}
+.rw-browser-item span,
+.rw-browser-item small {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.rw-browser-item small { color: var(--rw-text-muted); font-size: 11px; }
+.rw-browser-item:hover,
+.rw-browser-item.on {
+	background: var(--rw-surface-raised);
+	border-color: var(--rw-border);
+}
+.rw-browser-tracks .rw-track-list { margin-top: 4px; }
+
+.rw-queue-sessions {
+	flex: 0 0 auto;
+	margin: 0 0 10px;
+}
+.rw-session-list {
+	display: flex;
+	flex-direction: column;
+	gap: 7px;
+}
+.rw-session-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 0;
+	border-top: 1px solid var(--rw-border);
+}
+.rw-session-row:first-child { border-top: 0; }
+
+.rw-command-palette {
+	position: fixed;
+	inset: 0;
+	z-index: 1500;
+	display: grid;
+	place-items: start center;
+	padding: 42px 18px;
+	background: color-mix(in oklab, var(--rw-bg) 46%, transparent);
+	-webkit-backdrop-filter: blur(8px);
+	backdrop-filter: blur(8px);
+}
+.rw-command-palette[hidden] { display: none; }
+.rw-command-panel {
+	width: min(640px, 100%);
+	max-height: min(620px, calc(100vh - 120px));
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 14px;
+	background: color-mix(in oklab, var(--rw-surface-raised) 96%, transparent);
+	border: 1px solid var(--rw-border-strong);
+	border-radius: var(--rw-radius-bubble);
+	box-shadow: var(--rw-shadow-lg);
+}
+.rw-command-list {
+	min-height: 0;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.rw-command-item {
+	appearance: none;
+	border: 1px solid transparent;
+	border-radius: var(--rw-radius-control);
+	background: transparent;
+	color: var(--rw-text);
+	cursor: pointer;
+	display: flex;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 10px 12px;
+	text-align: left;
+}
+.rw-command-item small {
+	color: var(--rw-text-muted);
+	flex-shrink: 0;
+}
+.rw-command-item:hover,
+.rw-command-item.on {
+	background: var(--rw-bg-sunken);
+	border-color: var(--rw-border);
+}
+
+/* ── Now Playing view — full-viewport overlay opened from the docked bar
+   (see .rw-now-bar). Structurally mirrors .rw-command-palette: fixed
+   backdrop, centered panel, built fresh on open/close. */
+.rw-now-view {
+	position: fixed; inset: 0; z-index: 1500;
+	display: grid; place-items: center;
+	padding: 42px 18px;
+	background: color-mix(in oklab, var(--rw-bg) 46%, transparent);
+	-webkit-backdrop-filter: blur(8px);
+	backdrop-filter: blur(8px);
+}
+.rw-now-view[hidden] { display: none; }
+/* Registered so the ambient tint cross-fades between tracks instead of
+   snapping (custom properties only animate when typed via @property). */
+@property --rw-np-ambient {
+	syntax: '<color>';
+	inherits: true;
+	initial-value: transparent;
+}
+.rw-now-view-panel {
+	position: relative;
+	width: min(380px, 100%);
+	display: flex; flex-direction: column; align-items: center; gap: 6px;
+	padding: 22px;
+	/* Soft wash of the cover art's dominant color behind the upper half -
+	   sampled per-track in rainette_music.js (sampleAmbientColor). Falls back
+	   to no tint when art is missing or CORS-tainted. */
+	background:
+		radial-gradient(130% 85% at 50% -10%, color-mix(in oklab, var(--rw-np-ambient) 26%, transparent), transparent 72%),
+		color-mix(in oklab, var(--rw-surface-raised) 96%, transparent);
+	border: 1px solid var(--rw-border-strong);
+	border-radius: var(--rw-radius-bubble);
+	box-shadow: var(--rw-shadow-lg);
+	transition: --rw-np-ambient 0.7s var(--rw-ease);
+}
+/* The art itself sits in the tinted glow. */
+.rw-now-view-art-shell {
+	box-shadow: 0 16px 44px color-mix(in oklab, var(--rw-np-ambient) 34%, transparent);
+	transition: box-shadow 0.7s var(--rw-ease);
+}
+html.rw-reduced-motion .rw-now-view-panel,
+html.rw-reduced-motion .rw-now-view-art-shell { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+	.rw-now-view-panel, .rw-now-view-art-shell { transition: none; }
+}
+.rw-now-view-close { position: absolute; top: 12px; right: 12px; }
+/* Entrance for the hidden→open transition only - re-renders while open reuse
+   the plain panel class (see renderNowPlayingView's _nowViewEntered guard). */
+.rw-now-view-panel.rw-now-enter { animation: rwModalIn var(--rw-med) var(--rw-ease); }
+
+/* ── Live playing indicator (animated equalizer bars) ────────────────────
+   Marks the current queue row; pauses (static short bars) when playback is
+   paused. Decorative - the row's "Now playing" text carries the semantics. */
+.rw-queue-title-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.rw-queue-title-row .rw-track-title { min-width: 0; }
+.rw-playing-eq {
+	display: inline-flex; align-items: flex-end; gap: 2px;
+	width: 14px; height: 12px; flex-shrink: 0;
+}
+.rw-playing-eq span {
+	flex: 1; height: 100%; border-radius: 1.5px;
+	background: var(--rw-accent-strong);
+	transform-origin: bottom;
+	animation: rwEqBar 1.05s ease-in-out infinite;
+}
+.rw-playing-eq span:nth-child(2) { animation-delay: 0.28s; }
+.rw-playing-eq span:nth-child(3) { animation-delay: 0.55s; }
+.rw-playing-eq.paused span { animation: none; transform: scaleY(0.35); }
+@keyframes rwEqBar { 0%, 100% { transform: scaleY(0.3); } 50% { transform: scaleY(1); } }
+html.rw-reduced-motion .rw-playing-eq span { animation: none; transform: scaleY(0.5); }
+@media (prefers-reduced-motion: reduce) { .rw-playing-eq span { animation: none; transform: scaleY(0.5); } }
+
+/* Docked-bar cover art: quick fade/scale when the track (art) changes. */
+@keyframes rwArtSwap { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
+.rw-now-art.rw-art-swap { animation: rwArtSwap 0.32s var(--rw-ease); }
+html.rw-reduced-motion .rw-now-art.rw-art-swap { animation: none; }
+@media (prefers-reduced-motion: reduce) { .rw-now-art.rw-art-swap { animation: none; } }
+
+/* Seek bars are keyboard-focusable sliders now - show it. */
+.rw-now-seek:focus-visible,
+.rw-now-view-seek:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
+
+.rw-now-view-art-shell {
+	display: grid; place-items: center;
+	width: 240px; height: 240px; max-width: 100%; aspect-ratio: 1 / 1;
+	border-radius: 18px; overflow: hidden; flex-shrink: 0;
+	background: color-mix(in oklab, var(--rw-accent-soft) 88%, var(--rw-surface));
+	border: 1px solid var(--rw-border); color: var(--rw-accent-strong);
+	margin: 14px 0 8px;
+}
+.rw-now-view-art { width: 100%; height: 100%; object-fit: cover; }
+.rw-now-view-note { font-size: 56px; font-weight: 700; }
+.rw-now-view-title { font-weight: 700; font-size: 18px; text-align: center; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rw-now-view-artist { font-size: 13px; color: var(--rw-text-muted); text-align: center; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 6px; }
+
+.rw-now-view-transport { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 10px; }
+.rw-now-view-btn {
+	appearance: none; border: 1px solid var(--rw-border); background: var(--rw-surface);
+	color: var(--rw-text-soft); border-radius: 50%; width: 38px; height: 38px;
+	cursor: pointer; display: grid; place-items: center;
+	transition: background var(--rw-fast), border-color var(--rw-fast), color var(--rw-fast), transform var(--rw-fast);
+}
+.rw-now-view-btn:hover { border-color: var(--rw-border-strong); background: var(--rw-bg-sunken); color: var(--rw-text); transform: translateY(-1px); }
+.rw-now-view-btn:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
+.rw-now-view-btn.on { color: var(--rw-accent-strong); border-color: var(--rw-accent); background: var(--rw-accent-soft); }
+.rw-now-view-btn svg { display: block; width: 16px; height: 16px; pointer-events: none; }
+.rw-now-view-play {
+	width: 52px; height: 52px;
+	background: linear-gradient(160deg, var(--rw-accent), var(--rw-accent-strong));
+	color: var(--rw-on-accent); border-color: var(--rw-accent-strong);
+	box-shadow: var(--rw-shadow-sm);
+}
+.rw-now-view-play:hover { filter: brightness(1.06); }
+.rw-now-view-play svg { width: 20px; height: 20px; }
+
+/* queueShuffle() is a one-shot reshuffle, not a persistent mode - there's no
+   shuffle-state to reflect with an .on class, so a brief pulse confirms the
+   click landed instead. */
+@keyframes rwShufflePulse { 0% { transform: scale(1); } 40% { transform: scale(0.85) rotate(-8deg); } 100% { transform: scale(1); } }
+.rw-now-view-btn.pulse { animation: rwShufflePulse 400ms var(--rw-ease); }
+
+.rw-now-view-volume { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 18px; padding: 0 4px; }
+.rw-now-view-vol-icon { color: var(--rw-text-muted); display: flex; flex-shrink: 0; }
+.rw-now-view-vol-slider { flex: 1; accent-color: var(--rw-accent); cursor: pointer; }
+
+.rw-now-view-actions { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 16px; }
 
 /* Grid layout variant — toggled via the layout segment in the page head. */
 .rw-track-list.layout-grid {
-	display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+	display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
 	gap: 14px; align-content: start;
 }
 .rw-track-list.layout-grid .rw-track-card { flex-direction: column; align-items: stretch; text-align: left; padding: 12px; gap: 10px; }
 .rw-track-list.layout-grid .rw-track-thumb { width: 100%; height: auto; aspect-ratio: 1 / 1; border-radius: 12px; font-size: 30px; }
 .rw-track-list.layout-grid .rw-track-title, .rw-track-list.layout-grid .rw-track-sub { white-space: normal; }
-.rw-track-list.layout-grid .rw-track-actions { justify-content: flex-end; }
+.rw-track-list.layout-grid .rw-track-actions { flex: 0 0 auto; max-width: none; justify-content: flex-start; }
 .rw-track-list.layout-grid .rw-section-title { grid-column: 1 / -1; }
 .rw-track-list.layout-grid .rw-empty { grid-column: 1 / -1; }
 
@@ -734,8 +1288,20 @@ body.rw-page-open #infoPanel {
 	border-color: var(--rw-accent);
 	background: var(--rw-accent-soft);
 }
-.rw-queue-row.dragging { opacity: 0.55; }
-.rw-queue-row.drag-over { box-shadow: var(--rw-shadow-md), 0 0 0 2px var(--rw-accent-soft); }
+/* Lifted look while a row is being pointer-dragged: tracks the pointer 1:1
+   via --rw-drag-y (set on pointermove, no ghost image/clone involved - the
+   real row stays in-flow) and rides above siblings, which shift live via the
+   same .flip-move transition used for the post-drop settle below. */
+.rw-queue-row.dragging {
+	position: relative; z-index: 5; transition: none;
+	transform: translateY(var(--rw-drag-y, 0px)) scale(1.02);
+	box-shadow: var(--rw-shadow-md);
+	cursor: grabbing;
+}
+/* FLIP settle after a drag-reorder - a dedicated class/timing so it doesn't
+   interact with .rw-track-card's hover-elevation transition. Reused during
+   an in-progress drag too, to shift sibling rows out of the way live. */
+.rw-queue-row.flip-move { transition: transform var(--rw-med) var(--rw-ease); }
 .rw-queue-grip {
 	appearance: none;
 	border: 0;
@@ -750,6 +1316,7 @@ body.rw-page-open #infoPanel {
 	flex-shrink: 0;
 	font: 700 12px/1 var(--rw-mono);
 	letter-spacing: 1px;
+	touch-action: none;
 }
 .rw-queue-grip:active { cursor: grabbing; }
 .rw-queue-drawer {
@@ -764,11 +1331,18 @@ body.rw-page-open #infoPanel {
 	gap: 8px;
 	padding: 14px;
 	box-sizing: border-box;
-	background: var(--rw-surface);
-	border: 1px solid var(--rw-border);
+	/* Same liquid-glass weight as .rw-modal: a saturated blur over a
+	   near-opaque raised surface with a layered shadow and inset top
+	   highlight, so the slide-over reads as a floating panel above the list. */
+	background: color-mix(in oklab, var(--rw-surface-raised) 92%, transparent);
+	-webkit-backdrop-filter: blur(20px) saturate(1.3);
+	backdrop-filter: blur(20px) saturate(1.3);
+	border: 1px solid var(--rw-border-strong);
 	border-radius: var(--rw-radius-bubble);
-	box-shadow: var(--rw-shadow-lg);
+	box-shadow: var(--rw-shadow-lg), inset 0 1px 0 oklch(100% 0 0 / 0.6);
+	animation: rwQueueDrawerIn var(--rw-med) var(--rw-ease);
 }
+@keyframes rwQueueDrawerIn { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
 .rw-queue-drawer[hidden] { display: none; }
 .rw-queue-drawer-head {
 	display: flex;
@@ -782,6 +1356,182 @@ body.rw-page-open #infoPanel {
 .rw-queue-list.compact { margin-top: 0; }
 .rw-queue-row.compact { padding: 8px 10px; gap: 8px; }
 .rw-queue-row.compact .rw-track-thumb { width: 36px; height: 36px; }
+/* Rows already sit on the drawer's glass — drop the per-card blur so the panel
+   doesn't read as glass-on-glass, and keep them as flat opaque surfaces. */
+.rw-queue-drawer .rw-track-card {
+	background: var(--rw-surface);
+	-webkit-backdrop-filter: none;
+	backdrop-filter: none;
+	box-shadow: none;
+}
+.rw-queue-drawer .rw-track-card:hover { transform: none; box-shadow: var(--rw-shadow-sm); }
+.rw-queue-drawer .rw-track-card.is-current { background: var(--rw-accent-soft); }
+
+@media (max-width: 900px) {
+	.rw-music-shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+	.rw-music-sidebar {
+		flex-direction: row;
+		align-items: center;
+		gap: 14px;
+		padding: 14px 18px;
+		border-right: 0;
+		border-bottom: 1px solid color-mix(in oklab, var(--rw-border) 78%, transparent);
+	}
+	.rw-music-brand { padding: 0; flex: 0 0 auto; }
+	.rw-music-nav {
+		flex: 1;
+		min-width: 0;
+		flex-direction: row;
+		gap: 6px;
+		overflow-x: auto;
+		padding-bottom: 2px;
+	}
+	.rw-music-nav button { width: auto; flex: 0 0 auto; min-height: 38px; }
+	.rw-music-sidebar-foot {
+		margin-top: 0;
+		flex-direction: row;
+		align-items: center;
+		border-top: 0;
+		padding-top: 0;
+	}
+	.rw-sidebar-label { display: none; }
+	.rw-layout-segment { width: auto; }
+	.rw-sidebar-action { width: auto; white-space: nowrap; }
+	.rw-pinned-playlists { display: none; }
+	.rw-browser-grid { grid-template-columns: 1fr; overflow-y: auto; }
+	.rw-browser-col { min-height: 180px; }
+	#rwMusicPage .rw-page-head { padding: 20px 24px 16px; }
+	#rwMusicPage .rw-page-body { padding: 16px 24px 0; }
+}
+
+@media (max-width: 620px) {
+	.rw-music-sidebar {
+		display: grid;
+		grid-template-columns: 1fr;
+		align-items: stretch;
+	}
+	.rw-music-brand { display: none; }
+	.rw-music-nav {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		overflow-x: visible;
+	}
+	.rw-music-nav button {
+		width: 100%;
+		min-width: 0;
+		justify-content: center;
+		padding: 0 8px;
+	}
+	.rw-music-nav button span {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.rw-music-sidebar-foot { justify-content: space-between; }
+	.rw-filter-toolbar .rw-select,
+	.rw-filter-toolbar .rw-segment { width: 100%; }
+	.rw-smart-row { grid-template-columns: 1fr; }
+	.rw-command-palette { padding: 20px 12px; }
+	#rwMusicPage .rw-page-title { font-size: 23px; }
+	.rw-track-card { flex-wrap: wrap; align-items: flex-start; }
+	.rw-track-thumb { width: 42px; height: 42px; }
+	.rw-track-actions {
+		flex: 1 1 100%;
+		max-width: none;
+		justify-content: flex-start;
+		padding-left: 55px;
+	}
+	.rw-queue-row .rw-track-actions { padding-left: 0; }
+	.rw-queue-drawer {
+		right: 16px;
+		left: 16px;
+		width: auto;
+	}
+}
+
+/* ── Settings tab ──────────────────────────────────────────────────────── */
+.rw-settings-wrap { display: flex; flex-direction: column; gap: 14px; margin-top: 10px; overflow: visible; padding-bottom: 4px; }
+.rw-settings-card-title { margin: 0 0 2px; font-size: 15px; font-weight: 650; }
+.rw-settings-card-sub { margin: 0 0 14px; font-size: 12.5px; color: var(--rw-text-soft); }
+.rw-settings-row {
+	display: flex; align-items: center; justify-content: space-between; gap: 16px;
+	padding: 12px 0;
+	border-top: 1px solid var(--rw-border);
+}
+.rw-settings-row:first-of-type { border-top: 0; padding-top: 0; }
+.rw-settings-row-text { min-width: 0; }
+.rw-settings-row-label { font-size: 13.5px; font-weight: 600; }
+.rw-settings-row-hint { font-size: 12px; color: var(--rw-text-muted); margin-top: 2px; }
+
+.rw-accent-picker { display: flex; gap: 8px; flex-shrink: 0; }
+.rw-accent-swatch {
+	appearance: none; cursor: pointer; padding: 0;
+	width: 26px; height: 26px; border-radius: 50%;
+	border: 2px solid transparent;
+	box-shadow: var(--rw-shadow-sm), inset 0 0 0 1px oklch(0% 0 0 / 0.08);
+	transition: transform var(--rw-fast) var(--rw-ease), border-color var(--rw-fast) var(--rw-ease);
+}
+.rw-accent-swatch:hover { transform: scale(1.1); }
+.rw-accent-swatch.on { border-color: var(--rw-text); }
+.rw-accent-swatch-default { background: var(--rw-accent-default); }
+.rw-accent-swatch-teal { background: var(--rw-teal); }
+.rw-accent-swatch-purple { background: var(--rw-purple); }
+
+.rw-theme-picker { display: flex; gap: 12px; flex-wrap: wrap; }
+.rw-theme-swatch {
+	appearance: none; cursor: pointer; padding: 0; border: 0; background: transparent;
+	display: flex; flex-direction: column; align-items: center; gap: 6px;
+	width: 68px;
+}
+.rw-theme-swatch-preview {
+	position: relative; overflow: hidden;
+	display: block; width: 68px; height: 46px; border-radius: 10px;
+	background: var(--rw-bg);
+	border: 2px solid var(--rw-border);
+	box-shadow: var(--rw-shadow-sm), inset 0 0 0 1px oklch(0% 0 0 / 0.06);
+	transition: border-color var(--rw-fast) var(--rw-ease), transform var(--rw-fast) var(--rw-ease);
+}
+/* Decorative mini "header bar + accent chip" so each swatch reads as a tiny
+   screenshot of the theme rather than a flat color square. */
+.rw-theme-swatch-preview::before {
+	content: ""; position: absolute; left: 6px; right: 6px; top: 6px; height: 8px;
+	border-radius: 4px; background: var(--rw-surface-raised);
+	box-shadow: inset 0 0 0 1px var(--rw-border);
+}
+.rw-theme-swatch-preview::after {
+	content: ""; position: absolute; left: 6px; bottom: 6px;
+	width: 18px; height: 8px; border-radius: 4px; background: var(--rw-accent);
+}
+.rw-theme-swatch:hover .rw-theme-swatch-preview { transform: scale(1.04); }
+.rw-theme-swatch.on .rw-theme-swatch-preview { border-color: var(--rw-text); }
+.rw-theme-swatch-label { font-size: 11px; font-weight: 600; color: var(--rw-text-soft); }
+.rw-theme-swatch.on .rw-theme-swatch-label { color: var(--rw-text); }
+.rw-theme-swatch:focus-visible .rw-theme-swatch-preview { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
+
+.rw-eq-presets { display: flex; gap: 6px; flex-wrap: wrap; padding: 12px 0; border-top: 1px solid var(--rw-border); }
+.rw-eq-bands { display: flex; justify-content: space-between; gap: 10px; padding: 4px 4px 6px; }
+.rw-eq-band { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.rw-eq-slider { writing-mode: vertical-lr; direction: rtl; width: 26px; height: 96px; accent-color: var(--rw-accent); cursor: pointer; }
+.rw-eq-band-label { font-size: 11px; font-weight: 600; color: var(--rw-text-soft); }
+.rw-eq-band-hz { font-size: 10px; color: var(--rw-text-muted); }
+
+.rw-settings-slider { width: 200px; max-width: 50%; accent-color: var(--rw-accent); cursor: pointer; flex-shrink: 0; }
+
+.rw-select {
+	appearance: none; cursor: pointer; min-width: 150px;
+	font: 600 12.5px/1 var(--rw-font);
+	color: var(--rw-text);
+	background: var(--rw-surface)
+		url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%23888" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>')
+		no-repeat right 10px center / 14px 14px;
+	border: 1px solid var(--rw-border-strong);
+	border-radius: var(--rw-radius-control);
+	padding: 9px 32px 9px 13px;
+	box-shadow: var(--rw-shadow-sm);
+	transition: border-color var(--rw-fast) var(--rw-ease), box-shadow var(--rw-fast) var(--rw-ease);
+}
+.rw-select:focus-visible { outline: none; border-color: var(--rw-accent); box-shadow: 0 0 0 3px var(--rw-accent-soft); }
 
 /* ── Music mini-player: warm bubble now-playing capsule ──────────────────
    Collapsed = a true pill (art + title + expand). Expanded reveals the
@@ -807,13 +1557,41 @@ body.rw-page-open #infoPanel {
 	cursor: grab; touch-action: none;
 }
 .rw-mp-grip:active { cursor: grabbing; }
-.rw-mp-art {
-	width: 40px; height: 40px; border-radius: 50%; object-fit: cover; flex-shrink: 0;
-	background: var(--rw-bg-sunken); border: 1px solid var(--rw-border);
+/* Themed circle + note-glyph fallback, mirroring miniplayer.html's
+   .mp-art-shell/.mp-note pattern — the art slot always stays occupied
+   (blank theme-color circle), never collapses to a broken-looking gap when
+   a track has no thumbnail. */
+.rw-mp-art-shell {
+	position: relative; display: grid; place-items: center;
+	width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
+	background: color-mix(in oklab, var(--rw-accent-soft) 88%, var(--rw-surface));
+	border: 1px solid var(--rw-border); color: var(--rw-accent-strong);
+	overflow: hidden;
 }
+.rw-mp-art {
+	grid-area: 1 / 1; width: 100%; height: 100%; border-radius: 50%; object-fit: cover;
+	visibility: hidden;
+}
+.rw-mp-art-shell.has-art .rw-mp-art { visibility: visible; }
+.rw-mp-note { grid-area: 1 / 1; font-size: 20px; font-weight: 700; line-height: 1; }
+.rw-mp-art-shell.has-art .rw-mp-note { display: none; }
 .rw-mp-meta { flex: 1; min-width: 0; }
 .rw-mp-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rw-mp-artist { font-size: 11px; color: var(--rw-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Pause/play control reachable while collapsed — .rw-mp-controls (below) is
+   only shown once .expanded, so this is the only way to pause otherwise. */
+.rw-mp-play-pill {
+	display: none; appearance: none; cursor: pointer; flex-shrink: 0; padding: 0;
+	width: 34px; height: 34px; border-radius: 50%;
+	color: var(--rw-on-accent);
+	background: linear-gradient(160deg, var(--rw-accent), var(--rw-accent-strong));
+	border: 1px solid var(--rw-accent-strong);
+	box-shadow: var(--rw-shadow-sm);
+	transition: filter var(--rw-fast), transform var(--rw-fast);
+}
+.rw-mp-play-pill:hover { filter: brightness(1.06); }
+.rw-mp-play-pill svg { display: block; width: 16px; height: 16px; pointer-events: none; }
+.rw-music-player:not(.expanded) .rw-mp-play-pill { display: grid; place-items: center; }
 .rw-mp-expand {
 	appearance: none; cursor: pointer; flex-shrink: 0; padding: 0;
 	width: 34px; height: 34px; border-radius: 50%;
@@ -882,6 +1660,395 @@ body.rw-page-open #infoPanel {
 }
 .rw-mp-toast.in { opacity: 1; transform: translateY(0); }
 
+/* ── Docked bottom bar — always shows in the main window once a track starts
+   playing, coexisting with the optional floating pop-out mini player (both
+   stay synced; the Settings toggle only controls whether the separate
+   floating window also pops out). New surface, deliberately not a reskin of
+   .rw-music-player: full-width and always shows transport, no collapse step.
+   Clicking the art/title opens the full Now Playing view. */
+.rw-now-bar {
+	position: fixed; left: 0; right: 0; bottom: 0; z-index: 1200;
+	display: flex; flex-direction: column;
+	background: color-mix(in oklab, var(--rw-surface-raised) 92%, transparent);
+	-webkit-backdrop-filter: blur(20px) saturate(1.3);
+	backdrop-filter: blur(20px) saturate(1.3);
+	border-top: 1px solid var(--rw-border-strong);
+	box-shadow: var(--rw-shadow-lg);
+	color: var(--rw-text);
+}
+.rw-now-bar[hidden] { display: none; }
+/* Slide-up entrance when playback begins (added once on hidden→shown). */
+@keyframes rwDockedEnter { from { opacity: 0; transform: translateY(100%); } to { opacity: 1; transform: none; } }
+.rw-docked-bar.rw-docked-enter { animation: rwDockedEnter var(--rw-med) var(--rw-ease); }
+.rw-now-bar.error .rw-now-artist { color: var(--rw-danger); }
+
+.rw-now-seek {
+	--rw-mp-progress: 0%;
+	position: relative; height: 4px; flex-shrink: 0; cursor: pointer;
+	background: var(--rw-bg-sunken);
+}
+.rw-now-seek-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--rw-accent); }
+html.rw-reduced-motion .rw-now-seek-fill, html.rw-reduced-motion .rw-now-view-seek-fill { transition: none; }
+@media (prefers-reduced-motion: reduce) { .rw-now-seek-fill, .rw-now-view-seek-fill { transition: none; } }
+.rw-now-seek::after {
+	content: ""; position: absolute; top: 50%; width: 10px; height: 10px;
+	left: clamp(5px, var(--rw-mp-progress), calc(100% - 5px));
+	border: 2px solid var(--rw-accent); border-radius: 999px;
+	background: var(--rw-surface-raised); box-shadow: var(--rw-shadow-sm);
+	transform: translate(-50%, -50%);
+	opacity: 0; transition: opacity var(--rw-fast);
+}
+.rw-now-seek:hover::after { opacity: 1; }
+
+/* Balanced 3-column layout: track info left, transport centered, extras
+   (pop-out) right - so controls stay centered instead of shoved to the edge. */
+.rw-now-bar-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+	align-items: center; gap: 16px; height: 64px; padding: 0 18px;
+}
+
+.rw-now-bar-meta {
+	appearance: none; border: 0; background: transparent; cursor: pointer;
+	display: flex; align-items: center; gap: 12px; min-width: 0; justify-self: start; max-width: 100%;
+	padding: 6px; margin: 0 -6px; border-radius: var(--rw-radius-control);
+	text-align: left; color: inherit;
+	transition: background var(--rw-fast) var(--rw-ease);
+}
+.rw-now-bar-meta:hover { background: var(--rw-bg-sunken); }
+.rw-now-bar-meta:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: -2px; }
+
+.rw-now-art-shell {
+	position: relative; display: grid; place-items: center;
+	width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+	background: color-mix(in oklab, var(--rw-accent-soft) 88%, var(--rw-surface));
+	border: 1px solid var(--rw-border); color: var(--rw-accent-strong);
+	overflow: hidden;
+}
+.rw-now-art { grid-area: 1 / 1; width: 100%; height: 100%; object-fit: cover; visibility: hidden; }
+.rw-now-art-shell.has-art .rw-now-art { visibility: visible; }
+.rw-now-note { grid-area: 1 / 1; font-size: 18px; font-weight: 700; line-height: 1; }
+.rw-now-art-shell.has-art .rw-now-note { display: none; }
+
+.rw-now-text { min-width: 0; }
+.rw-now-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rw-now-artist { font-size: 11px; color: var(--rw-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
+
+.rw-now-controls { display: flex; align-items: center; gap: 8px; justify-self: center; }
+.rw-now-bar-extra { display: flex; align-items: center; gap: 8px; justify-self: end; }
+.rw-now-volume-icon { display: flex; color: var(--rw-text-muted); }
+.rw-now-volume {
+	width: clamp(76px, 10vw, 132px);
+	accent-color: var(--rw-accent);
+	cursor: pointer;
+}
+.rw-now-volume:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 3px; border-radius: 999px; }
+.rw-now-btn {
+	appearance: none; border: 1px solid var(--rw-border); background: var(--rw-surface);
+	color: var(--rw-text-soft); border-radius: 50%; width: 34px; height: 34px;
+	cursor: pointer; display: grid; place-items: center;
+	transition: background var(--rw-fast), border-color var(--rw-fast), color var(--rw-fast), transform var(--rw-fast);
+}
+.rw-now-btn:hover { border-color: var(--rw-border-strong); background: var(--rw-bg-sunken); color: var(--rw-text); transform: translateY(-1px); }
+.rw-now-btn:active { transform: translateY(0); }
+.rw-now-btn:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
+.rw-now-btn svg { display: block; width: 16px; height: 16px; pointer-events: none; }
+.rw-now-play {
+	width: 40px; height: 40px;
+	background: linear-gradient(160deg, var(--rw-accent), var(--rw-accent-strong));
+	color: var(--rw-on-accent); border-color: var(--rw-accent-strong);
+	box-shadow: var(--rw-shadow-sm);
+}
+.rw-now-play:hover { filter: brightness(1.06); transform: translateY(-1px); }
+
+/* Docked bar interactive seek: taller invisible hit area over the thin strip
+   so it's easy to click/scrub. */
+.rw-docked-bar .rw-now-seek { height: 6px; }
+.rw-docked-bar .rw-now-seek::after { width: 12px; height: 12px; }
+.rw-now-loop.on { color: var(--rw-accent-strong); border-color: var(--rw-accent); background: var(--rw-accent-soft); }
+.rw-now-popout { transform: none; }
+/* Reserve space so the fixed docked bar never covers content or the sidebar
+   foot (View toggle / command palette / queue buttons). NOTE: .rw-has-docked-bar
+   is toggled on #rwMusicPage ITSELF, so the page-body rule must chain the class
+   onto the ID (#rwMusicPage.rw-has-docked-bar) - a descendant combinator
+   (.rw-has-docked-bar #rwMusicPage) never matches, and a plain
+   .rw-has-docked-bar .rw-page-body loses on specificity to the base
+   #rwMusicPage .rw-page-body padding. */
+#rwMusicPage.rw-has-docked-bar { --rw-docked-clearance: 84px; }
+@media (min-width: 901px) {
+	#rwMusicPage .rw-music-sidebar { padding-bottom: calc(22px + var(--rw-docked-clearance)); }
+}
+/* Lift the queue drawer (absolute, bottom:26px by default) above the ~70px bar
+   so its bottom rows aren't hidden behind it when a full queue is open. */
+.rw-has-docked-bar #rwMusicQueueDrawer { bottom: calc(26px + var(--rw-docked-clearance)); }
+
+/* ── Now Playing view: seek bar + time labels ─────────────────────────── */
+.rw-now-view-main { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; }
+.rw-now-view-seek-row { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 16px; }
+.rw-now-view-time { font-size: 11px; color: var(--rw-text-muted); font-variant-numeric: tabular-nums; width: 34px; flex-shrink: 0; }
+.rw-now-view-time-dur { text-align: right; }
+.rw-now-view-seek {
+	--rw-mp-progress: 0%;
+	position: relative; flex: 1; height: 14px; cursor: pointer; touch-action: none;
+}
+.rw-now-view-seek::before {
+	content: ""; position: absolute; left: 0; right: 0; top: 5px; height: 5px;
+	border-radius: 999px; background: var(--rw-bg-sunken); border: 1px solid var(--rw-border);
+}
+.rw-now-view-seek-fill { position: absolute; left: 0; top: 5px; height: 5px; width: 0; border-radius: 999px; background: var(--rw-accent); }
+
+/* Primary action row (queue / add-to-playlist / lyrics / more) with labels. */
+.rw-now-view-action {
+	appearance: none; border: 0; background: transparent; cursor: pointer;
+	display: flex; flex-direction: column; align-items: center; gap: 5px;
+	color: var(--rw-text-muted); padding: 6px 10px; border-radius: var(--rw-radius-control);
+	transition: color var(--rw-fast) var(--rw-ease), background var(--rw-fast) var(--rw-ease);
+}
+.rw-now-view-action:hover { color: var(--rw-text); background: var(--rw-bg-sunken); }
+.rw-now-view-action.on { color: var(--rw-accent-strong); }
+.rw-now-view-action:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
+.rw-now-view-action-ico { display: flex; }
+.rw-now-view-action-ico svg { display: block; }
+.rw-now-view-action-label { font-size: 10.5px; font-weight: 600; }
+
+/* Two-column when lyrics are open (art/controls left, scrollable lyrics right);
+   the panel widens to accommodate. */
+.rw-now-view-panel.lyrics-open { width: min(860px, 100%); flex-direction: row; align-items: stretch; gap: 28px; }
+.rw-now-view-panel.lyrics-open .rw-now-view-main { flex: 0 0 300px; max-width: 300px; }
+.rw-now-view-panel.lyrics-open .rw-now-view-art-shell { width: 180px; height: 180px; margin: 8px 0 6px; }
+.rw-now-view-lyrics {
+	flex: 1; min-width: 0; align-self: stretch;
+	max-height: min(560px, 70vh); overflow-y: auto;
+	border-left: 1px solid var(--rw-border); padding: 12px 16px 28px 26px;
+	scroll-behavior: smooth;
+}
+.rw-now-view-lyrics-status { color: var(--rw-text-muted); font-size: 13px; padding: 20px 0; text-align: center; }
+.rw-now-view-lyrics-body { display: flex; flex-direction: column; justify-content: center; gap: 7px; min-height: 100%; }
+.rw-now-view-lyrics-line { margin: 0; font-size: 19px; line-height: 1.48; color: var(--rw-text-soft); text-align: center; opacity: 0.58; }
+.rw-now-view-lyrics-line:empty::after { content: "\00a0"; }
+.rw-now-view-lyrics-line[data-lyrics-index] {
+	cursor: pointer; border-radius: var(--rw-radius-control);
+	padding: 5px 10px; margin: 0 -10px;
+	transition: color var(--rw-med) var(--rw-ease), background var(--rw-fast) var(--rw-ease), opacity var(--rw-med) var(--rw-ease), transform var(--rw-med) var(--rw-ease);
+}
+.rw-now-view-lyrics-line[data-lyrics-index]:hover { background: var(--rw-bg-sunken); color: var(--rw-text); }
+.rw-now-view-lyrics-line.is-current { color: var(--rw-text); font-weight: 740; opacity: 1; transform: scale(1.025); }
+.rw-now-view-lyrics.is-manual-scroll { scroll-behavior: auto; }
+.rw-now-view-lyrics.is-manual-scroll .rw-now-view-lyrics-line.is-current { color: var(--rw-accent-strong); transform: none; }
+html.rw-reduced-motion .rw-now-view-lyrics-line { transition: none; }
+@media (prefers-reduced-motion: reduce) { .rw-now-view-lyrics-line { transition: none; } }
+@media (max-width: 720px) {
+	.rw-now-view-panel.lyrics-open { flex-direction: column; align-items: center; }
+	.rw-now-view-panel.lyrics-open .rw-now-view-main { flex: none; max-width: 100%; }
+	.rw-now-view-lyrics { border-left: 0; padding-left: 0; border-top: 1px solid var(--rw-border); padding-top: 16px; }
+}
+
+/* ── Keyboard shortcuts cheatsheet ("?") ─────────────────────────────────
+   Same overlay family as the command palette / Now Playing view: fixed
+   blurred backdrop, one centered raised panel. */
+.rw-shortcuts-view {
+	position: fixed; inset: 0; z-index: 1500;
+	display: grid; place-items: center;
+	padding: 42px 18px;
+	background: color-mix(in oklab, var(--rw-bg) 46%, transparent);
+	-webkit-backdrop-filter: blur(8px);
+	backdrop-filter: blur(8px);
+}
+.rw-shortcuts-view[hidden] { display: none; }
+.rw-shortcuts-panel {
+	width: min(420px, 100%);
+	display: flex; flex-direction: column; gap: 4px;
+	padding: 20px 22px 18px;
+	background: color-mix(in oklab, var(--rw-surface-raised) 96%, transparent);
+	border: 1px solid var(--rw-border-strong);
+	border-radius: var(--rw-radius-bubble);
+	box-shadow: var(--rw-shadow-lg);
+	animation: rwModalIn var(--rw-med) var(--rw-ease);
+}
+.rw-shortcuts-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.rw-shortcuts-head h3 { margin: 0; font-size: 16px; font-weight: 700; }
+.rw-shortcuts-list { display: flex; flex-direction: column; }
+.rw-shortcut-row {
+	display: flex; align-items: center; justify-content: space-between; gap: 16px;
+	padding: 9px 0;
+	border-top: 1px solid color-mix(in oklab, var(--rw-border) 70%, transparent);
+}
+.rw-shortcut-row:first-child { border-top: 0; }
+.rw-shortcut-keys { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.rw-shortcut-keys kbd {
+	font: 600 11.5px/1 var(--rw-mono);
+	color: var(--rw-text-soft);
+	background: var(--rw-bg-sunken);
+	border: 1px solid var(--rw-border);
+	border-bottom-width: 2px;
+	border-radius: 6px;
+	padding: 4px 7px;
+	min-width: 14px;
+	text-align: center;
+}
+.rw-shortcut-plus { font-size: 11px; color: var(--rw-text-muted); }
+.rw-shortcut-desc { font-size: 13px; color: var(--rw-text-soft); text-align: right; }
+html.rw-reduced-motion .rw-shortcuts-panel { animation: none; }
+@media (prefers-reduced-motion: reduce) { .rw-shortcuts-panel { animation: none; } }
+
+/* ── Insights tab ─────────────────────────────────────────────────────────
+   Local listening stats. One quiet summary strip (deliberately not a wall of
+   hero-number cards), a single-series plays-per-day bar chart in the accent
+   hue, then ranked heavy-rotation lists with leading rank numbers. */
+.rw-insights-scroll {
+	flex: 0 0 auto; min-height: auto; overflow: visible;
+	display: flex; flex-direction: column; gap: 10px;
+	padding: 2px 2px 16px 0;
+}
+.rw-insights-strip {
+	display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+	font-size: 14px; color: var(--rw-text-soft);
+	padding: 4px 2px 2px;
+}
+.rw-insights-strip-item strong { font-size: 17px; font-weight: 720; color: var(--rw-text); font-variant-numeric: tabular-nums; }
+.rw-insights-strip-sep { color: var(--rw-text-muted); }
+.rw-insights-chart-card { padding: 16px 18px 10px; }
+.rw-insights-chart {
+	display: flex; align-items: flex-end; gap: 4px;
+	height: 134px;
+	/* Headroom so the peak bar's direct label sits inside the card, never
+	   clipped against its top edge. */
+	padding-top: 16px;
+	box-sizing: border-box;
+}
+.rw-insights-col {
+	position: relative;
+	flex: 1; min-width: 0; height: 100%;
+	display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px;
+	cursor: default;
+}
+.rw-insights-bar {
+	width: 100%; max-width: 26px;
+	border-radius: 4px 4px 0 0;
+	background: var(--rw-accent);
+	transition: background var(--rw-fast) var(--rw-ease);
+	transform-origin: bottom;
+	animation: rwBarGrow 0.45s var(--rw-ease) backwards;
+	animation-delay: calc(var(--rw-bar-i, 0) * 14ms);
+}
+@keyframes rwBarGrow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.rw-insights-bar.zero { background: var(--rw-border); }
+.rw-insights-col:hover .rw-insights-bar { background: var(--rw-accent-strong); }
+.rw-insights-bar-label {
+	position: absolute; top: -4px; left: 50%; transform: translateX(-50%);
+	font: 650 11px/1 var(--rw-font); color: var(--rw-text-soft);
+	font-variant-numeric: tabular-nums;
+	opacity: 0;
+}
+.rw-insights-bar-label.peak, .rw-insights-col:hover .rw-insights-bar-label { opacity: 1; }
+.rw-insights-bar-label.zero { color: var(--rw-text-muted); }
+.rw-insights-day {
+	height: 12px;
+	font: 600 10px/1 var(--rw-font); color: var(--rw-text-muted);
+	white-space: nowrap;
+}
+.rw-insights-ranked { display: flex; flex-direction: column; gap: 10px; }
+/* #rwMusicBody remains the only page scroll boundary. */
+.rw-insights-scroll .rw-track-list { flex: 0 0 auto; overflow: visible; }
+
+/* Midnight drops decorative outlines while keyboard focus and errors retain
+   their explicit accent/danger treatments. */
+.rw-theme-midnight #rwMusicPage .rw-bubble,
+.rw-theme-midnight #rwMusicPage .rw-music-sidebar,
+.rw-theme-midnight #rwMusicPage .rw-page-head,
+.rw-theme-midnight #rwMusicPage .rw-browser-col,
+.rw-theme-midnight #rwMusicPage .rw-settings-row,
+.rw-theme-midnight #rwMusicPage .rw-now-bar,
+.rw-theme-midnight #rwMusicPage .rw-now-art-shell,
+.rw-theme-midnight #rwMusicPage .rw-now-view-panel,
+.rw-theme-midnight #rwMusicPage .rw-command-panel,
+.rw-theme-midnight #rwMusicPage .rw-shortcuts-panel,
+.rw-theme-midnight #rwMusicPage .rw-queue-drawer { border-color: transparent; }
+.rw-theme-midnight .rw-modal { border-color: transparent; }
+.rw-theme-midnight #rwMusicPage :focus-visible { outline-color: var(--rw-accent); }
+.rw-theme-midnight #rwMusicPage .error,
+.rw-theme-midnight #rwMusicPage [data-kind="playback-error"] { border-color: var(--rw-danger); }
+.rw-insights-rank {
+	width: 22px; flex-shrink: 0; text-align: center;
+	font: 720 14px/1 var(--rw-font); color: var(--rw-text-muted);
+	font-variant-numeric: tabular-nums;
+}
+.rw-insights-rank-row:nth-child(-n+3) .rw-insights-rank { color: var(--rw-accent-strong); }
+html.rw-reduced-motion .rw-insights-bar { animation: none; }
+@media (prefers-reduced-motion: reduce) { .rw-insights-bar { animation: none; } }
+
+/* ── Modal / dialog (replaces native alert/confirm/prompt) ───────────────
+   Appended straight to document.body (not nested under .rainette-page), so
+   these rules are deliberately unscoped and self-contained. */
+.rw-modal-backdrop {
+	position: fixed; inset: 0; z-index: 2000;
+	display: flex; align-items: center; justify-content: center;
+	padding: 24px;
+	background: color-mix(in oklab, var(--rw-bg) 55%, transparent);
+	-webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+	animation: rwModalBackdropIn var(--rw-fast) var(--rw-ease);
+}
+@keyframes rwModalBackdropIn { from { opacity: 0; } to { opacity: 1; } }
+.rw-modal {
+	width: min(380px, 100%);
+	max-height: calc(100vh - 48px);
+	display: flex; flex-direction: column;
+	background: color-mix(in oklab, var(--rw-surface-raised) 96%, transparent);
+	-webkit-backdrop-filter: blur(20px) saturate(1.3);
+	backdrop-filter: blur(20px) saturate(1.3);
+	border: 1px solid var(--rw-border-strong);
+	border-radius: var(--rw-radius-bubble);
+	box-shadow: var(--rw-shadow-lg);
+	color: var(--rw-text);
+	font-family: var(--rw-font);
+	overflow: hidden;
+	animation: rwModalIn var(--rw-med) var(--rw-ease);
+}
+@keyframes rwModalIn { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
+.rw-modal-head { font: 700 16px/1.3 var(--rw-font); padding: 20px 22px 4px; }
+.rw-modal-body { padding: 12px 22px 4px; overflow-y: auto; }
+.rw-modal-message { font: 400 13.5px/1.55 var(--rw-font); color: var(--rw-text-soft); margin: 0; }
+.rw-modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 18px 22px 22px; }
+/* Picker list — same look as the .rh-selectx dropdown's item list, but as a
+   plain always-visible list inside the modal body (no collapse affordance
+   needed here). */
+.rw-modal-picker-list { display: flex; flex-direction: column; gap: 2px; max-height: 280px; overflow-y: auto; }
+.rw-modal-picker-item {
+	appearance: none; cursor: pointer; border: 0; text-align: left; width: 100%;
+	font: 500 13px/1.3 var(--rw-font);
+	color: var(--rw-text);
+	background: transparent;
+	border-radius: var(--rw-radius-control);
+	padding: 10px 12px;
+	transition: background var(--rw-fast) var(--rw-ease);
+}
+.rw-modal-picker-item:hover { background: var(--rw-bg-sunken); }
+.rw-modal-action-list { display: flex; flex-direction: column; gap: 4px; }
+.rw-modal-action-item {
+	appearance: none;
+	border: 0;
+	border-radius: var(--rw-radius-control);
+	background: transparent;
+	color: var(--rw-text);
+	cursor: pointer;
+	display: flex;
+	justify-content: space-between;
+	gap: 14px;
+	width: 100%;
+	padding: 10px 12px;
+	text-align: left;
+	font: 600 13px/1.25 var(--rw-font);
+}
+.rw-modal-action-item span {
+	color: var(--rw-text-muted);
+	font-size: 12px;
+	font-weight: 500;
+}
+.rw-modal-action-item:hover { background: var(--rw-bg-sunken); }
+.rw-modal-action-item.danger { color: var(--rw-danger); }
+.rw-smart-form { display: flex; flex-direction: column; gap: 12px; }
+.rw-smart-row { display: grid; grid-template-columns: 1fr minmax(92px, 0.62fr); gap: 8px; }
+
 /* ── Rainette AI orb (Home) ─────────────────────────────────────────────── */
 /* The assistant's living presence: a luminous liquid-glass sphere with a slow
    orbital ring pair, internal energy that drifts, a crisp specular highlight,
@@ -944,7 +2111,125 @@ body.rw-page-open #infoPanel {
 @media (prefers-reduced-motion: reduce) {
 	.rainette-page.active { animation: none; }
 	.rw-btn, .rw-switch .rw-track, .rw-switch .rw-track::after, .rw-chip, .rw-mem-item,
-	.rw-music-player, .rw-mp-toast, .rw-track-card { transition: none; }
+	.rw-music-player, .rw-mp-toast, .rw-track-card, .rw-queue-row.flip-move,
+	.rw-now-btn, .rw-now-bar-meta, .rw-now-seek::after, .rw-now-view-btn { transition: none; }
 	#rwOrb .orb-halo, #rwOrb .orb-field, #rwOrb .orb-core, #rwOrb .orb-lobe, #rwOrb .orb-ringset, #rwOrb .orb-ring, #rwOrb .orb-ring.pinging { animation: none; }
 	.rw-trace-row, .rw-thinking span, .rw-msg-enter .rw-msg-body { animation: none; }
+	.rw-modal-backdrop, .rw-modal { animation: none; }
+	.rw-queue-drawer, .rw-empty { animation: none; }
+	.rw-now-view-btn.pulse, #rwMusicBody.rw-page-enter, .rw-docked-bar.rw-docked-enter { animation: none; }
+	.rw-track-card:hover, .rw-btn:hover, .rw-btn-ghost:hover, .rw-icon-btn:hover,
+	.rw-now-btn:hover, .rw-now-play:hover, .rw-now-view-btn:hover { transform: none; }
+}
+
+/* Same rules as above, opt-in via Settings → Behavior → Reduce motion,
+   independent of the OS-level prefers-reduced-motion setting. */
+html.rw-reduced-motion .rainette-page.active { animation: none; }
+html.rw-reduced-motion .rw-btn, html.rw-reduced-motion .rw-switch .rw-track, html.rw-reduced-motion .rw-switch .rw-track::after,
+html.rw-reduced-motion .rw-chip, html.rw-reduced-motion .rw-mem-item,
+html.rw-reduced-motion .rw-music-player, html.rw-reduced-motion .rw-mp-toast, html.rw-reduced-motion .rw-track-card,
+html.rw-reduced-motion .rw-queue-row.flip-move,
+html.rw-reduced-motion .rw-now-btn, html.rw-reduced-motion .rw-now-bar-meta, html.rw-reduced-motion .rw-now-seek::after,
+html.rw-reduced-motion .rw-now-view-btn { transition: none; }
+html.rw-reduced-motion .rw-trace-row, html.rw-reduced-motion .rw-thinking span, html.rw-reduced-motion .rw-msg-enter .rw-msg-body { animation: none; }
+html.rw-reduced-motion .rw-modal-backdrop, html.rw-reduced-motion .rw-modal { animation: none; }
+html.rw-reduced-motion .rw-queue-drawer, html.rw-reduced-motion .rw-empty { animation: none; }
+html.rw-reduced-motion .rw-now-view-btn.pulse, html.rw-reduced-motion #rwMusicBody.rw-page-enter,
+html.rw-reduced-motion .rw-docked-bar.rw-docked-enter { animation: none; }
+html.rw-reduced-motion .rw-track-card:hover, html.rw-reduced-motion .rw-btn:hover,
+html.rw-reduced-motion .rw-btn-ghost:hover, html.rw-reduced-motion .rw-icon-btn:hover,
+html.rw-reduced-motion .rw-now-btn:hover, html.rw-reduced-motion .rw-now-view-btn:hover { transform: none; }
+
+/* ── Android download and desktop pairing ─────────────────────────────── */
+.rw-mobile-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 16px;
+	padding: 2px 2px 24px 0;
+}
+.rw-mobile-card {
+	min-width: 0;
+	padding: 20px;
+}
+.rw-mobile-card h2 { margin: 7px 0 7px; font-size: 18px; letter-spacing: -0.2px; }
+.rw-mobile-card > p,
+.rw-mobile-pair-head p { margin: 0 0 16px; color: var(--rw-text-soft); font-size: 13px; line-height: 1.55; }
+.rw-mobile-step-title {
+	color: var(--rw-accent);
+	font-size: 11px;
+	font-weight: 750;
+	letter-spacing: 0.08em;
+}
+.rw-mobile-download { display: inline-flex; text-decoration: none; }
+.rw-mobile-note { margin: 13px 0 0 !important; font-size: 12px !important; }
+.rw-mobile-note[data-published="false"] { color: var(--rw-warn, #a66b13); }
+.rw-mobile-card-pair { grid-column: 1 / -1; }
+.rw-mobile-pair-head {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 18px;
+}
+.rw-mobile-pair-head h2 { margin-top: 7px; }
+.rw-mobile-pair-head p { margin-bottom: 0; }
+.rw-mobile-pair-layout {
+	display: grid;
+	grid-template-columns: minmax(180px, 0.7fr) minmax(280px, 1.3fr);
+	gap: 22px;
+	align-items: start;
+	margin-top: 16px;
+}
+.rw-mobile-qr-slot {
+	display: grid;
+	place-items: center;
+	min-height: 148px;
+	padding: 12px;
+	border: 1px dashed var(--rw-border);
+	border-radius: 14px;
+	background: color-mix(in oklab, var(--rw-surface) 82%, transparent);
+}
+.rw-mobile-qr { display: block; width: 148px; height: 148px; border-radius: 8px; }
+.rw-mobile-qr-placeholder {
+	max-width: 220px;
+	color: var(--rw-text-muted);
+	font-size: 12px;
+	line-height: 1.45;
+	text-align: center;
+}
+.rw-mobile-expiry { min-height: 18px; margin: 9px 0 0; color: var(--rw-text-soft); font-size: 12px; text-align: center; }
+.rw-mobile-expiry[data-expired="true"] { color: var(--rw-danger); }
+.rw-mobile-native-fallback {
+	margin: 12px 0 0 !important;
+	padding: 10px 12px;
+	border-radius: 10px;
+	background: var(--rw-warn-soft, rgba(180, 120, 20, 0.12));
+	color: var(--rw-warn, #a66b13) !important;
+}
+.rw-mobile-native-fallback[hidden] { display: none; }
+.rw-mobile-status { min-height: 19px; margin: 10px 0 0; color: var(--rw-text-soft); font-size: 12px; line-height: 1.45; }
+.rw-mobile-status[data-tone="success"] { color: var(--rw-success, #267a4c); }
+.rw-mobile-status[data-tone="error"] { color: var(--rw-danger); }
+.rw-mobile-management h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+.rw-mobile-management h3:not(:first-child) { margin-top: 18px; }
+.rw-mobile-device {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 11px 0;
+	border-bottom: 1px solid var(--rw-border);
+}
+.rw-mobile-device-copy { display: flex; flex-direction: column; min-width: 0; }
+.rw-mobile-device-copy strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.rw-mobile-device-copy span { margin-top: 2px; color: var(--rw-text-muted); font-size: 11.5px; }
+.rw-mobile-device-actions { display: flex; flex: 0 0 auto; gap: 7px; }
+.rw-mobile-device-actions .rw-btn { min-height: 32px; padding: 6px 10px; font-size: 12px; }
+.rw-mobile-empty { margin: 0; color: var(--rw-text-muted); font-size: 12px; }
+
+@media (max-width: 620px) {
+	.rw-mobile-grid { grid-template-columns: 1fr; }
+	.rw-mobile-card-pair { grid-column: auto; }
+	.rw-mobile-pair-head { align-items: stretch; flex-direction: column; }
+	.rw-mobile-pair-layout { grid-template-columns: 1fr; }
+	.rw-mobile-device { align-items: flex-start; flex-direction: column; }
 }
