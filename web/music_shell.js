@@ -21,16 +21,28 @@ export const app = {
 	musicQueue: { tracks: [], index: -1, playing: false, loop: false, duration: 0 },
 };
 
+const RAINETTE_TOKEN = new URLSearchParams(location.search).get('token') || '';
+
+function _nativeTransport() {
+	return window.RainetteNativeTransport?.isNative ? window.RainetteNativeTransport : null;
+}
+
+export function rainetteAuthHeaders() {
+	return RAINETTE_TOKEN ? { 'X-Rainette-Token': RAINETTE_TOKEN } : {};
+}
+
 // The server serves both the page and the /ws endpoint, so derive the socket
 // URL from the current origin rather than hardcoding a port.
 function _wsUrl() {
 	const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-	return `${proto}//${location.host}/ws`;
+	const token = encodeURIComponent(RAINETTE_TOKEN);
+	return `${proto}//${location.host}/ws?token=${token}`;
 }
 
 // ── WebSocket transport ──────────────────────────────────────────────────────
 
 export function ensureHelperWS() {
+	if (_nativeTransport()) return null;
 	if (app.helperWS && (app.helperWS.readyState === WebSocket.OPEN || app.helperWS.readyState === WebSocket.CONNECTING)) {
 		return app.helperWS;
 	}
@@ -53,6 +65,15 @@ export function ensureHelperWS() {
 }
 
 export function sendHelper(payload) {
+	const native = _nativeTransport();
+	if (native) {
+		Promise.resolve(native.request(payload)).then(response => {
+			if (response) handleHelperMessage(response);
+		}).catch(error => {
+			handleHelperMessage({ id: payload.id, ok: false, msg: error?.message || 'native companion request failed' });
+		});
+		return;
+	}
 	const ws = ensureHelperWS();
 	const json = JSON.stringify(payload);
 	if (ws.readyState === WebSocket.OPEN) ws.send(json);
@@ -60,6 +81,10 @@ export function sendHelper(payload) {
 		app.helperQueue.push(json);
 		if (app.helperQueue.length > 60) app.helperQueue.shift();
 	}
+}
+
+if (typeof window !== 'undefined') {
+	window.addEventListener('rainette:native-message', event => handleHelperMessage(event.detail));
 }
 
 export function helperRequest(type, payload = {}, timeoutMs = 5000) {
@@ -126,9 +151,9 @@ function _mountWhenReady(page) {
 // calls become socket messages the player window acts on. rainette_music.js keeps
 // calling window.RainetteMusic.* unchanged; this shim stands in for the engine.
 
-if (typeof window !== 'undefined' && window.RW_REMOTE) {
+if (typeof window !== 'undefined' && window.RW_REMOTE && window.RW_MINIPLAYER_ENABLED) {
 	let _lastPlay = null;
-	const _showPlayer = () => { try { window.pywebview && window.pywebview.api && window.pywebview.api.show_player(); } catch { /* not in pywebview */ } };
+	const _showPlayer = () => { try { window.pywebview && window.pywebview.api && window.pywebview.api.reveal_player(); } catch { /* not in pywebview */ } };
 	const _queueControl = payload => sendHelper({ type: 'music_remote_control', ...payload });
 
 	window.RainetteMusic = {
@@ -141,8 +166,23 @@ if (typeof window !== 'undefined' && window.RW_REMOTE) {
 		toggle() { sendHelper({ type: 'music_remote_control', action: 'toggle' }); },
 		next() { sendHelper({ type: 'music_remote_control', action: 'next' }); },
 		prev() { sendHelper({ type: 'music_remote_control', action: 'prev' }); },
+		toggleLoop() { sendHelper({ type: 'music_remote_control', action: 'loop' }); },
+		isLooping() { return !!app.musicQueue?.loop; },
+		seek(ratio) { _queueControl({ action: 'seek', ratio }); },
+		// Volume lives in the floating player window; the shared localStorage
+		// key (same origin) keeps the two windows' idea of it in sync, and the
+		// remote command applies it live.
+		setVolume(v) {
+			const vol = Math.max(0, Math.min(1.5, Number(v) || 0));
+			try { localStorage.setItem('rw.mp.volume', String(vol)); } catch { /* best effort */ }
+			_queueControl({ action: 'set_volume', value: vol });
+		},
+		getVolume() {
+			try { const v = Number(localStorage.getItem('rw.mp.volume')); return Number.isFinite(v) && v >= 0 ? v : 1; }
+			catch { return 1; }
+		},
 		current() { return app.musicNowPlaying || null; },
-		isPlaying() { return false; },
+		isPlaying() { return !!app.musicQueue?.playing; },
 		queueState() { return app.musicQueue || { tracks: [], index: -1 }; },
 		requestQueueState() { _queueControl({ action: 'queue_request_state' }); },
 		queueAddNext(track) { _queueControl({ action: 'queue_add_next', track }); },

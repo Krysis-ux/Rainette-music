@@ -13,20 +13,40 @@
  */
 
 import { sendHelper, helperRequest, app } from './music_shell.js';
+import { iconMarkup } from './rainette_icons.js';
 
 const POS_KEY = 'rainette.musicPlayerPos';
 const LOOP_KEY = 'rainette.musicLoop';
+// Same key miniplayer.js uses (LS.vol) - Settings -> Playback -> "Default
+// volume" already wrote to this key but nothing here ever read it back.
+const VOLUME_KEY = 'rw.mp.volume';
 const LOCAL_STREAM_TTL_MS = 50 * 60 * 1000;
 const PREFETCH_AHEAD = 3;
+
+// In remote mode this module runs headless: it's the audio+queue engine (when
+// the floating miniplayer popout is off) but never shows its own UI - the
+// main-window docked bar in rainette_music.js is the single transport surface,
+// driven by the music_now_playing / music_progress broadcasts this engine
+// emits. The floating liquid-glass bubble below is only for the plain-browser
+// (non-remote) fallback path.
+const HEADLESS = typeof window !== 'undefined' && !!window.RW_REMOTE;
 
 // Guarded storage access so the module imports cleanly in a DOM-free test env.
 function _lsGet(key) { try { return localStorage.getItem(key); } catch { return null; } }
 function _lsSet(key, val) { try { localStorage.setItem(key, val); } catch { /* best effort */ } }
 
+function _loadVolume() {
+	const raw = _lsGet(VOLUME_KEY);
+	if (raw == null || raw === '') return 1;
+	const v = Number(raw);
+	return Number.isFinite(v) && v >= 0 ? Math.max(0, Math.min(1.5, v)) : 1;
+}
+
 const state = {
 	queue: [],          // [{ source_id, title, artist, thumbnail_url, ... }]
 	index: -1,
 	loop: _lsGet(LOOP_KEY) === '1',
+	volume: _loadVolume(),
 	playing: false,
 	resolvingId: null,  // source_id currently being resolved (stream fetch in flight)
 	expanded: false,
@@ -42,6 +62,178 @@ const preResolveInFlight = new Set();
 
 function _trackKey(track) {
 	return `${track?.source || 'youtube'}:${track?.source_id || ''}`;
+}
+
+function _publicTrack(track) {
+	if (!track || typeof track !== 'object') return null;
+	const clean = {};
+	for (const [key, value] of Object.entries(track)) {
+		if (!key.startsWith('_')) clean[key] = value;
+	}
+	return clean;
+}
+
+function _validTracks(tracks) {
+	return (tracks || []).filter(t => t && t.source_id);
+}
+
+function _queueDuration() {
+	return state.queue.reduce((sum, track) => {
+		const duration = Number(track?.duration_s || 0);
+		return sum + (Number.isFinite(duration) && duration > 0 ? duration : 0);
+	}, 0);
+}
+
+// The one place that tells other tabs + the main page's error banner /
+// Queue tab what's playing. Ported to mirror miniplayer.js's _broadcast()
+// exactly (including the queue/index fields, which this bubble never used to
+// send - the Queue tab silently never worked when this engine was active).
+function _broadcast(mode, playing) {
+	const track = state.queue[state.index] || null;
+	const cleanQueue = state.queue.map(_publicTrack).filter(Boolean);
+	sendHelper({
+		type: 'music_now_playing_set',
+		track: _publicTrack(track),
+		state: mode || (state.playing ? 'playing' : 'paused'),
+		playing: !!playing,
+		loop: state.loop,
+		current_time: audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+		duration: audio && Number.isFinite(audio.duration) ? audio.duration : (track?.duration_s || 0),
+		queue: cleanQueue,
+		index: state.index,
+		queue_count: cleanQueue.length,
+		queue_duration: _queueDuration(),
+	});
+}
+
+// Lightweight position-only tick (throttled) so the main-window docked bar and
+// Now Playing view show a live progress bar without re-sending the whole queue.
+let _lastProgressSent = 0;
+function _broadcastProgress(force = false) {
+	if (!audio) return;
+	const now = Date.now();
+	if (!force && now - _lastProgressSent < 500) return;
+	_lastProgressSent = now;
+	const track = state.queue[state.index] || null;
+	sendHelper({
+		type: 'music_progress',
+		current_time: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+		duration: Number.isFinite(audio.duration) ? audio.duration : (track?.duration_s || 0),
+		playing: state.playing,
+		source_id: track?.source_id || '',
+	});
+}
+
+function _seekRatio(ratio) {
+	if (!audio || !audio.duration) return;
+	audio.currentTime = Math.max(0, Math.min(1, Number(ratio) || 0)) * audio.duration;
+	_broadcastProgress(true);
+}
+
+function _stopEmptyQueue() {
+	state.queue = [];
+	state.index = -1;
+	state.resolvingId = null;
+	state.playing = false;
+	if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load(); }
+	_renderPlayState();
+	_broadcast('paused', false);
+}
+
+// ── Queue manipulation (ported from miniplayer.js so the Queue tab and drag-
+// reorder work identically whether the native popout or this docked engine
+// is the active playback surface) ─────────────────────────────────────────
+
+function queueAddNext(track) {
+	const item = _validTracks([track])[0];
+	if (!item) return;
+	if (!state.queue.length) { RainetteMusic.playQueue([item], 0); return; }
+	state.queue.splice(_clamp(state.index + 1, 0, state.queue.length), 0, item);
+	_broadcast(undefined, state.playing);
+}
+
+function queueAddEnd(track) {
+	const item = _validTracks([track])[0];
+	if (!item) return;
+	if (!state.queue.length) { RainetteMusic.playQueue([item], 0); return; }
+	state.queue.push(item);
+	_broadcast(undefined, state.playing);
+}
+
+function queueMove(from, to) {
+	from = Number(from); to = Number(to);
+	if (!Number.isInteger(from) || !Number.isInteger(to) || from === to) return;
+	if (from < 0 || from >= state.queue.length) return;
+	to = _clamp(to, 0, state.queue.length - 1);
+	const current = state.queue[state.index] || null;
+	const [item] = state.queue.splice(from, 1);
+	state.queue.splice(to, 0, item);
+	state.index = current ? state.queue.indexOf(current) : -1;
+	_broadcast(undefined, state.playing);
+}
+
+function queueRemove(index) {
+	index = Number(index);
+	if (!Number.isInteger(index) || index < 0 || index >= state.queue.length) return;
+	const removingCurrent = index === state.index;
+	state.queue.splice(index, 1);
+	if (!state.queue.length) { _stopEmptyQueue(); return; }
+	if (removingCurrent) {
+		state.index = _clamp(index, 0, state.queue.length - 1);
+		_loadCurrent();
+	} else {
+		if (index < state.index) state.index--;
+		_broadcast(undefined, state.playing);
+	}
+}
+
+function queuePlayIndex(index) {
+	index = Number(index);
+	if (!Number.isInteger(index) || index < 0 || index >= state.queue.length) return;
+	if (index === state.index) { _togglePlay(); return; }
+	state.index = index;
+	_loadCurrent();
+}
+
+function queueShuffle() {
+	if (!state.queue.length) return;
+	const keepCount = state.index >= 0 ? state.index + 1 : 0;
+	const head = state.queue.slice(0, keepCount);
+	const tail = state.queue.slice(keepCount);
+	for (let i = tail.length - 1; i > 0; i--) {
+		const j = Math.floor(Math.random() * (i + 1));
+		[tail[i], tail[j]] = [tail[j], tail[i]];
+	}
+	state.queue = head.concat(tail);
+	_broadcast(undefined, state.playing);
+}
+
+function queueDedupe() {
+	if (!state.queue.length) return;
+	const current = state.queue[state.index] || null;
+	const currentKey = current ? _trackKey(current) : '';
+	const seen = new Set();
+	const next = [];
+	for (let i = 0; i < state.queue.length; i++) {
+		const track = state.queue[i];
+		const key = _trackKey(track);
+		if (!key.endsWith(':')) {
+			if (track === current) { next.push(track); seen.add(key); }
+			else if (key === currentKey) continue;
+			else if (!seen.has(key)) { next.push(track); seen.add(key); }
+		}
+	}
+	state.queue = next;
+	state.index = current ? state.queue.indexOf(current) : -1;
+	_broadcast(undefined, state.playing);
+}
+
+function queueClearUpNext() {
+	const current = state.queue[state.index] || null;
+	if (!current) { _stopEmptyQueue(); return; }
+	state.queue = [current];
+	state.index = 0;
+	_broadcast(undefined, state.playing);
 }
 
 function _streamFresh(track) {
@@ -96,6 +288,20 @@ export const RainetteMusic = {
 	prev() { _prev(); },
 	current() { return state.queue[state.index] || null; },
 	isPlaying() { return state.playing; },
+	requestQueueState() { _broadcast(undefined, state.playing); },
+	toggleLoop() { _toggleLoop(); },
+	isLooping() { return state.loop; },
+	setVolume(v) { applyVolume(v); },
+	getVolume() { return state.volume; },
+	seek(ratio) { _seekRatio(ratio); },
+	queueAddNext(track) { queueAddNext(track); },
+	queueAddEnd(track) { queueAddEnd(track); },
+	queueMove(from, to) { queueMove(from, to); },
+	queueRemove(index) { queueRemove(index); },
+	queuePlayIndex(index) { queuePlayIndex(index); },
+	queueShuffle() { queueShuffle(); },
+	queueDedupe() { queueDedupe(); },
+	queueClearUpNext() { queueClearUpNext(); },
 };
 
 // ── Track loading (resolve stream URL, then play) ─────────────────────────────
@@ -109,11 +315,13 @@ async function _loadCurrent() {
 	_setSeekProgress(0);
 	state.resolvingId = track.source_id;
 	// Broadcast now-playing so other tabs + the page reflect it.
-	sendHelper({ type: 'music_now_playing_set', track, state: 'loading', playing: false, loop: state.loop, duration: track.duration_s || 0 });
+	_broadcast('loading', false);
 	_syncDesktopOverlay('loading', true);
 	if (_streamFresh(track)) {
 		audio.src = track._url;
-		audio.play().catch(() => {});
+		audio.play().catch(() => {
+			if (state.queue[state.index] === track) { _renderMeta(track, 'error'); _syncDesktopOverlay('error', true); _broadcast('error', false); }
+		});
 		return;
 	}
 
@@ -124,6 +332,7 @@ async function _loadCurrent() {
 		if (!res || res.ok === false || !res.url) {
 			_renderMeta(track, 'error');
 			_syncDesktopOverlay('error', true);
+			_broadcast('error', false);
 			return;
 		}
 		audio.src = res.url;
@@ -133,6 +342,7 @@ async function _loadCurrent() {
 		if (state.resolvingId === track.source_id) {
 			_renderMeta(track, 'error');
 			_syncDesktopOverlay('error', true);
+			_broadcast('error', false);
 		}
 	}
 }
@@ -156,6 +366,7 @@ async function _reResolveAndResume() {
 	} catch { /* fall through */ }
 	_renderMeta(track, 'error');
 	_syncDesktopOverlay('error', true);
+	_broadcast('error', false);
 	return false;
 }
 
@@ -163,7 +374,12 @@ async function _reResolveAndResume() {
 
 function _togglePlay() {
 	if (!audio || !state.queue.length) return;
-	if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+	if (audio.paused) {
+		audio.play().catch(() => {
+			const track = state.queue[state.index];
+			if (track) { _renderMeta(track, 'error'); _syncDesktopOverlay('error', true); _broadcast('error', false); }
+		});
+	} else audio.pause();
 }
 
 function _next() {
@@ -219,16 +435,7 @@ function _setDesktopOverlayVisible(on) {
 }
 
 function _icon(name) {
-	const icons = {
-		prev: '<path d="M6 5v14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18 5.5v13a.6.6 0 0 1-.94.49L8 12.5a.6.6 0 0 1 0-.98l9.06-6.5a.6.6 0 0 1 .94.48z" fill="currentColor" stroke="none"/>',
-		next: '<path d="M18 5v14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M6 5.5v13a.6.6 0 0 0 .94.49L16 12.5a.6.6 0 0 0 0-.98L6.94 5.02a.6.6 0 0 0-.94.48z" fill="currentColor" stroke="none"/>',
-		play: '<path d="M8 5v14l11-7-11-7z" fill="currentColor" stroke="none"/>',
-		pause: '<path d="M7 5h4v14H7z" fill="currentColor" stroke="none"/><path d="M13 5h4v14h-4z" fill="currentColor" stroke="none"/>',
-		loop: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>',
-		chevronDown: '<path d="M6 9l6 6 6-6"/>',
-		chevronUp: '<path d="M6 15l6-6 6 6"/>',
-	};
-	return `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icons[name] || ''}</svg>`;
+	return iconMarkup(name, 16);
 }
 
 function _setSeekProgress(ratio) {
@@ -249,19 +456,46 @@ function _seekToClientX(clientX) {
 
 // ── UI ─────────────────────────────────────────────────────────────────────
 
+function _wireSeek(seekEl) {
+	let pointerId = null;
+	seekEl.addEventListener('pointerdown', e => {
+		if (!_seekToClientX(e.clientX)) return;
+		pointerId = e.pointerId;
+		seekEl.setPointerCapture?.(e.pointerId);
+		e.preventDefault();
+	});
+	seekEl.addEventListener('pointermove', e => { if (pointerId === e.pointerId) _seekToClientX(e.clientX); });
+	const end = e => { if (pointerId === e.pointerId) { seekEl.releasePointerCapture?.(e.pointerId); pointerId = null; } };
+	seekEl.addEventListener('pointerup', end);
+	seekEl.addEventListener('pointercancel', end);
+}
+
 function _ensureUI() {
-	if (root) return;
+	// Headless (remote) mode: no own UI - the main-window docked bar renders
+	// from this engine's broadcasts instead. The render helpers below all guard
+	// on els.<x> being present, so they no-op safely with an empty els.
+	if (HEADLESS || root) return;
 	const mount = document.getElementById('rwMusicPlayer') || document.body;
 	root = document.createElement('div');
-	root.className = 'rw-music-player';
 	root.style.display = 'none';
-	root.innerHTML = `
+	_buildLegacyBubbleUI(root);
+	mount.appendChild(root);
+}
+
+// Floating liquid-glass bubble - only the plain-browser (non-remote) fallback.
+function _buildLegacyBubbleUI(bubbleRoot) {
+	bubbleRoot.className = 'rw-music-player';
+	bubbleRoot.innerHTML = `
 		<div class="rw-mp-grip" title="Drag to move">
-			<img class="rw-mp-art" alt="">
+			<div class="rw-mp-art-shell">
+				<img class="rw-mp-art" alt="">
+				<span class="rw-mp-note" aria-hidden="true">&#9835;</span>
+			</div>
 			<div class="rw-mp-meta">
 				<div class="rw-mp-title">—</div>
 				<div class="rw-mp-artist"></div>
 			</div>
+			<button class="rw-mp-play-pill" type="button" data-act="toggle" title="Play/Pause" aria-label="Play or pause">${_icon('play')}</button>
 			<button class="rw-mp-expand" type="button" title="Expand" aria-label="Expand player">${_icon('chevronDown')}</button>
 		</div>
 		<div class="rw-mp-controls">
@@ -271,21 +505,22 @@ function _ensureUI() {
 			<button class="rw-mp-btn" data-act="loop" title="Loop" aria-label="Toggle loop">${_icon('loop')}</button>
 			<div class="rw-mp-seek"><div class="rw-mp-seek-fill"></div></div>
 		</div>`;
-	mount.appendChild(root);
 
 	els = {
-		grip: root.querySelector('.rw-mp-grip'),
-		art: root.querySelector('.rw-mp-art'),
-		title: root.querySelector('.rw-mp-title'),
-		artist: root.querySelector('.rw-mp-artist'),
-		expand: root.querySelector('.rw-mp-expand'),
-		play: root.querySelector('.rw-mp-play'),
-		loop: root.querySelector('[data-act="loop"]'),
-		seekFill: root.querySelector('.rw-mp-seek-fill'),
-		seek: root.querySelector('.rw-mp-seek'),
+		grip: bubbleRoot.querySelector('.rw-mp-grip'),
+		artShell: bubbleRoot.querySelector('.rw-mp-art-shell'),
+		art: bubbleRoot.querySelector('.rw-mp-art'),
+		title: bubbleRoot.querySelector('.rw-mp-title'),
+		artist: bubbleRoot.querySelector('.rw-mp-artist'),
+		playPill: bubbleRoot.querySelector('.rw-mp-play-pill'),
+		expand: bubbleRoot.querySelector('.rw-mp-expand'),
+		play: bubbleRoot.querySelector('.rw-mp-play'),
+		loop: bubbleRoot.querySelector('[data-act="loop"]'),
+		seekFill: bubbleRoot.querySelector('.rw-mp-seek-fill'),
+		seek: bubbleRoot.querySelector('.rw-mp-seek'),
 	};
 
-	root.querySelector('.rw-mp-controls').addEventListener('click', e => {
+	bubbleRoot.querySelector('.rw-mp-controls').addEventListener('click', e => {
 		const b = e.target.closest('[data-act]');
 		if (!b) return;
 		const act = b.dataset.act;
@@ -294,26 +529,9 @@ function _ensureUI() {
 		else if (act === 'prev') _prev();
 		else if (act === 'loop') _toggleLoop();
 	});
+	els.playPill.addEventListener('click', _togglePlay);
 	els.expand.addEventListener('click', () => _setExpanded(!state.expanded));
-	let seekPointerId = null;
-	els.seek.addEventListener('pointerdown', e => {
-		if (!_seekToClientX(e.clientX)) return;
-		seekPointerId = e.pointerId;
-		els.seek.setPointerCapture?.(e.pointerId);
-		e.preventDefault();
-	});
-	els.seek.addEventListener('pointermove', e => {
-		if (seekPointerId !== e.pointerId) return;
-		_seekToClientX(e.clientX);
-	});
-	const endSeek = e => {
-		if (seekPointerId !== e.pointerId) return;
-		_seekToClientX(e.clientX);
-		els.seek.releasePointerCapture?.(e.pointerId);
-		seekPointerId = null;
-	};
-	els.seek.addEventListener('pointerup', endSeek);
-	els.seek.addEventListener('pointercancel', endSeek);
+	_wireSeek(els.seek);
 
 	els.loop.classList.toggle('on', state.loop);
 	_setExpanded(false);
@@ -325,20 +543,34 @@ function _renderMeta(track, mode) {
 	if (!els.title) return;
 	els.title.textContent = track.title || '(untitled)';
 	els.artist.textContent = mode === 'loading' ? 'Loading…' : (mode === 'error' ? 'Playback failed' : (track.artist || ''));
-	if (track.thumbnail_url) { els.art.src = track.thumbnail_url; els.art.style.display = ''; }
-	else els.art.style.display = 'none';
+	if (track.thumbnail_url) {
+		els.art.src = track.thumbnail_url;
+		els.artShell?.classList.add('has-art');
+	} else {
+		els.art.removeAttribute('src');
+		els.artShell?.classList.remove('has-art');
+	}
 	root.classList.toggle('error', mode === 'error');
 }
 
 function _renderPlayState() {
-	if (els.play) els.play.innerHTML = state.playing ? _icon('pause') : _icon('play');
+	const markup = state.playing ? _icon('pause') : _icon('play');
+	if (els.play) els.play.innerHTML = markup;
+	if (els.playPill) els.playPill.innerHTML = markup;
 }
 
 function _toggleLoop() {
 	state.loop = !state.loop;
 	_lsSet(LOOP_KEY, state.loop ? '1' : '0');
-	els.loop.classList.toggle('on', state.loop);
+	els.loop?.classList.toggle('on', state.loop);
 	_syncDesktopOverlay(undefined, true);
+	_broadcast(undefined, state.playing);
+}
+
+function applyVolume(v) {
+	state.volume = Math.max(0, Math.min(1.5, Number(v) || 0));
+	if (audio) audio.volume = Math.min(1, state.volume);
+	_lsSet(VOLUME_KEY, String(state.volume));
 }
 
 function _setExpanded(on) {
@@ -410,26 +642,28 @@ function _ensureAudio() {
 	if (audio) return;
 	audio = new Audio();
 	audio.preload = 'auto';
+	audio.volume = Math.min(1, state.volume);
 	let erroredOnce = false;
 	audio.addEventListener('playing', () => {
 		state.playing = true; erroredOnce = false; _renderPlayState();
 		const track = state.queue[state.index];
 		if (track) { _renderMeta(track, 'playing'); if (!track._announced) { track._announced = true; _announce(track); } }
-		sendHelper({ type: 'music_now_playing_set', track, state: 'playing', playing: true, loop: state.loop, current_time: audio.currentTime || 0, duration: audio.duration || track?.duration_s || 0 });
+		_broadcast('playing', true);
 		_syncDesktopOverlay('playing', true);
 		_preResolveUpcoming();
 	});
 	audio.addEventListener('pause', () => {
 		state.playing = false;
 		_renderPlayState();
-		const track = state.queue[state.index];
-		sendHelper({ type: 'music_now_playing_set', track, state: 'paused', playing: false, loop: state.loop, current_time: audio.currentTime || 0, duration: audio.duration || track?.duration_s || 0 });
+		_broadcast('paused', false);
 		_syncDesktopOverlay('paused', true);
 	});
 	audio.addEventListener('timeupdate', () => {
 		if (audio.duration) _setSeekProgress(audio.currentTime / audio.duration);
 		_syncDesktopOverlay();
+		_broadcastProgress();
 	});
+	audio.addEventListener('seeked', () => _broadcastProgress(true));
 	audio.addEventListener('durationchange', () => _syncDesktopOverlay(undefined, true));
 	audio.addEventListener('ended', () => _next());
 	audio.addEventListener('error', () => {
@@ -469,10 +703,12 @@ export function bootMusicPlayer() {
 	});
 }
 
-// In detached-player mode the transport lives in miniplayer.js (its own native
-// window), so the docked in-page bubble stays inert here. A plain browser tab
-// (no ?remote flag) still boots the bubble as the local engine.
-if (typeof document !== 'undefined' && !window.RW_REMOTE) {
+// In detached-player mode (remote + miniplayer enabled) the transport lives in
+// miniplayer.js (its own native window), so the docked in-page player stays
+// inert here. It boots as the local engine in the other two cases: a plain
+// browser tab (no ?remote flag), or remote mode with the miniplayer popout
+// turned off in Settings (docked bar instead of the floating window).
+if (typeof document !== 'undefined' && (!window.RW_REMOTE || !window.RW_MINIPLAYER_ENABLED)) {
 	if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootMusicPlayer);
 	else bootMusicPlayer();
 	window.RainetteMusic = RainetteMusic;

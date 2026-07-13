@@ -10,11 +10,28 @@ consumes the resolved URL directly.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import shared
+
+# Python/requests normally uses its bundled CA file, which can reject HTTPS on
+# Windows machines whose trusted enterprise/local CA exists only in the OS
+# certificate store.  Inject the native store before yt-dlp/ytmusicapi import.
+try:
+    import truststore  # type: ignore
+
+    truststore.inject_into_ssl()
+    SYSTEM_TRUST_ENABLED = True
+except Exception:
+    SYSTEM_TRUST_ENABLED = False
 
 # yt-dlp is an optional dependency; the player degrades gracefully without it.
 try:
@@ -327,16 +344,37 @@ def _stream_worker(req_id, source_id, track_id, log_play=True):
 def cmd_music_playlist_list(msg):
     req_id = msg.get("id")
     try:
-        shared.notify_browsers({"type": "music_playlist_list_result", "id": req_id, "ok": True, "playlists": shared.STATE.list_playlists()})
+        shared.notify_browsers({
+            "type": "music_playlist_list_result",
+            "id": req_id,
+            "ok": True,
+            "playlists": shared.STATE.list_playlists(),
+            "folders": shared.STATE.list_playlist_folders(),
+        })
     except Exception as e:
-        shared.notify_browsers({"type": "music_playlist_list_result", "id": req_id, "ok": False, "msg": str(e), "playlists": []})
+        shared.notify_browsers({"type": "music_playlist_list_result", "id": req_id, "ok": False, "msg": str(e), "playlists": [], "folders": []})
+
+
+def _broadcast_playlist_state(msg_type: str, req_id, *, ok: bool = True, extra: dict[str, Any] | None = None, error: Exception | None = None) -> None:
+    payload = {
+        "type": msg_type,
+        "id": req_id,
+        "ok": ok,
+        "playlists": shared.STATE.list_playlists(),
+        "folders": shared.STATE.list_playlist_folders(),
+    }
+    if extra:
+        payload.update(extra)
+    if error is not None:
+        payload["msg"] = str(error)
+    shared.notify_browsers(payload)
 
 
 def cmd_music_playlist_create(msg):
     req_id = msg.get("id")
     try:
         pl = shared.STATE.create_playlist(str(msg.get("name") or ""), str(msg.get("description") or ""))
-        shared.notify_browsers({"type": "music_playlist_created", "id": req_id, "ok": True, "playlist": pl, "playlists": shared.STATE.list_playlists()})
+        _broadcast_playlist_state("music_playlist_created", req_id, extra={"playlist": pl})
     except Exception as e:
         shared.notify_browsers({"type": "music_playlist_created", "id": req_id, "ok": False, "msg": str(e)})
 
@@ -345,7 +383,7 @@ def cmd_music_playlist_rename(msg):
     req_id = msg.get("id")
     try:
         pl = shared.STATE.rename_playlist(str(msg.get("playlist_id") or ""), str(msg.get("name") or ""))
-        shared.notify_browsers({"type": "music_playlist_renamed", "id": req_id, "ok": True, "playlist": pl, "playlists": shared.STATE.list_playlists()})
+        _broadcast_playlist_state("music_playlist_renamed", req_id, extra={"playlist": pl})
     except Exception as e:
         shared.notify_browsers({"type": "music_playlist_renamed", "id": req_id, "ok": False, "msg": str(e)})
 
@@ -353,10 +391,131 @@ def cmd_music_playlist_rename(msg):
 def cmd_music_playlist_delete(msg):
     req_id = msg.get("id")
     try:
-        ok = shared.STATE.delete_playlist(str(msg.get("playlist_id") or ""))
-        shared.notify_browsers({"type": "music_playlist_deleted", "id": req_id, "ok": ok, "playlists": shared.STATE.list_playlists()})
+        playlist_id = str(msg.get("playlist_id") or "")
+        existing = shared.STATE.get_playlist(playlist_id)
+        artwork_key = str((existing or {}).get("artwork_key") or "")
+        ok = shared.STATE.delete_playlist(playlist_id)
+        if ok and artwork_key:
+            _delete_managed_artwork(artwork_key)
+        _broadcast_playlist_state("music_playlist_deleted", req_id, ok=ok)
     except Exception as e:
         shared.notify_browsers({"type": "music_playlist_deleted", "id": req_id, "ok": False, "msg": str(e)})
+
+
+def _delete_managed_artwork(artwork_key: str) -> None:
+    policy = shared.POLICY if isinstance(shared.POLICY, dict) else {}
+    root_value = policy.get("playlist_artwork_dir")
+    if not root_value:
+        return
+    root = Path(root_value).resolve()
+    key = str(artwork_key or "").strip()
+    if not key or Path(key).name != key:
+        return
+    candidate = (root / key).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return
+    try:
+        candidate.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def cmd_music_playlist_update_meta(msg):
+    req_id = msg.get("id")
+    try:
+        pl = shared.STATE.update_playlist_meta(
+            str(msg.get("playlist_id") or ""),
+            folder_id=msg.get("folder_id") if "folder_id" in msg else None,
+            pinned=bool(msg.get("pinned")) if "pinned" in msg else None,
+            position=msg.get("position") if "position" in msg else None,
+        )
+        _broadcast_playlist_state("music_playlist_meta_updated", req_id, extra={"playlist": pl})
+    except Exception as e:
+        shared.notify_browsers({"type": "music_playlist_meta_updated", "id": req_id, "ok": False, "msg": str(e)})
+
+
+def cmd_music_playlist_folder_create(msg):
+    req_id = msg.get("id")
+    try:
+        folder = shared.STATE.create_playlist_folder(str(msg.get("name") or ""))
+        _broadcast_playlist_state("music_playlist_folder_created", req_id, extra={"folder": folder})
+    except Exception as e:
+        shared.notify_browsers({"type": "music_playlist_folder_created", "id": req_id, "ok": False, "msg": str(e)})
+
+
+def cmd_music_playlist_folder_rename(msg):
+    req_id = msg.get("id")
+    try:
+        folder = shared.STATE.rename_playlist_folder(str(msg.get("folder_id") or ""), str(msg.get("name") or ""))
+        _broadcast_playlist_state("music_playlist_folder_renamed", req_id, extra={"folder": folder})
+    except Exception as e:
+        shared.notify_browsers({"type": "music_playlist_folder_renamed", "id": req_id, "ok": False, "msg": str(e)})
+
+
+def cmd_music_playlist_folder_delete(msg):
+    req_id = msg.get("id")
+    try:
+        ok = shared.STATE.delete_playlist_folder(str(msg.get("folder_id") or ""))
+        _broadcast_playlist_state("music_playlist_folder_deleted", req_id, ok=ok)
+    except Exception as e:
+        shared.notify_browsers({"type": "music_playlist_folder_deleted", "id": req_id, "ok": False, "msg": str(e)})
+
+
+def cmd_music_playlist_folder_move(msg):
+    req_id = msg.get("id")
+    try:
+        folder = shared.STATE.move_playlist_folder(str(msg.get("folder_id") or ""), int(msg.get("position") or 0))
+        _broadcast_playlist_state("music_playlist_folder_moved", req_id, extra={"folder": folder})
+    except Exception as e:
+        shared.notify_browsers({"type": "music_playlist_folder_moved", "id": req_id, "ok": False, "msg": str(e)})
+
+
+def cmd_music_smart_playlist_create(msg):
+    req_id = msg.get("id")
+    try:
+        pl = shared.STATE.create_smart_playlist(str(msg.get("name") or ""), msg.get("rules") if isinstance(msg.get("rules"), dict) else {})
+        _broadcast_playlist_state("music_smart_playlist_created", req_id, extra={"playlist": pl})
+    except Exception as e:
+        shared.notify_browsers({"type": "music_smart_playlist_created", "id": req_id, "ok": False, "msg": str(e)})
+
+
+def cmd_music_smart_playlist_update(msg):
+    req_id = msg.get("id")
+    try:
+        pl = shared.STATE.update_smart_playlist(
+            str(msg.get("playlist_id") or ""),
+            name=str(msg.get("name")) if "name" in msg else None,
+            rules=msg.get("rules") if isinstance(msg.get("rules"), dict) else None,
+        )
+        _broadcast_playlist_state("music_smart_playlist_updated", req_id, extra={"playlist": pl})
+    except Exception as e:
+        shared.notify_browsers({"type": "music_smart_playlist_updated", "id": req_id, "ok": False, "msg": str(e)})
+
+
+def cmd_music_smart_playlist_delete(msg):
+    req_id = msg.get("id")
+    try:
+        playlist_id = str(msg.get("playlist_id") or "")
+        existing = shared.STATE.get_playlist(playlist_id)
+        artwork_key = str((existing or {}).get("artwork_key") or "")
+        ok = shared.STATE.delete_playlist(playlist_id)
+        if ok and artwork_key:
+            _delete_managed_artwork(artwork_key)
+        _broadcast_playlist_state("music_smart_playlist_deleted", req_id, ok=ok)
+    except Exception as e:
+        shared.notify_browsers({"type": "music_smart_playlist_deleted", "id": req_id, "ok": False, "msg": str(e)})
+
+
+def cmd_music_smart_playlist_tracks(msg):
+    req_id = msg.get("id")
+    playlist_id = str(msg.get("playlist_id") or "")
+    try:
+        tracks = shared.STATE.smart_playlist_tracks(playlist_id)
+        shared.notify_browsers({"type": "music_smart_playlist_tracks_result", "id": req_id, "ok": True, "playlist_id": playlist_id, "tracks": tracks})
+    except Exception as e:
+        shared.notify_browsers({"type": "music_smart_playlist_tracks_result", "id": req_id, "ok": False, "playlist_id": playlist_id, "tracks": [], "msg": str(e)})
 
 
 def _upsert_track_from_msg(msg) -> str:
@@ -414,6 +573,85 @@ def cmd_music_recent(msg):
         shared.notify_browsers({"type": "music_recent_result", "id": req_id, "ok": False, "msg": str(e), "tracks": []})
 
 
+def cmd_music_top_artists(msg):
+    req_id = msg.get("id")
+    try:
+        shared.notify_browsers({"type": "music_top_artists_result", "id": req_id, "ok": True, "artists": shared.STATE.list_top_artists(limit=8)})
+    except Exception as e:
+        shared.notify_browsers({"type": "music_top_artists_result", "id": req_id, "ok": False, "msg": str(e), "artists": []})
+
+
+def _public_track_from_msg(track: dict[str, Any]) -> dict[str, Any]:
+    metadata = track.get("metadata") if isinstance(track.get("metadata"), dict) else {}
+    return {
+        "id": str(track.get("id") or ""),
+        "source": str(track.get("source") or "youtube"),
+        "source_id": str(track.get("source_id") or "").strip(),
+        "title": str(track.get("title") or "(untitled)")[:400],
+        "artist": str(track.get("artist") or "")[:200],
+        "duration_s": track.get("duration_s"),
+        "thumbnail_url": str(track.get("thumbnail_url") or "")[:600],
+        "metadata": metadata,
+    }
+
+
+def _clean_track_list(raw_tracks) -> list[dict[str, Any]]:
+    out = []
+    for raw in raw_tracks or []:
+        if isinstance(raw, dict):
+            item = _public_track_from_msg(raw)
+            if item["source_id"]:
+                out.append(item)
+    return out[:300]
+
+
+def _broadcast_queue_sessions(msg_type: str, req_id, *, ok: bool = True,
+                              extra: dict[str, Any] | None = None, error: Exception | None = None) -> None:
+    payload = {
+        "type": msg_type,
+        "id": req_id,
+        "ok": ok,
+        "sessions": shared.STATE.list_queue_sessions() if ok else [],
+    }
+    if extra:
+        payload.update(extra)
+    if error is not None:
+        payload["msg"] = str(error)
+    shared.notify_browsers(payload)
+
+
+def cmd_music_queue_session_save(msg):
+    req_id = msg.get("id")
+    try:
+        session = shared.STATE.save_queue_session(
+            name=str(msg.get("name") or ""),
+            tracks=_clean_track_list(msg.get("tracks") or []),
+            index=int(msg.get("index") or 0),
+            is_last=bool(msg.get("is_last")),
+            session_id=str(msg.get("session_id") or "") or None,
+        )
+        _broadcast_queue_sessions("music_queue_session_saved", req_id, extra={"session": session})
+    except Exception as e:
+        shared.notify_browsers({"type": "music_queue_session_saved", "id": req_id, "ok": False, "sessions": [], "msg": str(e)})
+
+
+def cmd_music_queue_session_list(msg):
+    req_id = msg.get("id")
+    try:
+        _broadcast_queue_sessions("music_queue_session_list_result", req_id)
+    except Exception as e:
+        shared.notify_browsers({"type": "music_queue_session_list_result", "id": req_id, "ok": False, "sessions": [], "msg": str(e)})
+
+
+def cmd_music_queue_session_delete(msg):
+    req_id = msg.get("id")
+    try:
+        ok = shared.STATE.delete_queue_session(str(msg.get("session_id") or ""))
+        _broadcast_queue_sessions("music_queue_session_deleted", req_id, ok=ok)
+    except Exception as e:
+        shared.notify_browsers({"type": "music_queue_session_deleted", "id": req_id, "ok": False, "sessions": [], "msg": str(e)})
+
+
 def cmd_music_now_playing_set(msg):
     """Broadcast the current track to every open tab so the mini-player and
     full page stay in sync. Pure fan-out — no persistence beyond play history
@@ -440,6 +678,80 @@ def cmd_music_now_playing_set(msg):
     shared.notify_browsers(payload)
 
 
+def cmd_music_progress(msg):
+    """Relay a lightweight playback-position tick from whichever window owns the
+    <audio> to every other window, so the main-window docked bar / Now Playing
+    view can show a moving progress bar without the engine re-sending the whole
+    queue each tick. Pure fan-out."""
+    shared.notify_browsers({
+        "type": "music_progress",
+        "current_time": msg.get("current_time") or 0,
+        "duration": msg.get("duration") or 0,
+        "playing": bool(msg.get("playing")),
+        "source_id": msg.get("source_id") or "",
+    })
+
+
+# ── Lyrics (LRCLIB — free, no API key) ───────────────────────────────────────
+_LYRICS_BASE = "https://lrclib.net/api/get"
+_lyrics_cache_lock = threading.Lock()
+_lyrics_cache: dict[str, dict[str, Any]] = {}
+
+
+def _lyrics_key(track: dict) -> str:
+    return f"{track.get('source') or 'youtube'}:{track.get('source_id') or ''}"
+
+
+def cmd_music_lyrics(msg):
+    """Fetch lyrics for a track from LRCLIB. Network I/O runs on a daemon thread
+    and the result is broadcast back keyed on the request id (helperRequest)."""
+    req_id = msg.get("id")
+    track = msg.get("track") if isinstance(msg.get("track"), dict) else None
+    if not track or not (track.get("title")):
+        shared.notify_browsers({"type": "music_lyrics_result", "id": req_id, "ok": False, "msg": "no track"})
+        return
+    key = _lyrics_key(track)
+    with _lyrics_cache_lock:
+        cached = _lyrics_cache.get(key)
+    if cached is not None:
+        shared.notify_browsers({"type": "music_lyrics_result", "id": req_id, "ok": True, **cached})
+        return
+    _run_bg(_lyrics_worker, req_id, track, key)
+
+
+def _lyrics_worker(req_id, track, key):
+    try:
+        params = {
+            "track_name": track.get("title") or "",
+            "artist_name": track.get("artist") or "",
+        }
+        duration = track.get("duration_s")
+        if isinstance(duration, (int, float)) and duration > 0:
+            params["duration"] = int(duration)
+        url = _LYRICS_BASE + "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, headers={"User-Agent": "RainetteMusic (local desktop app)"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        result = {
+            "plain": data.get("plainLyrics") or "",
+            "synced": data.get("syncedLyrics") or "",
+            "instrumental": bool(data.get("instrumental")),
+        }
+        with _lyrics_cache_lock:
+            _lyrics_cache[key] = result
+        shared.notify_browsers({"type": "music_lyrics_result", "id": req_id, "ok": True, **result})
+    except urllib.error.HTTPError as e:
+        # 404 = LRCLIB has no match for this track; cache the empty result so we
+        # don't re-hit the network every time the Now Playing view reopens.
+        empty = {"plain": "", "synced": "", "instrumental": False, "not_found": e.code == 404}
+        if e.code == 404:
+            with _lyrics_cache_lock:
+                _lyrics_cache[key] = empty
+        shared.notify_browsers({"type": "music_lyrics_result", "id": req_id, "ok": True, **empty})
+    except Exception as e:
+        shared.notify_browsers({"type": "music_lyrics_result", "id": req_id, "ok": False, "msg": str(e)})
+
+
 def cmd_music_remote_play(msg):
     """Relay a 'play this queue' command from the browser window to the detached
     player window. Pure fan-out — the player window owns the actual <audio>."""
@@ -459,6 +771,30 @@ def cmd_music_request_state(msg):
     shared.notify_browsers(msg)
 
 
+def cmd_music_open_artist(msg):
+    """Relay an artist-profile request from the detached player to the main UI."""
+    shared.notify_browsers(msg)
+
+
+def cmd_music_theme_set(msg):
+    """Relay a Settings theme change to every open window so an already-open
+    player window updates live instead of waiting for its next reload."""
+    shared.notify_browsers(msg)
+
+
+def cmd_music_accent_set(msg):
+    """Relay a Settings accent-color change to every open window, same as
+    cmd_music_theme_set."""
+    shared.notify_browsers(msg)
+
+
+def cmd_music_eq_state(msg):
+    """Relay the player window's live EQ state (on/off + band gains) to the
+    Settings panel so its controls reflect reality, including changes made
+    from the player window itself before Settings was ever opened."""
+    shared.notify_browsers(msg)
+
+
 def cmd_music_catalog_search(msg):
     req_id = msg.get("id")
     query = str(msg.get("query") or "").strip()
@@ -472,16 +808,28 @@ def _catalog_search_worker(req_id, query):
     try:
         if YTMUSIC_AVAILABLE:
             yt = _ytmusic()
+            # The four catalog searches are independent network calls - running
+            # them in parallel cuts perceived search latency to the slowest one
+            # instead of the sum. Failures still propagate via .result() so the
+            # error path is identical to the old sequential version.
+            with ThreadPoolExecutor(max_workers=4, thread_name_prefix="rainette-search") as pool:
+                songs_f = pool.submit(yt.search, query, filter="songs", limit=25)
+                videos_f = pool.submit(yt.search, query, filter="videos", limit=8)
+                artists_f = pool.submit(yt.search, query, filter="artists", limit=10)
+                albums_f = pool.submit(yt.search, query, filter="albums", limit=12)
+                raw_songs = (songs_f.result() or []) + (videos_f.result() or [])
+                raw_artists = artists_f.result() or []
+                raw_albums = albums_f.result() or []
             seen = set()
             songs = []
-            for raw in (yt.search(query, filter="songs", limit=25) or []) + (yt.search(query, filter="videos", limit=8) or []):
+            for raw in raw_songs:
                 track = _ytm_track(raw)
                 if not track or track["source_id"] in seen:
                     continue
                 seen.add(track["source_id"])
                 songs.append(track)
-            artists = [a for a in (_ytm_artist(raw) for raw in (yt.search(query, filter="artists", limit=10) or [])) if a]
-            albums = [a for a in (_ytm_album(raw) for raw in (yt.search(query, filter="albums", limit=12) or [])) if a]
+            artists = [a for a in (_ytm_artist(raw) for raw in raw_artists) if a]
+            albums = [a for a in (_ytm_album(raw) for raw in raw_albums) if a]
             shared.notify_browsers({
                 "type": "music_catalog_search_result",
                 "id": req_id,
@@ -645,6 +993,137 @@ def _album_tracks_worker(req_id, album_id, title, artist):
         shared.notify_browsers({"type": "music_album_tracks_result", "id": req_id, "ok": False, "msg": str(exc), "tracks": []})
 
 
+def _track_key(track: dict[str, Any]) -> str:
+    return f"{track.get('source') or 'youtube'}:{track.get('source_id') or ''}"
+
+
+def _track_album_name(track: dict[str, Any]) -> str:
+    metadata = track.get("metadata") if isinstance(track.get("metadata"), dict) else {}
+    album = metadata.get("album") if isinstance(metadata.get("album"), dict) else {}
+    return str(metadata.get("album_name") or album.get("name") or "").strip().casefold()
+
+
+def _track_album_id(track: dict[str, Any]) -> str:
+    metadata = track.get("metadata") if isinstance(track.get("metadata"), dict) else {}
+    album = metadata.get("album") if isinstance(metadata.get("album"), dict) else {}
+    return str(metadata.get("album_id") or album.get("id") or "").strip()
+
+
+def _dedupe_mix(tracks: list[dict[str, Any]], *, cap: int = 30) -> list[dict[str, Any]]:
+    seen = set()
+    out = []
+    for raw in tracks:
+        if not isinstance(raw, dict):
+            continue
+        track = _public_track_from_msg(raw)
+        key = _track_key(track)
+        if key.endswith(":") or key in seen:
+            continue
+        seen.add(key)
+        out.append(track)
+        if len(out) >= cap:
+            break
+    return out
+
+
+def _catalog_artist_tracks(artist_id: str = "", name: str = "", *, limit: int = 30) -> list[dict[str, Any]]:
+    if YTMUSIC_AVAILABLE and artist_id:
+        yt = _ytmusic()
+        info = yt.get_artist(artist_id) or {}
+        return _section_tracks(yt, info.get("songs"), limit=limit)
+    query = name or artist_id
+    if query and YTDLP_AVAILABLE:
+        return _yt_dlp_search_items(query, limit=limit)
+    return []
+
+
+def _catalog_album_tracks(album_id: str = "", title: str = "", artist: str = "", *, limit: int = 30) -> list[dict[str, Any]]:
+    if YTMUSIC_AVAILABLE and album_id:
+        yt = _ytmusic()
+        info = yt.get_album(album_id) or {}
+        album_hint = {"name": title or info.get("title") or "", "id": album_id, "thumbnails": info.get("thumbnails") or []}
+        return [t for t in (_ytm_track(raw, album_hint) for raw in (info.get("tracks") or [])) if t][:limit]
+    query = " ".join(part for part in [artist, title] if part).strip()
+    if query and YTDLP_AVAILABLE:
+        return _yt_dlp_search_items(query, limit=limit)
+    return []
+
+
+def _mix_from_seed(seed: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    kind = str(seed.get("kind") or "track")
+    local = shared.STATE.list_music_tracks(limit=1000)
+    candidates: list[dict[str, Any]] = []
+    status = "Built from local library"
+
+    if kind == "track":
+        track = seed.get("track") if isinstance(seed.get("track"), dict) else seed
+        seed_track = _public_track_from_msg(track)
+        album_id = _track_album_id(seed_track)
+        album_name = _track_album_name(seed_track)
+        artist = str(seed_track.get("artist") or "").strip()
+        if seed_track.get("source_id"):
+            candidates.append(seed_track)
+        if album_id or album_name:
+            candidates.extend([
+                t for t in local
+                if (album_id and _track_album_id(t) == album_id) or (album_name and _track_album_name(t) == album_name)
+            ])
+        if artist:
+            candidates.extend([t for t in local if str(t.get("artist") or "").casefold() == artist.casefold()])
+            if len(_dedupe_mix(candidates, cap=30)) < 12:
+                candidates.extend(_catalog_artist_tracks(name=artist, limit=30))
+                status = "Built from local library and artist catalog"
+
+    elif kind == "album":
+        album = seed.get("album") if isinstance(seed.get("album"), dict) else seed
+        album_id = str(album.get("id") or album.get("browse_id") or "").strip()
+        title = str(album.get("title") or album.get("name") or "").strip()
+        artist = str(album.get("artist") or "").strip()
+        title_key = title.casefold()
+        candidates.extend([
+            t for t in local
+            if (album_id and _track_album_id(t) == album_id) or (title_key and _track_album_name(t) == title_key)
+        ])
+        if len(_dedupe_mix(candidates, cap=30)) < 8:
+            candidates.extend(_catalog_album_tracks(album_id, title, artist, limit=30))
+            status = "Built from album catalog"
+        if artist and len(_dedupe_mix(candidates, cap=30)) < 12:
+            candidates.extend([t for t in local if str(t.get("artist") or "").casefold() == artist.casefold()])
+
+    else:
+        artist_seed = seed.get("artist") if isinstance(seed.get("artist"), dict) else seed
+        artist_id = str(artist_seed.get("id") or artist_seed.get("artist_id") or "").strip()
+        name = str(artist_seed.get("name") or artist_seed.get("artist") or "").strip()
+        if name:
+            candidates.extend([t for t in local if str(t.get("artist") or "").casefold() == name.casefold()])
+        if len(_dedupe_mix(candidates, cap=30)) < 12:
+            candidates.extend(_catalog_artist_tracks(artist_id, name, limit=30))
+            status = "Built from artist catalog"
+
+    return _dedupe_mix(candidates, cap=30), status
+
+
+def cmd_music_mix_from_seed(msg):
+    req_id = msg.get("id")
+    seed = msg.get("seed") if isinstance(msg.get("seed"), dict) else {}
+    _run_bg(_mix_worker, req_id, seed)
+
+
+def _mix_worker(req_id, seed):
+    try:
+        tracks, status = _mix_from_seed(seed)
+        shared.notify_browsers({
+            "type": "music_mix_from_seed_result",
+            "id": req_id,
+            "ok": True,
+            "tracks": tracks,
+            "status": status,
+            "count": len(tracks),
+        })
+    except Exception as exc:
+        shared.notify_browsers({"type": "music_mix_from_seed_result", "id": req_id, "ok": False, "tracks": [], "msg": str(exc)})
+
+
 def cmd_music_library_index(msg):
     req_id = msg.get("id")
     try:
@@ -654,7 +1133,64 @@ def cmd_music_library_index(msg):
     try:
         shared.notify_browsers({"type": "music_library_index_result", "id": req_id, "ok": True, **shared.STATE.music_library_index(limit=limit)})
     except Exception as exc:
-        shared.notify_browsers({"type": "music_library_index_result", "id": req_id, "ok": False, "msg": str(exc), "tracks": [], "artists": [], "albums": []})
+        shared.notify_browsers({"type": "music_library_index_result", "id": req_id, "ok": False, "msg": str(exc), "tracks": [], "artists": [], "albums": [], "followed_artists": []})
+
+
+def cmd_music_artist_follow(msg):
+    req_id = msg.get("id")
+    try:
+        artist = shared.STATE.follow_artist(
+            artist_id=str(msg.get("artist_id") or ""),
+            name=str(msg.get("name") or ""),
+            thumbnail_url=str(msg.get("thumbnail_url") or ""),
+        )
+        shared.notify_browsers({
+            "type": "music_artist_followed", "id": req_id, "ok": True,
+            "artist": artist, "followed_artists": shared.STATE.list_followed_artists(),
+        })
+    except Exception as exc:
+        shared.notify_browsers({"type": "music_artist_followed", "id": req_id, "ok": False, "msg": str(exc), "followed_artists": []})
+
+
+def cmd_music_artist_unfollow(msg):
+    req_id = msg.get("id")
+    try:
+        removed = shared.STATE.unfollow_artist(
+            artist_id=str(msg.get("artist_id") or ""),
+            name=str(msg.get("name") or ""),
+        )
+        shared.notify_browsers({
+            "type": "music_artist_unfollowed", "id": req_id, "ok": True,
+            "removed": removed, "followed_artists": shared.STATE.list_followed_artists(),
+        })
+    except Exception as exc:
+        shared.notify_browsers({"type": "music_artist_unfollowed", "id": req_id, "ok": False, "msg": str(exc), "followed_artists": []})
+
+
+def cmd_music_followed_artists(msg):
+    req_id = msg.get("id")
+    try:
+        shared.notify_browsers({
+            "type": "music_followed_artists_result", "id": req_id, "ok": True,
+            "followed_artists": shared.STATE.list_followed_artists(),
+        })
+    except Exception as exc:
+        shared.notify_browsers({"type": "music_followed_artists_result", "id": req_id, "ok": False, "msg": str(exc), "followed_artists": []})
+
+
+def cmd_music_insights(msg):
+    """Aggregate local play history into the Insights payload (all local SQLite,
+    no network). Synchronous like the other CRUD-style handlers."""
+    req_id = msg.get("id")
+    try:
+        days = int(msg.get("days", 7) or 0)
+    except Exception:
+        days = 7
+    try:
+        shared.notify_browsers({"type": "music_insights_result", "id": req_id, "ok": True,
+                                **shared.STATE.listening_insights(days=days)})
+    except Exception as exc:
+        shared.notify_browsers({"type": "music_insights_result", "id": req_id, "ok": False, "msg": str(exc)})
 
 
 def cmd_music_status(msg):
@@ -672,17 +1208,41 @@ DISPATCH = {
     "music_playlist_create":        cmd_music_playlist_create,
     "music_playlist_rename":        cmd_music_playlist_rename,
     "music_playlist_delete":        cmd_music_playlist_delete,
+    "music_playlist_update_meta":   cmd_music_playlist_update_meta,
+    "music_playlist_folder_create": cmd_music_playlist_folder_create,
+    "music_playlist_folder_rename": cmd_music_playlist_folder_rename,
+    "music_playlist_folder_delete": cmd_music_playlist_folder_delete,
+    "music_playlist_folder_move":   cmd_music_playlist_folder_move,
+    "music_smart_playlist_create":  cmd_music_smart_playlist_create,
+    "music_smart_playlist_update":  cmd_music_smart_playlist_update,
+    "music_smart_playlist_delete":  cmd_music_smart_playlist_delete,
+    "music_smart_playlist_tracks":  cmd_music_smart_playlist_tracks,
     "music_playlist_add_track":     cmd_music_playlist_add_track,
     "music_playlist_remove_track":  cmd_music_playlist_remove_track,
     "music_playlist_tracks":        cmd_music_playlist_tracks,
     "music_recent":                 cmd_music_recent,
+    "music_top_artists":            cmd_music_top_artists,
+    "music_queue_session_save":     cmd_music_queue_session_save,
+    "music_queue_session_list":     cmd_music_queue_session_list,
+    "music_queue_session_delete":   cmd_music_queue_session_delete,
     "music_now_playing_set":        cmd_music_now_playing_set,
+    "music_progress":               cmd_music_progress,
+    "music_lyrics":                 cmd_music_lyrics,
     "music_remote_play":            cmd_music_remote_play,
     "music_remote_control":         cmd_music_remote_control,
     "music_request_state":          cmd_music_request_state,
+    "music_open_artist":           cmd_music_open_artist,
+    "music_theme_set":              cmd_music_theme_set,
+    "music_accent_set":             cmd_music_accent_set,
+    "music_eq_state":               cmd_music_eq_state,
     "music_catalog_search":         cmd_music_catalog_search,
     "music_artist_catalog":         cmd_music_artist_catalog,
     "music_album_tracks":           cmd_music_album_tracks,
+    "music_mix_from_seed":          cmd_music_mix_from_seed,
     "music_library_index":          cmd_music_library_index,
+    "music_artist_follow":          cmd_music_artist_follow,
+    "music_artist_unfollow":        cmd_music_artist_unfollow,
+    "music_followed_artists":       cmd_music_followed_artists,
+    "music_insights":               cmd_music_insights,
     "music_status":                 cmd_music_status,
 }

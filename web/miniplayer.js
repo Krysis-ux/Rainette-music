@@ -14,6 +14,8 @@
  */
 
 import { sendHelper, helperRequest } from './music_shell.js';
+import { iconMarkup } from './rainette_icons.js';
+import { PlaybackLoadGuard, MediaEventGate } from './playback_load_guard.mjs';
 
 // ── Persistence keys ─────────────────────────────────────────────────────────
 const LS = { vol: 'rw.mp.volume', eq: 'rw.mp.eqGains', eqOn: 'rw.mp.eqOn', loop: 'rw.mp.loop' };
@@ -72,6 +74,15 @@ let audioCtx = null, srcNode = null, gainNode = null, bands = [];
 let graphBuilt = false;       // once true, playback stays on the same-origin proxy
 let els = {};
 const preResolveInFlight = new Set();
+const loadGuard = new PlaybackLoadGuard();
+const mediaEventGate = new MediaEventGate(loadGuard);
+let activeLoad = null;
+let activeMediaToken = null;
+let activeMediaSrc = '';
+let activeMediaBinding = null;
+let mediaLifecycle = [];
+let mediaSwitchBarrier = Promise.resolve();
+let pauseAfterReload = null;
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
@@ -119,6 +130,7 @@ function requestStream(track, opts = {}) {
 		track,
 		prefetch: !!opts.prefetch,
 		force_refresh: !!opts.forceRefresh,
+		load_id: opts.loadToken?.generation,
 	}, 20000);
 }
 
@@ -138,6 +150,12 @@ function preResolveUpcoming() {
 }
 
 function _stopEmptyQueue() {
+	activeLoad = loadGuard.begin('');
+	activeMediaToken = null;
+	activeMediaSrc = '';
+	activeMediaBinding = null;
+	mediaEventGate.invalidate();
+	_clearMediaLifecycle();
 	state.queue = [];
 	state.index = -1;
 	state.resolvingId = null;
@@ -157,9 +175,21 @@ function ensureAudioGraph() {
 	try {
 		const Ctx = window.AudioContext || window.webkitAudioContext;
 		audioCtx = new Ctx();
-		srcNode = audioCtx.createMediaElementSource(audio);
-		let node = srcNode;
-		bands = EQ_BANDS.map(b => {
+		_connectAudioGraph(audio);
+		graphBuilt = true;
+		applyEqGains(state.eqGains);
+		applyVolume(state.volume);
+		return true;
+	} catch (err) {
+		graphBuilt = 'failed';
+		return false;
+	}
+}
+
+function _connectAudioGraph(element) {
+	const nextSrc = audioCtx.createMediaElementSource(element);
+	let node = nextSrc;
+	const nextBands = EQ_BANDS.map(b => {
 			const f = audioCtx.createBiquadFilter();
 			f.type = b.type;
 			f.frequency.value = b.f;
@@ -169,17 +199,33 @@ function ensureAudioGraph() {
 			node = f;
 			return f;
 		});
-		gainNode = audioCtx.createGain();
-		node.connect(gainNode);
-		gainNode.connect(audioCtx.destination);
-		graphBuilt = true;
-		applyEqGains(state.eqGains);
-		applyVolume(state.volume);
-		return true;
-	} catch (err) {
-		graphBuilt = 'failed';
-		return false;
+	const nextGain = audioCtx.createGain();
+	node.connect(nextGain);
+	nextGain.connect(audioCtx.destination);
+	try { srcNode?.disconnect(); } catch { /* already disconnected */ }
+	for (const band of bands) { try { band.disconnect(); } catch { /* already disconnected */ } }
+	try { gainNode?.disconnect(); } catch { /* already disconnected */ }
+	srcNode = nextSrc;
+	bands = nextBands;
+	gainNode = nextGain;
+}
+
+function _freshAudioElement() {
+	const next = new Audio();
+	next.preload = 'auto';
+	next.volume = Math.min(1, state.volume);
+	if (graphBuilt === true) {
+		try {
+			_connectAudioGraph(next);
+		} catch {
+			graphBuilt = 'failed';
+			state.eqOn = false;
+			lsSet(LS.eqOn, '0');
+		}
 	}
+	audio = next;
+	applyEqGains(state.eqGains);
+	applyVolume(state.volume);
 }
 
 function applyEqGains(gains) {
@@ -200,74 +246,301 @@ function applyVolume(v) {
 }
 
 // ── Track loading ────────────────────────────────────────────────────────────
-async function _loadCurrent() {
+async function _loadCurrent({ preservePaused = false } = {}) {
 	const track = state.queue[state.index];
 	if (!track) return;
+	const loadToken = loadGuard.begin(trackKey(track));
+	pauseAfterReload = preservePaused ? loadToken.generation : null;
+	activeLoad = loadToken;
+	activeMediaToken = null;
+	activeMediaSrc = '';
+	activeMediaBinding = null;
+	await _drainPreviousMedia();
+	if (!loadGuard.isCurrent(loadToken, trackKey(state.queue[state.index]))) return;
+	_freshAudioElement();
 	_renderMeta(track, 'loading');
 	_setSeek(0);
 	state.resolvingId = track.source_id;
 	// Reuse a still-fresh resolved URL (e.g. after an EQ toggle reload) so we
 	// don't hit yt-dlp again just to switch the audio path.
 	if (streamFresh(track)) {
-		_applyAndPlay(track, track._url);
+		_applyAndPlay(track, track._url, loadToken);
 		return;
 	}
 	_broadcast('loading', false);
 	try {
-		const res = await requestStream(track);
-		if (state.resolvingId !== track.source_id) return;
-		if (!res || res.ok === false || !res.url) { _renderMeta(track, 'error'); return; }
+		const res = await requestStream(track, { loadToken });
+		if (!loadGuard.isCurrent(loadToken, trackKey(state.queue[state.index]))) return;
+		if (!res || res.ok === false || !res.url) { await _retryOrFail(loadToken); return; }
 		rememberStream(track, res);
-		_applyAndPlay(track, res.url);
+		_applyAndPlay(track, res.url, loadToken);
 	} catch {
-		if (state.resolvingId === track.source_id) _renderMeta(track, 'error');
+		await _retryOrFail(loadToken);
 	}
 }
 
-function _applyAndPlay(track, url) {
+function _applyAndPlay(track, url, loadToken) {
+	if (!loadGuard.isCurrent(loadToken, trackKey(state.queue[state.index]))) return;
+	const mediaToken = loadGuard.advance(loadToken, trackKey(track));
+	if (!mediaToken) return;
+	activeLoad = mediaToken;
+	_clearMediaLifecycle();
 	// Once the EQ graph exists, the element source is bound; only same-origin
 	// (proxied) media produces sound, so stay on the proxy for the session.
+	let source;
 	if (graphBuilt === true) {
 		audio.crossOrigin = 'anonymous';
-		audio.src = '/audio?u=' + encodeURIComponent(url);
+		source = '/audio?u=' + encodeURIComponent(url);
 	} else {
 		audio.removeAttribute('crossorigin');
-		audio.src = url;
+		source = url;
 	}
+	const expectedSrc = new URL(source, document.baseURI).href;
+	activeMediaToken = mediaToken;
+	activeMediaSrc = expectedSrc;
+	activeMediaBinding = mediaEventGate.bind(mediaToken, trackKey(track), expectedSrc, audio);
+	_bindMediaLifecycle(activeMediaBinding, audio);
+	audio.src = source;
 	const resume = () => {
 		if (state.pendingSeek != null) { try { audio.currentTime = state.pendingSeek; } catch { /* ignore */ } state.pendingSeek = null; }
 	};
-	audio.play().then(resume).catch(() => {});
+	if (pauseAfterReload === mediaToken.generation) {
+		pauseAfterReload = null;
+		const loaded = () => {
+			if (!loadGuard.isCurrent(mediaToken, trackKey(state.queue[state.index]))) return;
+			resume();
+			state.playing = false;
+			_renderPlay();
+			_renderMeta(track, 'paused');
+			_broadcast('paused', false);
+		};
+		audio.addEventListener('loadedmetadata', loaded, { once: true });
+		mediaLifecycle.push(['loadedmetadata', loaded]);
+		audio.load();
+		return;
+	}
+	audio.play().then(() => {
+		if (loadGuard.isCurrent(mediaToken, trackKey(state.queue[state.index]))) resume();
+	}).catch(() => {
+		// autoplay-policy block, decode error, etc. — surface it instead of
+		// leaving "now playing" showing with no sound.
+		_retryOrFail(mediaToken);
+	});
 }
 
-async function _reResolveAndResume() {
+function _terminalLoadFailure(loadToken) {
 	const track = state.queue[state.index];
-	if (!track) return false;
+	if (!track || !loadGuard.isCurrent(loadToken, trackKey(track))) return false;
+	_renderMeta(track, 'error');
+	_broadcast('error', false);
+	return false;
+}
+
+function _currentMediaEvent(binding = activeMediaBinding, owner = audio) {
+	const track = state.queue[state.index];
+	const currentSource = owner?.currentSrc || owner?.src || '';
+	return !!track && owner === audio
+		&& mediaEventGate.accepts(binding, trackKey(track), currentSource, owner);
+}
+
+function _clearMediaLifecycle() {
+	if (!audio) return;
+	for (const [type, handler] of mediaLifecycle) audio.removeEventListener(type, handler);
+	mediaLifecycle = [];
+}
+
+async function _drainPreviousMedia() {
+	const drain = async () => {
+		mediaEventGate.invalidate();
+		_clearMediaLifecycle();
+		if (!audio) return;
+		const hadSource = !!(audio.getAttribute('src') || audio.currentSrc);
+		if (!hadSource) return;
+		await new Promise(resolve => {
+			let settled = false;
+			const finish = () => { if (!settled) { settled = true; resolve(); } };
+			audio.addEventListener('emptied', finish, { once: true });
+			audio.pause();
+			audio.removeAttribute('src');
+			audio.load();
+			setTimeout(finish, 80);
+		});
+		await new Promise(resolve => setTimeout(resolve, 0));
+	};
+	const task = mediaSwitchBarrier.then(drain, drain);
+	mediaSwitchBarrier = task.catch(() => {});
+	return task;
+}
+
+function _bindMediaLifecycle(binding, owner) {
+	const loadstart = () => {
+		const track = state.queue[state.index];
+		if (!track) return;
+		mediaEventGate.arm(binding, trackKey(track), owner.currentSrc || owner.src || '', owner);
+	};
+	owner.addEventListener('loadstart', loadstart);
+	mediaLifecycle.push(['loadstart', loadstart]);
+	const on = (type, run) => {
+		const handler = event => {
+			if (!_currentMediaEvent(binding, owner)) return;
+			run(event);
+		};
+		owner.addEventListener(type, handler);
+		mediaLifecycle.push([type, handler]);
+	};
+	on('playing', () => {
+		state.playing = true; _renderPlay();
+		const track = state.queue[state.index];
+		if (track) _renderMeta(track, 'playing');
+		_broadcast('playing', true);
+		preResolveUpcoming();
+	});
+	on('pause', () => { state.playing = false; _renderPlay(); _broadcast('paused', false); });
+	on('timeupdate', () => {
+		if (audio.duration) _setSeek(audio.currentTime / audio.duration);
+		if (els.cur) els.cur.textContent = fmt(audio.currentTime);
+		_broadcastProgress();
+	});
+	on('seeked', () => _broadcastProgress(true));
+	on('durationchange', () => { if (els.dur) els.dur.textContent = fmt(audio.duration); });
+	on('ended', () => _next());
+	on('error', () => _retryOrFail(binding.token));
+}
+
+async function _retryOrFail(loadToken) {
+	const track = state.queue[state.index];
+	const key = trackKey(track);
+	if (!track || !loadGuard.isCurrent(loadToken, key)) return false;
+	if (!loadGuard.claimRetry(loadToken, key)) {
+		return _terminalLoadFailure(loadToken);
+	}
+	const retryToken = loadGuard.advance(loadToken, key);
+	return retryToken ? _reResolveAndResume(retryToken) : false;
+}
+
+async function _reResolveAndResume(loadToken) {
+	const track = state.queue[state.index];
+	if (!track || !loadGuard.isCurrent(loadToken, trackKey(track))) return false;
 	track._url = '';
 	track._urlAt = 0;
 	track._expiresHintS = 0;
 	try {
-		const res = await requestStream(track, { forceRefresh: true });
+		const res = await requestStream(track, { forceRefresh: true, loadToken });
+		if (!loadGuard.isCurrent(loadToken, trackKey(state.queue[state.index]))) return false;
 		if (res && res.ok !== false && res.url) {
 			rememberStream(track, res);
-			_applyAndPlay(track, res.url);
+			await _drainPreviousMedia();
+			if (!loadGuard.isCurrent(loadToken, trackKey(state.queue[state.index]))) return false;
+			_freshAudioElement();
+			_applyAndPlay(track, res.url, loadToken);
 			return true;
 		}
 	} catch { /* fall through */ }
-	_renderMeta(track, 'error');
-	return false;
+	return _terminalLoadFailure(loadToken);
 }
 
 // ── Transport ────────────────────────────────────────────────────────────────
+
+// Soft ~180ms volume ramp on pause/resume (Settings → Playback). Uses the EQ
+// gain node when the graph exists, else the element volume. Any failure falls
+// back to an instant pause/play - the fade is decoration, never a gatekeeper.
+const FADE_MS = 180;
+let _fadeToken = 0;
+
+function fadeEnabled() {
+	return lsGet('rainette.fadePlayPause') !== '0';
+}
+
+function _effectiveVolume() {
+	return graphBuilt === true ? state.volume : Math.min(1, state.volume);
+}
+
+function _restoreVolumeNow() {
+	try {
+		if (graphBuilt === true && gainNode && audioCtx) gainNode.gain.setValueAtTime(state.volume, audioCtx.currentTime);
+		else if (audio) audio.volume = Math.min(1, state.volume);
+	} catch { /* best effort */ }
+}
+
+function _rampVolume(from, to, ms, done) {
+	const token = ++_fadeToken;
+	try {
+		if (graphBuilt === true && gainNode && audioCtx) {
+			const now = audioCtx.currentTime;
+			gainNode.gain.cancelScheduledValues(now);
+			gainNode.gain.setValueAtTime(Math.max(0.0001, from), now);
+			gainNode.gain.linearRampToValueAtTime(Math.max(0.0001, to), now + ms / 1000);
+			setTimeout(() => { if (token === _fadeToken && done) done(); }, ms + 15);
+			return;
+		}
+		if (audio) {
+			const start = performance.now();
+			const step = t => {
+				if (token !== _fadeToken || !audio) return;
+				const k = Math.min(1, (t - start) / ms);
+				audio.volume = Math.max(0, Math.min(1, from + (to - from) * k));
+				if (k < 1) requestAnimationFrame(step);
+				else if (done) done();
+			};
+			requestAnimationFrame(step);
+			return;
+		}
+	} catch { /* fall through to instant */ }
+	if (done) done();
+}
+
 function _togglePlay() {
 	if (!audio || !state.queue.length) return;
+	if (!_currentMediaEvent()) return;
 	if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-	if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+	if (audio.paused) {
+		if (fadeEnabled()) _rampVolume(0, _effectiveVolume(), FADE_MS);
+		audio.play().catch(() => {});
+	} else if (fadeEnabled()) {
+		_rampVolume(_effectiveVolume(), 0, FADE_MS, () => { audio.pause(); _restoreVolumeNow(); });
+	} else {
+		audio.pause();
+	}
 }
+
+// Autoplay-similar ("infinite radio", Settings → Playback): when the queue
+// runs out and loop is off, seed a mix from the last track and keep playing.
+// Read from localStorage at decision time - the main window writes the key
+// and both windows share the same origin/profile.
+let _autoplayBusy = false;
+
+function autoplaySimilarEnabled() {
+	return lsGet('rainette.autoplaySimilar') === '1';
+}
+
+async function _autoplaySimilar() {
+	const seed = state.queue[state.index];
+	if (!seed || _autoplayBusy) { _broadcast(undefined, state.playing); return; }
+	_autoplayBusy = true;
+	_broadcast('loading', false);
+	try {
+		const res = await helperRequest('music_mix_from_seed', { seed: { kind: 'track', track: publicTrack(seed) } }, 20000);
+		const existing = new Set(state.queue.map(trackKey));
+		const fresh = validTracks(res?.tracks || []).filter(t => !existing.has(trackKey(t)));
+		if (res?.ok !== false && fresh.length) {
+			state.queue = state.queue.concat(fresh.slice(0, 15));
+			state.index++;
+			_loadCurrent();
+		} else {
+			_broadcast('paused', false);
+		}
+	} catch {
+		_broadcast('paused', false);
+	} finally {
+		_autoplayBusy = false;
+	}
+}
+
 function _next() {
 	if (!state.queue.length) return;
 	if (state.index < state.queue.length - 1) { state.index++; _loadCurrent(); }
 	else if (state.loop) { state.index = 0; _loadCurrent(); }
+	else if (autoplaySimilarEnabled()) _autoplaySimilar();
 	else _broadcast(undefined, state.playing);
 }
 function _prev() {
@@ -406,8 +679,6 @@ function setEqOn(on) {
 	const was = state.eqOn;
 	state.eqOn = !!on;
 	lsSet(LS.eqOn, state.eqOn ? '1' : '0');
-	els.eqPanel?.classList.toggle('on', state.eqOn);
-	els.eqToggle?.classList.toggle('on', state.eqOn);
 	if (state.eqOn && graphBuilt !== true) {
 		// First enable: build the graph and re-route the current track through
 		// the proxy, preserving playback position.
@@ -415,14 +686,12 @@ function setEqOn(on) {
 		const t = audio ? audio.currentTime : 0;
 		if (ensureAudioGraph() && state.queue[state.index]) {
 			state.pendingSeek = t;
-			_loadCurrent();
-			if (!wasPlaying) audio.addEventListener('canplay', () => audio.pause(), { once: true });
+			_loadCurrent({ preservePaused: !wasPlaying });
 		}
 	}
-	// Grow / shrink the native window so the EQ panel isn't clipped.
-	resizePlayerWindow();
 	applyEqGains(state.eqGains);
 	if (was !== state.eqOn && audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+	_broadcastEq();
 }
 
 function setBand(i, gainDb) {
@@ -430,7 +699,7 @@ function setBand(i, gainDb) {
 	lsSet(LS.eq, JSON.stringify(state.eqGains));
 	if (!state.eqOn) setEqOn(true);
 	else applyEqGains(state.eqGains);
-	_syncEqSliders();
+	_broadcastEq();
 }
 
 function applyPreset(name) {
@@ -440,8 +709,14 @@ function applyPreset(name) {
 	lsSet(LS.eq, JSON.stringify(state.eqGains));
 	if (!state.eqOn) setEqOn(true);
 	else applyEqGains(state.eqGains);
-	_syncEqSliders();
-	els.presetBtns?.forEach(b => b.classList.toggle('on', b.dataset.preset === name));
+	_broadcastEq();
+}
+
+// Keeps the Settings page's EQ panel (in the main window) in sync with the
+// live state here — Settings never touches the Web Audio graph directly, it
+// only sends commands and listens for this broadcast.
+function _broadcastEq() {
+	sendHelper({ type: 'music_eq_state', on: state.eqOn, gains: state.eqGains.slice() });
 }
 
 // ── Now-playing broadcast (keeps the browser window in sync) ─────────────────
@@ -464,6 +739,24 @@ function _broadcast(mode, playing) {
 	});
 }
 
+// Lightweight position-only tick (throttled) so the main window's docked bar
+// and Now Playing view track playback without re-sending the whole queue.
+let _lastProgressSent = 0;
+function _broadcastProgress(force = false) {
+	if (!audio) return;
+	const now = Date.now();
+	if (!force && now - _lastProgressSent < 500) return;
+	_lastProgressSent = now;
+	const track = state.queue[state.index] || null;
+	sendHelper({
+		type: 'music_progress',
+		current_time: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+		duration: Number.isFinite(audio.duration) ? audio.duration : (track?.duration_s || 0),
+		playing: state.playing,
+		source_id: track?.source_id || '',
+	});
+}
+
 // ── Rendering ────────────────────────────────────────────────────────────────
 function fmt(s) {
 	s = Number(s || 0);
@@ -474,8 +767,10 @@ function fmt(s) {
 
 function _renderMeta(track, mode) {
 	if (!els.title) return;
+	const artist = track.artist || track.metadata?.artists?.[0]?.name || '';
 	els.title.textContent = track.title || '(untitled)';
-	els.artist.textContent = mode === 'loading' ? 'Loading…' : (mode === 'error' ? 'Playback failed' : (track.artist || ''));
+	els.artist.textContent = mode === 'loading' ? 'Loading…' : (mode === 'error' ? 'Playback failed' : artist);
+	els.artist.disabled = !artist;
 	if (track.thumbnail_url) {
 		els.art.src = track.thumbnail_url;
 		els.artShell?.classList.add('has-art');
@@ -487,6 +782,7 @@ function _renderMeta(track, mode) {
 }
 function _renderPlay() {
 	if (els.play) els.play.innerHTML = state.playing ? ICON.pause : ICON.play;
+	if (els.playPill) els.playPill.innerHTML = state.playing ? ICON.pause : ICON.play;
 }
 function _setSeek(ratio) {
 	const pct = clamp(Number(ratio) || 0, 0, 1) * 100;
@@ -500,22 +796,33 @@ function _seekToClientX(x) {
 
 // ── Icons ────────────────────────────────────────────────────────────────────
 const ICON = {
-	prev: svg('<path d="M6 5v14" /><path d="M18 5.5v13a.6.6 0 0 1-.94.49L8 12.5a.6.6 0 0 1 0-.98l9.06-6.5a.6.6 0 0 1 .94.48z" fill="currentColor" stroke="none"/>'),
-	next: svg('<path d="M18 5v14" /><path d="M6 5.5v13a.6.6 0 0 0 .94.49L16 12.5a.6.6 0 0 0 0-.98L6.94 5.02a.6.6 0 0 0-.94.48z" fill="currentColor" stroke="none"/>'),
-	play: svg('<path d="M8 5v14l11-7-11-7z" fill="currentColor" stroke="none"/>'),
-	pause: svg('<path d="M7 5h4v14H7z" fill="currentColor" stroke="none"/><path d="M13 5h4v14h-4z" fill="currentColor" stroke="none"/>'),
-	loop: svg('<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>'),
-	chevronDown: svg('<path d="m6 9 6 6 6-6"/>'),
-	chevronUp: svg('<path d="m18 15-6-6-6 6"/>'),
+	prev: iconMarkup('prev', 18),
+	next: iconMarkup('next', 18),
+	play: iconMarkup('play', 18),
+	pause: iconMarkup('pause', 18),
+	loop: iconMarkup('loop', 18),
+	chevronDown: iconMarkup('chevronDown', 18),
+	chevronUp: iconMarkup('chevronUp', 18),
+	close: iconMarkup('close', 16),
 };
-function svg(inner) {
-	return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
-}
 
 // ── Native window controls (pywebview) ───────────────────────────────────────
 function nativeApi() { return (window.pywebview && window.pywebview.api) || null; }
+async function openCurrentArtist() {
+	const track = state.queue[state.index];
+	const name = track ? (track.artist || track.metadata?.artists?.[0]?.name || '') : '';
+	const artistId = track ? (track.metadata?.artist_id || track.metadata?.artists?.[0]?.id || '') : '';
+	if (!name && !artistId) return;
+	try { await Promise.resolve(nativeApi()?.main_reveal?.()); } catch { /* focus failure is non-fatal */ }
+	sendHelper({
+		type: 'music_open_artist',
+		artist_id: artistId,
+		name,
+		thumbnail_url: track?.thumbnail_url || '',
+	});
+}
 function resizePlayerWindow() {
-	try { nativeApi()?.player_resize?.(state.collapsed, state.eqOn); } catch { /* not in pywebview */ }
+	try { nativeApi()?.player_resize?.(state.collapsed); } catch { /* not in pywebview */ }
 }
 function setCollapsed(on) {
 	state.collapsed = !!on;
@@ -551,9 +858,11 @@ function buildUI() {
 			</div>
 			<div class="mp-meta pywebview-drag-region">
 				<div class="mp-title">Nothing playing</div>
-				<div class="mp-artist">Search in the main window and press play</div>
+				<button type="button" class="mp-artist mp-artist-link" disabled>Search in the main window and press play</button>
 			</div>
+			<button id="mpPlayPill" class="mp-play-pill" data-act="toggle" title="Play/Pause" aria-label="Play or pause">${ICON.play}</button>
 			<button id="mpCollapseToggle" class="mp-collapse-toggle" title="Show controls" aria-label="Show controls">${ICON.chevronDown}</button>
+			<button id="mpPillClose" class="mp-pill-close" title="Hide player" aria-label="Hide player">${ICON.close}</button>
 		</section>
 		<div class="mp-seek" role="slider" aria-label="Seek"><div class="mp-seek-fill"></div></div>
 		<div class="mp-times"><span class="mp-cur">0:00</span><span class="mp-dur">0:00</span></div>
@@ -564,29 +873,16 @@ function buildUI() {
 			<button class="mp-btn" data-act="loop" title="Loop" aria-label="Toggle loop">${ICON.loop}</button>
 		</section>
 		<section class="mp-volrow">
-			<span class="mp-vol-ico" title="Volume">🔊</span>
+			<span class="mp-vol-ico" title="Volume" aria-hidden="true">${iconMarkup('volume', 14)}</span>
 			<div class="mp-vol" role="slider" aria-label="Volume"><div class="mp-vol-fill"></div></div>
 			<span class="mp-vol-val">100%</span>
-			<button id="mpEqToggle" class="mp-eq-toggle" title="Equalizer">EQ</button>
-		</section>
-		<section class="mp-eq" id="mpEqPanel">
-			<div class="mp-eq-presets">
-				${Object.keys(PRESETS).map(n => `<button class="mp-preset" data-preset="${n}">${n}</button>`).join('')}
-			</div>
-			<div class="mp-eq-bands">
-				${EQ_BANDS.map((b, i) => `
-					<label class="mp-eq-band">
-						<input type="range" class="mp-eq-slider" data-band="${i}" min="${EQ_MIN}" max="${EQ_MAX}" step="1" value="0" orient="vertical">
-						<span class="mp-eq-label">${b.label}</span>
-						<span class="mp-eq-hz">${b.short}</span>
-					</label>`).join('')}
-			</div>
 		</section>`;
 
 	els.artShell = root.querySelector('.mp-art-shell');
 	els.art = root.querySelector('.mp-art');
 	els.title = root.querySelector('.mp-title');
 	els.artist = root.querySelector('.mp-artist');
+	els.playPill = root.querySelector('#mpPlayPill');
 	els.collapseToggle = root.querySelector('#mpCollapseToggle');
 	els.seek = root.querySelector('.mp-seek');
 	els.seekFill = root.querySelector('.mp-seek-fill');
@@ -597,16 +893,14 @@ function buildUI() {
 	els.vol = root.querySelector('.mp-vol');
 	els.volFill = root.querySelector('.mp-vol-fill');
 	els.volVal = root.querySelector('.mp-vol-val');
-	els.eqToggle = root.querySelector('#mpEqToggle');
-	els.eqPanel = root.querySelector('#mpEqPanel');
-	els.eqSliders = [...root.querySelectorAll('.mp-eq-slider')];
-	els.presetBtns = [...root.querySelectorAll('.mp-preset')];
 
 	// Transport
 	root.querySelector('.mp-controls').addEventListener('click', e => {
 		const b = e.target.closest('[data-act]'); if (!b) return;
 		({ toggle: _togglePlay, next: _next, prev: _prev, loop: _toggleLoop }[b.dataset.act] || (() => {}))();
 	});
+	els.playPill.addEventListener('click', _togglePlay);
+	els.artist.addEventListener('click', openCurrentArtist);
 	// Seek (pointer drag)
 	let seekId = null;
 	els.seek.addEventListener('pointerdown', e => { _seekToClientX(e.clientX); seekId = e.pointerId; els.seek.setPointerCapture?.(e.pointerId); });
@@ -622,32 +916,40 @@ function buildUI() {
 	const endVol = e => { if (volId === e.pointerId) { els.vol.releasePointerCapture?.(e.pointerId); volId = null; } };
 	els.vol.addEventListener('pointerup', endVol);
 	els.vol.addEventListener('pointercancel', endVol);
-	// EQ
-	els.eqToggle.addEventListener('click', () => setEqOn(!state.eqOn));
-	els.eqSliders.forEach(s => s.addEventListener('input', () => setBand(Number(s.dataset.band), Number(s.value))));
-	els.presetBtns.forEach(b => b.addEventListener('click', () => applyPreset(b.dataset.preset)));
 	els.collapseToggle.addEventListener('click', () => setCollapsed(!state.collapsed));
 
 	// Native window buttons — hidden entirely when not inside pywebview.
 	const pin = root.querySelector('#mpPin'), min = root.querySelector('#mpMin'), close = root.querySelector('#mpClose');
-	if (!nativeApi()) { root.querySelector('.mp-winbtns').style.display = 'none'; }
-	pin.addEventListener('click', async () => { const api = nativeApi(); if (!api) return; try { const on = await api.player_toggle_pin(); pin.classList.toggle('on', !!on); } catch { /* ignore */ } });
+	const pillClose = root.querySelector('#mpPillClose');
+	const winbtns = root.querySelector('.mp-winbtns');
+	// pywebview injects window.pywebview.api asynchronously and fires
+	// 'pywebviewready' once it's actually available. If that happens after this
+	// script's DOMContentLoaded-time check, nativeApi() would otherwise read as
+	// "not native" forever and permanently hide the close buttons even inside a
+	// real native window - so re-check once the event confirms readiness.
+	function updateNativeChromeVisibility() {
+		const isNative = !!nativeApi();
+		winbtns.style.display = isNative ? '' : 'none';
+		pillClose.style.display = isNative ? '' : 'none';
+	}
+	updateNativeChromeVisibility();
+	window.addEventListener('pywebviewready', updateNativeChromeVisibility, { once: true });
+	pin.addEventListener('click', async () => {
+		const api = nativeApi(); if (!api) return;
+		try {
+			const result = await api.player_toggle_pin();
+			if (result?.available) pin.classList.toggle('on', !!result.enabled);
+			else if (result?.error) pin.title = 'Always on top unavailable: ' + result.error;
+		} catch { /* native failure is non-fatal */ }
+	});
 	min.addEventListener('click', () => nativeApi()?.player_minimize?.());
 	close.addEventListener('click', () => nativeApi()?.player_hide?.());
+	pillClose.addEventListener('click', () => nativeApi()?.player_hide?.());
 
 	// Restore persisted UI state
 	els.loop.classList.toggle('on', state.loop);
-	els.eqPanel.classList.toggle('on', state.eqOn);
-	els.eqToggle.classList.toggle('on', state.eqOn);
-	_syncEqSliders();
 	applyVolume(state.volume);
 	setCollapsed(true);
-}
-
-function _syncEqSliders() {
-	els.eqSliders?.forEach((s, i) => { s.value = String(state.eqGains[i] || 0); });
-	const match = Object.keys(PRESETS).find(n => PRESETS[n].every((g, i) => g === state.eqGains[i]));
-	els.presetBtns?.forEach(b => b.classList.toggle('on', b.dataset.preset === match));
 }
 
 // ── Audio element lifecycle ──────────────────────────────────────────────────
@@ -655,24 +957,6 @@ function initAudio() {
 	audio = new Audio();
 	audio.preload = 'auto';
 	audio.volume = Math.min(1, state.volume);
-	let erroredOnce = false;
-	audio.addEventListener('playing', () => {
-		state.playing = true; erroredOnce = false; _renderPlay();
-		const track = state.queue[state.index];
-		if (track) _renderMeta(track, 'playing');
-		_broadcast('playing', true);
-		preResolveUpcoming();
-	});
-	audio.addEventListener('pause', () => { state.playing = false; _renderPlay(); _broadcast('paused', false); });
-	audio.addEventListener('timeupdate', () => {
-		if (audio.duration) { _setSeek(audio.currentTime / audio.duration); }
-		if (els.cur) els.cur.textContent = fmt(audio.currentTime);
-	});
-	audio.addEventListener('durationchange', () => { if (els.dur) els.dur.textContent = fmt(audio.duration); });
-	audio.addEventListener('ended', () => _next());
-	audio.addEventListener('error', () => {
-		if (!erroredOnce && state.queue[state.index]) { erroredOnce = true; _reResolveAndResume(); }
-	});
 }
 
 // ── Remote commands from the browser window ──────────────────────────────────
@@ -681,28 +965,37 @@ function wireRemote() {
 		const msg = e.detail; if (!msg) return;
 		if (msg.type === 'music_remote_play' && Array.isArray(msg.tracks)) {
 			playQueue(msg.tracks, msg.index || 0);
-			try {
-				const api = nativeApi();
-				api?.player_allow_show?.();
-				api?.show_player?.();
-			} catch { /* not in pywebview */ }
+			try { nativeApi()?.reveal_player?.(); } catch { /* not in pywebview */ }
+		} else if (msg.type === 'music_theme_set') {
+			// Keep in sync with rainette_settings.js's THEME_CLASS map.
+			const THEME_CLASS = { light: 'rw-theme-light', dark: 'rw-theme-dark', mono: 'rw-theme-mono', midnight: 'rw-theme-midnight' };
+			document.documentElement.classList.remove(...Object.values(THEME_CLASS));
+			document.documentElement.classList.add(THEME_CLASS[msg.theme] || THEME_CLASS.mono);
+		} else if (msg.type === 'music_accent_set') {
+			document.documentElement.classList.remove('rw-accent-teal', 'rw-accent-purple');
+			if (msg.accent === 'teal' || msg.accent === 'purple') document.documentElement.classList.add('rw-accent-' + msg.accent);
 		} else if (msg.type === 'music_remote_control') {
 			const a = msg.action;
 			if (a === 'queue_add_next') queueAddNext(msg.track);
 			else if (a === 'queue_add_end') queueAddEnd(msg.track);
 			else if (a === 'queue_move') queueMove(msg.from, msg.to);
 			else if (a === 'queue_remove') queueRemove(msg.index);
-			else if (a === 'queue_play_index') queuePlayIndex(msg.index);
+			else if (a === 'queue_play_index') { queuePlayIndex(msg.index); try { nativeApi()?.reveal_player?.(); } catch { /* not in pywebview */ } }
 			else if (a === 'queue_shuffle') queueShuffle();
 			else if (a === 'queue_dedupe') queueDedupe();
 			else if (a === 'queue_clear_up_next') queueClearUpNext();
 			else if (a === 'queue_request_state') _broadcast(undefined, state.playing);
+			else if (a === 'eq_set_on') setEqOn(!!msg.on);
+			else if (a === 'eq_set_band') setBand(Number(msg.index), Number(msg.gain));
+			else if (a === 'eq_apply_preset') applyPreset(msg.preset);
+			else if (a === 'eq_request_state') _broadcastEq();
+			else if (a === 'set_volume') applyVolume(Number(msg.value));
 			else if (!state.queue.length) return;
 			else if (a === 'toggle') _togglePlay();
 			else if (a === 'next') _next();
 			else if (a === 'prev') _prev();
 			else if (a === 'loop') _toggleLoop();
-			else if (a === 'seek' && audio && audio.duration) audio.currentTime = clamp(Number(msg.ratio || 0), 0, 1) * audio.duration;
+			else if (a === 'seek' && audio && audio.duration) { audio.currentTime = clamp(Number(msg.ratio || 0), 0, 1) * audio.duration; _broadcastProgress(true); }
 		}
 	});
 }
