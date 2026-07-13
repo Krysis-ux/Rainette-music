@@ -2,6 +2,11 @@
 
 # Local HTTP + WebSocket server.
 aiohttp>=3.9
+cryptography>=42.0
+zeroconf>=0.131
+truststore>=0.10
+qrcode[pil]>=8.0
+filelock>=3.13
 
 # Search + ad-free audio-stream extraction (YouTube etc.).
 # No upper bound on purpose — yt-dlp ships frequent extractor fixes as sites

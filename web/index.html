@@ -2,8 +2,28 @@
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 	<title>Rainette Music</title>
+	<link rel="icon" href="./assets/rainette-icon.ico">
+	<script>
+		// Applied synchronously, before any stylesheet loads, so the correct
+		// theme/accent is already active on first paint (no flash of the
+		// wrong theme). Mirrored in miniplayer.html for the detached window.
+		(function () {
+			try {
+				var theme = localStorage.getItem('rainette.theme');
+				if (theme === 'dark') document.documentElement.classList.add('rw-theme-dark');
+				else if (theme === 'midnight') document.documentElement.classList.add('rw-theme-midnight');
+				else if (theme === 'light') { /* explicit light choice - no class, bare :root already is light */ }
+				else document.documentElement.classList.add('rw-theme-mono'); // default: Monochrome
+				var accent = localStorage.getItem('rainette.accent');
+				if (accent === 'teal' || accent === 'purple') document.documentElement.classList.add('rw-accent-' + accent);
+				if (localStorage.getItem('rainette.reducedMotion') === '1') document.documentElement.classList.add('rw-reduced-motion');
+			} catch (e) { /* localStorage unavailable */ }
+		})();
+	</script>
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
 	<link rel="stylesheet" href="./rainette_tokens.css">
 	<link rel="stylesheet" href="./rainette_pages.css">
@@ -14,6 +34,15 @@
 		// over the socket instead of hosting its own <audio>. A plain browser tab
 		// has no ?remote flag and keeps the docked in-page mini-player.
 		window.RW_REMOTE = new URLSearchParams(location.search).has('remote');
+		// Settings -> Behavior -> "Miniplayer window" toggle. Off means: even in
+		// remote mode, don't install the WS-relay shim that talks to the
+		// floating native window - fall back to the docked in-page player
+		// instead. Restart-required (swapping live playback engines mid-session
+		// isn't safe), so this is only read once at boot, same as RW_REMOTE.
+		window.RW_MINIPLAYER_ENABLED = (function () {
+			try { return localStorage.getItem('rainette.miniplayerEnabled') !== '0'; }
+			catch (e) { return true; }
+		})();
 	</script>
 </head>
 <body>
@@ -23,19 +52,10 @@
 	<!-- The persistent draggable mini-player mounts here (browser/fallback only). -->
 	<div id="rwMusicPlayer"></div>
 
-	<!-- Reopen the detached player window if it was hidden (native mode only). -->
-	<button id="rwOpenPlayer" type="button" title="Show player window" hidden>♪ Player</button>
-	<script>
-		(function () {
-			if (!window.RW_REMOTE) return;
-			var btn = document.getElementById('rwOpenPlayer');
-			btn.hidden = false;
-			btn.addEventListener('click', function () {
-				try { window.pywebview && window.pywebview.api && window.pywebview.api.show_player(); } catch (e) {}
-			});
-		})();
-	</script>
+	<!-- Re-revealing the detached player window is handled by the docked bar's
+	     own pop-out button (rainette_music.js), so no separate float button. -->
 
+	<script src="./rainette_platform.js"></script>
 	<script type="module" src="./rainette_music_player.js"></script>
 	<script type="module" src="./rainette_music.js"></script>
 </body>

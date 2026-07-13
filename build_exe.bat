@@ -1,7 +1,9 @@
 @echo off
-rem Build "Rainette Music.exe" — a thin launcher that starts main.py with the
-rem system Python. Rebuild only if you change launcher.py.
-cd /d "%~dp0"
-pyinstaller --onefile --noconsole --name "Rainette Music" --distpath "%~dp0" --workpath "%~dp0build" --specpath "%~dp0build" launcher.py
+setlocal
+rem Build the thin Rainette Music launcher with the bundled raindrop icon.
+cd /d "%~dp0" || exit /b 1
+python -m PyInstaller --noconfirm --clean --onefile --noconsole --name "Rainette Music" --icon "%~dp0web\assets\rainette-icon.ico" --distpath "%~dp0." --workpath "%~dp0build" --specpath "%~dp0build" "%~dp0launcher.py"
+if errorlevel 1 exit /b 1
 echo.
 echo Done. "Rainette Music.exe" is in this folder.
+exit /b 0

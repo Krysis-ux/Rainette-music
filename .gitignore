@@ -1,0 +1,24 @@
+# Rainette per-user state
+music.db
+*.db-wal
+*.db-shm
+rainette-music.log
+rainette-launcher.log
+
+# Python/test/build caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Mobile generated files
+mobile/node_modules/
+mobile/android/.gradle/
+mobile/android/app/build/
+mobile/android/local.properties
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
