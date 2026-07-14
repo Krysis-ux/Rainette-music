@@ -15,16 +15,17 @@
 				if (theme === 'dark') document.documentElement.classList.add('rw-theme-dark');
 				else if (theme === 'midnight') document.documentElement.classList.add('rw-theme-midnight');
 				else if (theme === 'light') { /* explicit light choice - no class, bare :root already is light */ }
-				else document.documentElement.classList.add('rw-theme-mono'); // default: Monochrome
+				else document.documentElement.classList.add('rw-theme-light');
 				var accent = localStorage.getItem('rainette.accent');
 				if (accent === 'teal' || accent === 'purple') document.documentElement.classList.add('rw-accent-' + accent);
 				if (localStorage.getItem('rainette.reducedMotion') === '1') document.documentElement.classList.add('rw-reduced-motion');
 			} catch (e) { /* localStorage unavailable */ }
 		})();
+		window.RW_MINIPLAYER_ENABLED = (function () {
+			try { return localStorage.getItem('rainette.miniplayerEnabled') === '1'; }
+			catch (e) { return false; }
+		})();
 	</script>
-	<link rel="preconnect" href="https://fonts.googleapis.com">
-	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
 	<link rel="stylesheet" href="./rainette_tokens.css">
 	<style>
 		* { box-sizing: border-box; }

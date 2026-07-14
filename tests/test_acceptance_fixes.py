@@ -164,7 +164,7 @@ def test_security_reads_observe_revocation_from_a_second_registry(tmp_path):
 
 
 @async_test
-async def test_status_advertises_only_implemented_pairing_and_library_capabilities():
+async def test_status_advertises_pairing_library_events_and_output_transfer_capabilities():
     registry = CompanionRegistry(now=lambda: 1_000)
     _, _, _, token = _approve(registry)
     client = TestClient(TestServer(server.build_companion_app(registry)))
@@ -172,6 +172,6 @@ async def test_status_advertises_only_implemented_pairing_and_library_capabiliti
     try:
         response = await client.get("/status", headers={"Authorization": "Bearer " + token})
         assert response.status == 200
-        assert (await response.json())["capabilities"] == ["pairing", "library"]
+        assert (await response.json())["capabilities"] == ["pairing", "library", "events", "output-transfer"]
     finally:
         await client.close()

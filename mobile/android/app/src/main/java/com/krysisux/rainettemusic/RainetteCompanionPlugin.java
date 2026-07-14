@@ -15,8 +15,8 @@ import androidx.security.crypto.MasterKey;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import com.getcapacitor.annotation.PluginMethod;
 
 import org.json.JSONObject;
 
@@ -58,10 +58,13 @@ public final class RainetteCompanionPlugin extends Plugin {
     private static final int ACK_MAX_ATTEMPTS = 3;
     private static final long[] ACK_BACKOFF_MS = {250L, 1000L};
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService syncWorker = Executors.newSingleThreadExecutor();
+    private volatile boolean syncRequested = false;
 
     @Override
-    protected void load() {
+    public void load() {
         worker.execute(this::reconcilePendingAcknowledgement);
+        startSyncInternal();
         Intent intent = getActivity().getIntent();
         if (intent != null && isPairingUri(intent.getData())) {
             confirmAndStartPairing(intent.getData(), null);
@@ -113,6 +116,61 @@ public final class RainetteCompanionPlugin extends Plugin {
                 call.reject(error.getMessage(), error);
             }
         });
+    }
+
+    @PluginMethod
+    public void startSync(PluginCall call) {
+        startSyncInternal();
+        JSObject result = new JSObject();
+        result.put("ok", true);
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void stopSync(PluginCall call) {
+        syncRequested = false;
+        JSObject result = new JSObject();
+        result.put("ok", true);
+        call.resolve(result);
+    }
+
+    private synchronized void startSyncInternal() {
+        if (syncRequested) return;
+        syncRequested = true;
+        syncWorker.execute(this::runSyncLoop);
+    }
+
+    private void runSyncLoop() {
+        long revision = 0L;
+        while (syncRequested && !Thread.currentThread().isInterrupted()) {
+            try {
+                SharedPreferences prefs = securePreferences();
+                String endpoint = prefs.getString("endpoint", "");
+                String pin = prefs.getString("certificate_sha256", "");
+                String token = prefs.getString("device_token", "");
+                if (endpoint.isEmpty() || pin.isEmpty() || token.isEmpty()) {
+                    Thread.sleep(1000L);
+                    continue;
+                }
+                validateCompanionEndpoint(endpoint);
+                HttpsURLConnection connection = openPinned(new URL(endpoint + "/events?after=" + revision + "&wait=25"), pin);
+                connection.setRequestMethod("GET");
+                connection.setReadTimeout(30_000);
+                connection.setRequestProperty("Authorization", "Bearer " + token);
+                JSONObject response = readJson(connection, connection.getResponseCode());
+                revision = Math.max(revision, response.optLong("revision", revision));
+                JSObject update = JSObject.fromJSONObject(response);
+                notifyListeners("rainetteCompanionSync", update, true);
+            } catch (Exception error) {
+                JSObject failed = new JSObject();
+                failed.put("ok", false);
+                failed.put("status", "reconnecting");
+                failed.put("msg", error.getMessage());
+                notifyListeners("rainetteCompanionSync", failed, true);
+                try { Thread.sleep(1500L); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return; }
+            }
+        }
     }
 
     private void confirmAndStartPairing(Uri uri, PluginCall call) {
@@ -176,6 +234,7 @@ public final class RainetteCompanionPlugin extends Plugin {
                         if (acknowledgePairingWithRetry(endpoint, pin, token, requestId)) {
                             clearPendingAcknowledgement(securePreferences(), requestId);
                         }
+                        startSyncInternal();
                         finishPairing(call, true, "approved", null);
                         return;
                     }

@@ -1,0 +1,8 @@
+{
+    "sha256":  "8f7cdc0e3094f055a825ddf4249d502a63de1ab0d6427af0b52b72e502410d15",
+    "version":  "0.1.0-local",
+    "channel":  "local-test",
+    "signed":  false,
+    "signatureVerified":  false,
+    "artifact":  "RainetteMusicSetup.exe"
+}

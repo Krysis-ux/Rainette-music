@@ -52,12 +52,12 @@ const THEME_IDS = Object.keys(THEME_CLASS);
 
 function currentTheme() {
 	const t = lsGet(THEME_KEY);
-	return THEME_IDS.includes(t) ? t : 'mono';
+	return THEME_IDS.includes(t) ? t : 'light';
 }
 function currentAccent() { const a = lsGet(ACCENT_KEY); return a === 'teal' || a === 'purple' ? a : 'default'; }
 
 function applyTheme(theme) {
-	if (!THEME_IDS.includes(theme)) theme = 'mono';
+	if (!THEME_IDS.includes(theme)) theme = 'light';
 	lsSet(THEME_KEY, theme);
 	document.documentElement.classList.remove(...Object.values(THEME_CLASS));
 	document.documentElement.classList.add(THEME_CLASS[theme]);
@@ -102,7 +102,7 @@ function settingsCard(title, sub) {
 // ── Sections ──────────────────────────────────────────────────────────────
 
 function renderAppearance() {
-	const card = settingsCard('Appearance', 'Theme and accent color — synced live with the player window.');
+	const card = settingsCard('Appearance', 'Theme and accent color, synced live with the player window.');
 
 	const themeRow = el('div', 'rw-settings-row');
 	const themeText = el('div', 'rw-settings-row-text');
@@ -269,9 +269,9 @@ function renderBehavior() {
 	}), 'Turns off page and card entrance animations.'));
 
 	if (window.RW_REMOTE) {
-		card.appendChild(settingsRow('Miniplayer window', switchControl(lsGet(MINIPLAYER_ENABLED_KEY) !== '0', on => {
+		card.appendChild(settingsRow('Auto-open mini player', switchControl(lsGet(MINIPLAYER_ENABLED_KEY) === '1', on => {
 			lsSet(MINIPLAYER_ENABLED_KEY, on ? '1' : '0');
-		}), 'Restart Rainette Music to apply. The docked bar at the bottom of this window always shows playback controls; this only controls whether a separate floating player window also pops out, synced with it.'));
+		}), 'Off by default. The bottom player bar always controls playback. Use Open mini player there whenever you want the separate window.'));
 	}
 
 	if (QUEUE_SUPPORTED) {

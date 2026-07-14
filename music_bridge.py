@@ -764,6 +764,27 @@ def cmd_music_remote_control(msg):
     shared.notify_browsers(msg)
 
 
+def cmd_music_output_transfer(msg):
+    """Request a single-output handoff without stopping the current device.
+
+    The receiving device confirms it has loaded the shared queue before it
+    emits its next now-playing state.  Until that confirmation the source is
+    intentionally left untouched, which makes a failed phone/desktop transfer
+    non-destructive.
+    """
+    shared.notify_browsers({
+        "type": "music_output_transfer",
+        "id": msg.get("id"),
+        "target_device_id": str(msg.get("target_device_id") or ""),
+        "source_device_id": str(msg.get("source_device_id") or ""),
+        "queue": msg.get("queue") if isinstance(msg.get("queue"), list) else [],
+        "index": int(msg.get("index") or 0),
+        "current_time": max(0, float(msg.get("current_time") or 0)),
+        "playing": bool(msg.get("playing")),
+        "loop": bool(msg.get("loop")),
+    })
+
+
 def cmd_music_request_state(msg):
     """Relay the player window's 'what's the current queue?' request to the
     browser window (which answers with a fresh music_remote_play). Covers the
@@ -1230,6 +1251,7 @@ DISPATCH = {
     "music_lyrics":                 cmd_music_lyrics,
     "music_remote_play":            cmd_music_remote_play,
     "music_remote_control":         cmd_music_remote_control,
+    "music_output_transfer":        cmd_music_output_transfer,
     "music_request_state":          cmd_music_request_state,
     "music_open_artist":           cmd_music_open_artist,
     "music_theme_set":              cmd_music_theme_set,

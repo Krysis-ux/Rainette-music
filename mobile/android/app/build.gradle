@@ -4,6 +4,8 @@ def androidKeystorePath = System.getenv('ANDROID_KEYSTORE_PATH')
 def androidKeystorePassword = System.getenv('ANDROID_KEYSTORE_PASSWORD')
 def androidKeyAlias = System.getenv('ANDROID_KEY_ALIAS')
 def androidKeyPassword = System.getenv('ANDROID_KEY_PASSWORD')
+def rainetteVersionName = System.getenv('RAINETTE_VERSION_NAME') ?: '1.0.0'
+def rainetteVersionCode = (System.getenv('RAINETTE_VERSION_CODE') ?: '1').toInteger()
 def releaseTaskRequested = gradle.startParameter.taskNames.any {
     it.toLowerCase().contains('release')
 }
@@ -24,8 +26,8 @@ android {
         applicationId "com.krysisux.rainettemusic"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode rainetteVersionCode
+        versionName rainetteVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

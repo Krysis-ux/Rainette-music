@@ -9,8 +9,8 @@ import androidx.media3.session.SessionToken;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import com.getcapacitor.annotation.PluginMethod;
 import com.google.common.util.concurrent.ListenableFuture;
 import java.util.concurrent.Executor;
 
@@ -47,7 +47,7 @@ public final class RainettePlayerPlugin extends Plugin {
                 player.prepare();
             } else if ("play".equals(action)) player.play();
             else if ("pause".equals(action)) player.pause();
-            else if ("seek".equals(action)) player.seekTo((long) (payload.getDouble("positionMs", 0d)));
+            else if ("seek".equals(action)) player.seekTo((long) payload.optDouble("positionMs", 0d));
             else if ("next".equals(action)) player.seekToNextMediaItem();
             else if ("previous".equals(action)) player.seekToPreviousMediaItem();
             else if ("repeat".equals(action)) player.setRepeatMode(payload.getBoolean("enabled", false) ? Player.REPEAT_MODE_ALL : Player.REPEAT_MODE_OFF);
