@@ -267,6 +267,28 @@ def test_core_release_browser_flow():
             )
             assert page.evaluate("() => localStorage.getItem('rw.mp.volume')") == "0.37"
 
+            command_button = page.locator("#rwCommandOpen")
+            command_box = command_button.bounding_box()
+            dock_box = page.locator("#rwDockedBar").bounding_box()
+            assert command_box and dock_box and command_box["y"] + command_box["height"] <= dock_box["y"], (
+                command_box,
+                dock_box,
+            )
+            command_button.click()
+            page.locator("#rwCommandPalette").wait_for(state="visible")
+            page.keyboard.press("Escape")
+
+            page.locator('#rwMusicTabs button[data-tab="settings"]').click()
+            default_tab = page.locator('[aria-label="Default tab on launch"] .rh-selectx-button')
+            default_tab.click()
+            menu = page.locator(".rh-selectx-list.open")
+            menu.wait_for(state="visible")
+            menu_box = menu.bounding_box()
+            dock_box = page.locator("#rwDockedBar").bounding_box()
+            assert menu_box and dock_box and menu_box["y"] + menu_box["height"] <= dock_box["y"], (menu_box, dock_box)
+            assert menu.get_by_role("option").count() >= 7
+            default_tab.press("Escape")
+
             page.locator('#rwMusicTabs button[data-tab="insights"]').click()
             emit(
                 page,

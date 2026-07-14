@@ -1754,9 +1754,8 @@ html.rw-reduced-motion .rw-now-seek-fill, html.rw-reduced-motion .rw-now-view-se
    (.rw-has-docked-bar #rwMusicPage) never matches, and a plain
    .rw-has-docked-bar .rw-page-body loses on specificity to the base
    #rwMusicPage .rw-page-body padding. */
-#rwMusicPage.rw-has-docked-bar { --rw-docked-clearance: 84px; }
 @media (min-width: 901px) {
-	#rwMusicPage .rw-music-sidebar { padding-bottom: calc(22px + var(--rw-docked-clearance)); }
+	#rwMusicPage.rw-has-docked-bar .rw-music-sidebar { padding-bottom: calc(18px + var(--rw-docked-clearance)); }
 }
 /* Lift the queue drawer (absolute, bottom:26px by default) above the ~70px bar
    so its bottom rows aren't hidden behind it when a full queue is open. */
