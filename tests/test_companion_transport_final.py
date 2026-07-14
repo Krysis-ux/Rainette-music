@@ -122,3 +122,66 @@ class CompanionCommandHttpTests(unittest.IsolatedAsyncioTestCase):
             server.music_bridge.DISPATCH.pop("music_library_index", None)
         else:
             server.music_bridge.DISPATCH["music_library_index"] = original
+
+
+ async def test_events_requires_authentication_and_replays_revisioned_messages(self):
+    registry = CompanionRegistry(now=lambda: 1_000)
+    token = _approve(registry)
+    sync_broker = server.CompanionSyncBroker(history_limit=4)
+    sync_broker.publish({"type": "music_now_playing", "track": {"title": "From desktop"}})
+    client = TestClient(TestServer(server.build_companion_app(registry, sync_broker=sync_broker)))
+    await client.start_server()
+    try:
+        denied = await client.get("/events?after=0&wait=0")
+        assert denied.status == 401
+
+        response = await client.get(
+            "/events?after=0&wait=0",
+            headers={"Authorization": "Bearer " + token},
+        )
+        assert response.status == 200
+        body = await response.json()
+        assert body["ok"] is True
+        assert body["revision"] == 1
+        assert body["reset_required"] is False
+        assert body["events"] == [{
+            "revision": 1,
+            "message": {"type": "music_now_playing", "track": {"title": "From desktop"}},
+        }]
+    finally:
+        await client.close()
+
+
+ async def test_output_transfer_waits_for_target_confirmation_before_acknowledging(self):
+    registry = CompanionRegistry(now=lambda: 1_000)
+    token = _approve(registry)
+    original = server.music_bridge.DISPATCH.get("music_output_transfer")
+
+    def target_confirmation(message):
+        def finish():
+            server.hub.broadcast({
+                "type": "music_output_transfer_result", "id": message["id"],
+                "ok": True, "target_device_id": "desktop",
+            })
+        threading.Thread(target=finish, daemon=True).start()
+
+    server.music_bridge.DISPATCH["music_output_transfer"] = target_confirmation
+    client = TestClient(TestServer(server.build_companion_app(registry, command_timeout_s=1)))
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/command",
+            headers={"Authorization": "Bearer " + token},
+            json={"type": "music_output_transfer", "id": "handoff", "target_device_id": "desktop", "queue": [{"title": "Transfer me"}]},
+        )
+        assert response.status == 200
+        assert await response.json() == {
+            "type": "music_output_transfer_result", "id": "handoff",
+            "ok": True, "target_device_id": "desktop",
+        }
+    finally:
+        await client.close()
+        if original is None:
+            server.music_bridge.DISPATCH.pop("music_output_transfer", None)
+        else:
+            server.music_bridge.DISPATCH["music_output_transfer"] = original

@@ -965,12 +965,14 @@ function wireRemote() {
 		const msg = e.detail; if (!msg) return;
 		if (msg.type === 'music_remote_play' && Array.isArray(msg.tracks)) {
 			playQueue(msg.tracks, msg.index || 0);
-			try { nativeApi()?.reveal_player?.(); } catch { /* not in pywebview */ }
+			if (window.RW_MINIPLAYER_ENABLED) {
+				try { nativeApi()?.reveal_player?.(); } catch { /* not in pywebview */ }
+			}
 		} else if (msg.type === 'music_theme_set') {
 			// Keep in sync with rainette_settings.js's THEME_CLASS map.
 			const THEME_CLASS = { light: 'rw-theme-light', dark: 'rw-theme-dark', mono: 'rw-theme-mono', midnight: 'rw-theme-midnight' };
 			document.documentElement.classList.remove(...Object.values(THEME_CLASS));
-			document.documentElement.classList.add(THEME_CLASS[msg.theme] || THEME_CLASS.mono);
+			document.documentElement.classList.add(THEME_CLASS[msg.theme] || THEME_CLASS.light);
 		} else if (msg.type === 'music_accent_set') {
 			document.documentElement.classList.remove('rw-accent-teal', 'rw-accent-purple');
 			if (msg.accent === 'teal' || msg.accent === 'purple') document.documentElement.classList.add('rw-accent-' + msg.accent);
@@ -980,7 +982,7 @@ function wireRemote() {
 			else if (a === 'queue_add_end') queueAddEnd(msg.track);
 			else if (a === 'queue_move') queueMove(msg.from, msg.to);
 			else if (a === 'queue_remove') queueRemove(msg.index);
-			else if (a === 'queue_play_index') { queuePlayIndex(msg.index); try { nativeApi()?.reveal_player?.(); } catch { /* not in pywebview */ } }
+			else if (a === 'queue_play_index') { queuePlayIndex(msg.index); if (window.RW_MINIPLAYER_ENABLED) { try { nativeApi()?.reveal_player?.(); } catch { /* not in pywebview */ } } }
 			else if (a === 'queue_shuffle') queueShuffle();
 			else if (a === 'queue_dedupe') queueDedupe();
 			else if (a === 'queue_clear_up_next') queueClearUpNext();

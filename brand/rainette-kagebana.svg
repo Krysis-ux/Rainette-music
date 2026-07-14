@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Rainette Kagebana flower mark</title>
+  <desc id="desc">A forward-facing seven petal white flower and broken orbit on an ink-black field.</desc>
+  <rect width="1024" height="1024" rx="236" fill="#0b0f0d"/>
+  <g fill="#f7f7f2" transform="translate(512 512)">
+    <path id="petal" d="M0-412C-106-314-132-170 0-74C132-170 106-314 0-412Z"/>
+    <use href="#petal" transform="rotate(51.4286)"/>
+    <use href="#petal" transform="rotate(102.8571)"/>
+    <use href="#petal" transform="rotate(154.2857)"/>
+    <use href="#petal" transform="rotate(205.7143)"/>
+    <use href="#petal" transform="rotate(257.1429)"/>
+    <use href="#petal" transform="rotate(308.5714)"/>
+  </g>
+  <circle cx="512" cy="512" r="155" fill="#0b0f0d" stroke="#f7f7f2" stroke-width="24"/>
+  <path d="M188 648A384 384 0 0 1 244 283M760 215A384 384 0 0 1 850 633" fill="none" stroke="#f7f7f2" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="780" cy="177" r="18" fill="#f7f7f2"/>
+</svg>

@@ -108,17 +108,8 @@
 .rw-page-head {
 	display: flex; align-items: center; gap: 14px;
 	padding: 22px 30px 16px;
-	/* Persistent chrome: a faint frosted band separated from scrolling content
-	   by a hairline, so the title + tab bar feel anchored without stealing
-	   emphasis from the page body below. */
-	background: linear-gradient(
-		to bottom,
-		color-mix(in oklab, var(--rw-surface) 55%, transparent),
-		color-mix(in oklab, var(--rw-surface) 20%, transparent)
-	);
-	-webkit-backdrop-filter: blur(8px) saturate(1.1);
-	backdrop-filter: blur(8px) saturate(1.1);
-	border-bottom: 1px solid color-mix(in oklab, var(--rw-border) 70%, transparent);
+	background: var(--rw-surface);
+	border-bottom: 1px solid var(--rw-border);
 }
 .rw-page-title { font-size: 21px; font-weight: 650; letter-spacing: -0.2px; margin: 0; }
 .rw-page-sub   { font-size: 13px; color: var(--rw-text-soft); margin: 2px 0 0; }
@@ -130,17 +121,11 @@
 .rw-head-spacer { flex: 1; }
 
 /* ── Bubble card ────────────────────────────────────────────────────────── */
-/* Subtle liquid-glass lift consistent with the mini player: a translucent
-   raised surface, a soft blur, and a layered shadow with an inset top
-   highlight so the card catches light along its top edge. Kept restrained so
-   long stacked lists of track cards stay legible and calm. */
 .rw-bubble {
-	background: color-mix(in oklab, var(--rw-surface-raised) 82%, transparent);
-	-webkit-backdrop-filter: blur(10px) saturate(1.15);
-	backdrop-filter: blur(10px) saturate(1.15);
+	background: var(--rw-surface-raised);
 	border: 1px solid var(--rw-border);
 	border-radius: var(--rw-radius-bubble);
-	box-shadow: var(--rw-shadow-sm), inset 0 1px 0 oklch(100% 0 0 / 0.5);
+	box-shadow: var(--rw-shadow-sm);
 }
 .rw-bubble-pad { padding: 18px 20px; }
 
@@ -155,9 +140,9 @@
 	padding: 9px 16px;
 	cursor: pointer;
 	transition: background var(--rw-fast) var(--rw-ease), transform var(--rw-fast) var(--rw-ease), box-shadow var(--rw-fast) var(--rw-ease);
-	box-shadow: var(--rw-shadow-sm);
+	box-shadow: none;
 }
-.rw-btn:hover  { background: var(--rw-surface-raised); box-shadow: var(--rw-shadow-md); transform: translateY(-1px); border-color: var(--rw-border-strong); }
+.rw-btn:hover  { background: var(--rw-surface-raised); box-shadow: var(--rw-shadow-sm); transform: translateY(-1px); border-color: var(--rw-border-strong); }
 .rw-btn:active { transform: translateY(0) scale(0.985); box-shadow: var(--rw-shadow-sm); }
 .rw-btn:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
 .rw-btn[disabled] { opacity: 0.5; cursor: default; box-shadow: none; transform: none; }
@@ -448,20 +433,15 @@
 /* Glyph gets a soft accent-tinted disc behind it so the empty state reads as
    a designed moment rather than orphaned text. */
 .rw-empty .rw-empty-icon {
-	display: grid;
-	place-items: center;
-	width: 78px;
-	height: 78px;
+	display: block;
+	width: 72px;
+	height: 72px;
 	margin-bottom: 20px;
-	font-size: 34px;
-	line-height: 1;
-	color: var(--rw-accent-strong);
-	background:
-		radial-gradient(circle at 50% 38%, color-mix(in oklab, var(--rw-accent-soft) 90%, var(--rw-surface)) 0%, color-mix(in oklab, var(--rw-accent-soft) 40%, transparent) 70%);
-	border: 1px solid color-mix(in oklab, var(--rw-accent) 30%, transparent);
-	border-radius: 50%;
-	box-shadow: var(--rw-shadow-sm), inset 0 1px 0 oklch(100% 0 0 / 0.5);
+	border-radius: 17px;
+	overflow: hidden;
+	box-shadow: var(--rw-shadow-sm);
 }
+.rw-empty .rw-empty-icon img { display: block; width: 100%; height: 100%; }
 .rw-empty h3 { font-size: 16.5px; font-weight: 650; margin: 0 0 8px; letter-spacing: -0.15px; }
 .rw-empty p  { font-size: 13.5px; line-height: 1.6; color: var(--rw-text-soft); margin: 0 0 18px; max-width: 34ch; }
 
@@ -763,17 +743,16 @@ body.rw-page-open #infoPanel {
 	flex: 1;
 	min-height: 0;
 	display: grid;
-	grid-template-columns: 232px minmax(0, 1fr);
+	grid-template-columns: 216px minmax(0, 1fr);
 }
 .rw-music-sidebar {
 	min-width: 0;
 	display: flex;
 	flex-direction: column;
-	gap: 18px;
-	padding: 22px 16px;
-	background: color-mix(in oklab, var(--rw-surface) 72%, var(--rw-bg));
-	border-right: 1px solid color-mix(in oklab, var(--rw-border) 78%, transparent);
-	box-shadow: inset -1px 0 0 oklch(100% 0 0 / 0.34);
+	gap: 16px;
+	padding: 18px 14px;
+	background: var(--rw-surface);
+	border-right: 1px solid var(--rw-border);
 }
 .rw-music-brand {
 	display: flex;
@@ -782,14 +761,14 @@ body.rw-page-open #infoPanel {
 	padding: 4px 4px 12px;
 }
 .rw-music-mark {
-	width: 38px;
-	height: 38px;
-	border-radius: 12px;
+	width: 36px;
+	height: 36px;
+	border-radius: 10px;
 	display: grid;
 	place-items: center;
 	color: var(--rw-on-accent);
-	background: linear-gradient(150deg, var(--rw-accent), var(--rw-accent-strong));
-	box-shadow: var(--rw-shadow-sm), inset 0 1px 0 oklch(100% 0 0 / 0.22);
+	background: #0b0f0d;
+	box-shadow: var(--rw-shadow-sm);
 	font: 750 17px/1 var(--rw-font);
 	overflow: hidden;
 }
@@ -826,10 +805,10 @@ body.rw-page-open #infoPanel {
 .rw-music-nav button:active { transform: translateY(1px); }
 .rw-music-nav button:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
 .rw-music-nav button.on {
-	background: var(--rw-surface-raised);
-	border-color: var(--rw-border);
+	background: var(--rw-accent-soft);
+	border-color: color-mix(in oklab, var(--rw-accent) 25%, transparent);
 	color: var(--rw-accent-strong);
-	box-shadow: var(--rw-shadow-sm), inset 0 1px 0 oklch(100% 0 0 / 0.55);
+	box-shadow: none;
 }
 .rw-music-sidebar-foot {
 	margin-top: auto;
@@ -859,8 +838,9 @@ body.rw-page-open #infoPanel {
 	flex-direction: column;
 }
 #rwMusicPage .rw-page-head {
-	padding: 24px 34px 18px;
-	background: color-mix(in oklab, var(--rw-surface) 58%, transparent);
+	padding: 25px 32px 17px;
+	background: var(--rw-surface);
+	border-bottom: 1px solid var(--rw-border);
 }
 #rwMusicPage .rw-page-eyebrow {
 	margin-bottom: 7px;
@@ -870,7 +850,7 @@ body.rw-page-open #infoPanel {
 	letter-spacing: 0.08em;
 }
 #rwMusicPage .rw-page-title {
-	font-size: 26px;
+	font-size: 28px;
 	line-height: 1.12;
 	font-weight: 760;
 	letter-spacing: 0;
@@ -882,7 +862,7 @@ body.rw-page-open #infoPanel {
 	line-height: 1.45;
 	text-wrap: pretty;
 }
-#rwMusicPage .rw-page-body { padding: 18px 34px 0; overflow: hidden; }
+#rwMusicPage .rw-page-body { padding: 20px 32px 0; overflow: hidden; }
 #rwMusicBody {
 	flex: 1; min-height: 0; display: flex; flex-direction: column;
 	overflow-y: auto; overflow-x: hidden;
