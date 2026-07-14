@@ -2430,6 +2430,16 @@ function wireSeekBar(seekEl) {
 
 let _dockedBarBuilt = false;
 let _dockedBarShown = false;
+let _dockedClearanceObserver = null;
+function syncDockedClearance(bar) {
+	if (!_host) return;
+	if (bar.hidden) {
+		_host.style.removeProperty('--rw-docked-clearance');
+		return;
+	}
+	const height = Math.ceil(bar.getBoundingClientRect().height);
+	_host.style.setProperty('--rw-docked-clearance', `${Math.max(0, height + 14)}px`);
+}
 function ensureDockedBar() {
 	const bar = _host?.querySelector('#rwDockedBar');
 	if (!bar || _dockedBarBuilt) return bar;
@@ -2488,6 +2498,8 @@ function ensureDockedBar() {
 	bar.querySelector('.rw-now-bar-extra')?.prepend(iconSpan('volume', 'rw-now-volume-icon'), volume);
 	bar.querySelector('.rw-now-bar-meta').addEventListener('click', openNowPlayingView);
 	wireSeekBar(bar.querySelector('.rw-now-seek'));
+	_dockedClearanceObserver = new ResizeObserver(() => syncDockedClearance(bar));
+	_dockedClearanceObserver.observe(bar);
 	return bar;
 }
 
@@ -2502,6 +2514,7 @@ function renderDockedBar() {
 	const show = !!track && pageState.playbackStarted;
 	bar.hidden = !show;
 	_host?.classList.toggle('rw-has-docked-bar', show);
+	requestAnimationFrame(() => syncDockedClearance(bar));
 	// Slide-up entrance only on the transition from hidden→shown, so it "pops
 	// up" when playback begins rather than re-animating on every render.
 	if (show && !_dockedBarShown && !motionDisabled()) {
