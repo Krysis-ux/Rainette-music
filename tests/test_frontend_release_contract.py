@@ -70,7 +70,7 @@ class FrontendReleaseContractTests(unittest.TestCase):
         self.assertIn("mp-artist-link", self.miniplayer)
         self.assertIn("case 'music_open_artist'", self.music)
 
-    def test_shell_uses_raindrop_asset_instead_of_letter_mark(self):
+    def test_shell_uses_branded_asset_instead_of_letter_mark(self):
         self.assertIn("rainette-icon-256.png", self.music)
         self.assertNotIn('class="rw-music-mark" aria-hidden="true">R<', self.music)
         logo = ROOT / "web" / "assets" / "rainette-icon-256.png"
