@@ -151,7 +151,7 @@ function _mountWhenReady(page) {
 // calls become socket messages the player window acts on. rainette_music.js keeps
 // calling window.RainetteMusic.* unchanged; this shim stands in for the engine.
 
-if (typeof window !== 'undefined' && window.RW_REMOTE && window.RW_MINIPLAYER_ENABLED) {
+if (typeof window !== 'undefined' && window.RW_REMOTE) {
 	let _lastPlay = null;
 	const _showPlayer = () => { try { window.pywebview && window.pywebview.api && window.pywebview.api.reveal_player(); } catch { /* not in pywebview */ } };
 	const _queueControl = payload => sendHelper({ type: 'music_remote_control', ...payload });
@@ -217,6 +217,21 @@ if (typeof window !== 'undefined' && window.RW_REMOTE && window.RW_MINIPLAYER_EN
 		// The player window (re)connected and asked for the current queue.
 		else if (msg.type === 'music_request_state' && _lastPlay) {
 			sendHelper({ type: 'music_remote_play', tracks: _lastPlay.tracks, index: _lastPlay.index });
+		}
+		else if (msg.type === 'music_output_transfer' && msg.target_device_id === 'desktop') {
+			const tracks = Array.isArray(msg.queue) ? msg.queue : [];
+			if (!tracks.length) {
+				sendHelper({ type: 'music_output_transfer_result', id: msg.id, ok: false, msg: 'Transfer queue is empty' });
+				return;
+			}
+			// playQueue hands the queue to the desktop-owned player. The source
+			// phone receives the success response only after this target accepted
+			// it, so it can then pause without a playback gap on failed transfers.
+			window.RainetteMusic?.playQueue(tracks, Math.max(0, Number(msg.index) || 0));
+			sendHelper({
+				type: 'music_output_transfer_result', id: msg.id, ok: true,
+				target_device_id: 'desktop', current_time: Number(msg.current_time || 0),
+			});
 		}
 	});
 }

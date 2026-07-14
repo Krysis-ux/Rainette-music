@@ -1,7 +1,7 @@
 /* ==========================================================================
    Rainette product tokens (--rw-*)
-   Default is the restored warm/light workspace. The previous graphite palette
-   remains available as dark mode via body.rw-theme-dark.
+   Default is Rainette's paper-and-ink workspace. Dark mode keeps the same
+   green accent so the product identity remains stable between appearances.
    ========================================================================== */
 
 :root {
@@ -9,24 +9,24 @@
 	--rainette-nav-peek: 30px;
 
 	/* Surfaces */
-	--rw-bg:             oklch(96% 0.018 82);
-	--rw-bg-sunken:      oklch(92% 0.024 82);
-	--rw-surface:        oklch(99% 0.010 82);
-	--rw-surface-raised: oklch(100% 0 0);
+	--rw-bg:             oklch(97.5% 0.008 155);
+	--rw-bg-sunken:      oklch(94% 0.014 155);
+	--rw-surface:        oklch(99.2% 0.004 155);
+	--rw-surface-raised: oklch(99.8% 0.002 155);
 
 	/* Text */
-	--rw-text:        oklch(25% 0.026 56);
-	--rw-text-soft:   oklch(42% 0.035 56);
-	--rw-text-muted:  oklch(58% 0.030 56);
+	--rw-text:        oklch(17% 0.016 155);
+	--rw-text-soft:   oklch(38% 0.020 155);
+	--rw-text-muted:  oklch(56% 0.018 155);
 
 	/* Accent */
-	--rw-accent:        oklch(64% 0.120 38);
-	--rw-accent-strong: oklch(50% 0.130 35);
-	--rw-accent-soft:   oklch(91% 0.050 42);
-	--rw-on-accent:     oklch(99% 0.010 80);
+	--rw-accent:        oklch(47% 0.125 155);
+	--rw-accent-strong: oklch(38% 0.110 155);
+	--rw-accent-soft:   oklch(92.5% 0.038 155);
+	--rw-on-accent:     oklch(99% 0.004 155);
 	/* Stable reference for the Settings accent-swatch preview — unlike
 	   --rw-accent, this never gets remapped by .rw-accent-teal/-purple. */
-	--rw-accent-default: oklch(64% 0.120 38);
+	--rw-accent-default: oklch(47% 0.125 155);
 
 	/* Quiet category accents */
 	--rw-teal:        oklch(58% 0.095 176);
@@ -39,21 +39,21 @@
 	--rw-warn-soft:   oklch(92% 0.060 78);
 
 	/* Borders */
-	--rw-border:        oklch(84% 0.022 75);
-	--rw-border-strong: oklch(72% 0.030 68);
+	--rw-border:        oklch(87% 0.012 155);
+	--rw-border-strong: oklch(73% 0.020 155);
 
 	/* Depth */
-	--rw-shadow-sm: 0 1px 2px oklch(30% 0.04 55 / 0.08), 0 5px 16px oklch(35% 0.04 55 / 0.08);
-	--rw-shadow-md: 0 1px 2px oklch(30% 0.04 55 / 0.10), 0 10px 28px oklch(35% 0.04 55 / 0.12);
-	--rw-shadow-lg: 0 2px 4px oklch(30% 0.04 55 / 0.12), 0 18px 52px oklch(35% 0.04 55 / 0.16);
+	--rw-shadow-sm: 0 1px 2px oklch(18% 0.02 155 / 0.05), 0 5px 16px oklch(18% 0.02 155 / 0.05);
+	--rw-shadow-md: 0 1px 2px oklch(18% 0.02 155 / 0.07), 0 10px 28px oklch(18% 0.02 155 / 0.08);
+	--rw-shadow-lg: 0 2px 4px oklch(18% 0.02 155 / 0.10), 0 18px 52px oklch(18% 0.02 155 / 0.12);
 
 	/* Shape */
-	--rw-radius-bubble:  16px;
+	--rw-radius-bubble:  13px;
 	--rw-radius-control: 10px;
 	--rw-radius-pill:    999px;
 
 	/* Type */
-	--rw-font: Inter, "Segoe UI", system-ui, sans-serif;
+	--rw-font: "Segoe UI Variable Text", Aptos, "Segoe UI", system-ui, sans-serif;
 	--rw-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
 
 	/* Motion */
@@ -80,20 +80,20 @@
    not just <html>. Custom properties cascade regardless of tag name, so
    this is functionally identical everywhere they're toggled on <html>. */
 .rw-theme-light {
-	--rw-bg:             oklch(96% 0.018 82);
-	--rw-bg-sunken:      oklch(92% 0.024 82);
-	--rw-surface:        oklch(99% 0.010 82);
-	--rw-surface-raised: oklch(100% 0 0);
+	--rw-bg:             oklch(97.5% 0.008 155);
+	--rw-bg-sunken:      oklch(94% 0.014 155);
+	--rw-surface:        oklch(99.2% 0.004 155);
+	--rw-surface-raised: oklch(99.8% 0.002 155);
 
-	--rw-text:        oklch(25% 0.026 56);
-	--rw-text-soft:   oklch(42% 0.035 56);
-	--rw-text-muted:  oklch(58% 0.030 56);
+	--rw-text:        oklch(17% 0.016 155);
+	--rw-text-soft:   oklch(38% 0.020 155);
+	--rw-text-muted:  oklch(56% 0.018 155);
 
-	--rw-accent:        oklch(64% 0.120 38);
-	--rw-accent-strong: oklch(50% 0.130 35);
-	--rw-accent-soft:   oklch(91% 0.050 42);
-	--rw-on-accent:     oklch(99% 0.010 80);
-	--rw-accent-default: oklch(64% 0.120 38);
+	--rw-accent:        oklch(47% 0.125 155);
+	--rw-accent-strong: oklch(38% 0.110 155);
+	--rw-accent-soft:   oklch(92.5% 0.038 155);
+	--rw-on-accent:     oklch(99% 0.004 155);
+	--rw-accent-default: oklch(47% 0.125 155);
 
 	--rw-teal:        oklch(58% 0.095 176);
 	--rw-teal-soft:   oklch(90% 0.045 176);
@@ -104,32 +104,32 @@
 	--rw-warn:        oklch(64% 0.115 78);
 	--rw-warn-soft:   oklch(92% 0.060 78);
 
-	--rw-border:        oklch(84% 0.022 75);
-	--rw-border-strong: oklch(72% 0.030 68);
+	--rw-border:        oklch(87% 0.012 155);
+	--rw-border-strong: oklch(73% 0.020 155);
 
-	--rw-shadow-sm: 0 1px 2px oklch(30% 0.04 55 / 0.08), 0 5px 16px oklch(35% 0.04 55 / 0.08);
-	--rw-shadow-md: 0 1px 2px oklch(30% 0.04 55 / 0.10), 0 10px 28px oklch(35% 0.04 55 / 0.12);
-	--rw-shadow-lg: 0 2px 4px oklch(30% 0.04 55 / 0.12), 0 18px 52px oklch(35% 0.04 55 / 0.16);
+	--rw-shadow-sm: 0 1px 2px oklch(18% 0.02 155 / 0.05), 0 5px 16px oklch(18% 0.02 155 / 0.05);
+	--rw-shadow-md: 0 1px 2px oklch(18% 0.02 155 / 0.07), 0 10px 28px oklch(18% 0.02 155 / 0.08);
+	--rw-shadow-lg: 0 2px 4px oklch(18% 0.02 155 / 0.10), 0 18px 52px oklch(18% 0.02 155 / 0.12);
 }
 
 .rw-theme-dark {
 	/* Surfaces */
-	--rw-bg:             oklch(15.5% 0.012 255);
-	--rw-bg-sunken:      oklch(12.5% 0.010 255);
-	--rw-surface:        oklch(19%   0.014 255);
-	--rw-surface-raised: oklch(23%   0.016 255);
+	--rw-bg:             oklch(14.5% 0.014 155);
+	--rw-bg-sunken:      oklch(11.5% 0.012 155);
+	--rw-surface:        oklch(18.5% 0.016 155);
+	--rw-surface-raised: oklch(22.5% 0.018 155);
 
 	/* Text */
-	--rw-text:        oklch(92% 0.008 240);
-	--rw-text-soft:   oklch(74% 0.012 240);
-	--rw-text-muted:  oklch(58% 0.014 240);
+	--rw-text:        oklch(94% 0.008 155);
+	--rw-text-soft:   oklch(76% 0.012 155);
+	--rw-text-muted:  oklch(60% 0.014 155);
 
 	/* Accent */
-	--rw-accent:        oklch(78% 0.105 205);
-	--rw-accent-strong: oklch(69% 0.100 205);
-	--rw-accent-soft:   oklch(27% 0.050 205);
-	--rw-on-accent:     oklch(12% 0.015 245);
-	--rw-accent-default: oklch(78% 0.105 205);
+	--rw-accent:        oklch(76% 0.125 155);
+	--rw-accent-strong: oklch(68% 0.120 155);
+	--rw-accent-soft:   oklch(27% 0.052 155);
+	--rw-on-accent:     oklch(13% 0.016 155);
+	--rw-accent-default: oklch(76% 0.125 155);
 
 	/* Quiet category accents */
 	--rw-teal:        oklch(76% 0.095 175);
@@ -142,8 +142,8 @@
 	--rw-warn-soft:   oklch(27% 0.055 75);
 
 	/* Borders */
-	--rw-border:        oklch(31% 0.018 255);
-	--rw-border-strong: oklch(40% 0.022 250);
+	--rw-border:        oklch(31% 0.020 155);
+	--rw-border-strong: oklch(42% 0.026 155);
 
 	/* Depth */
 	--rw-shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.30), 0 1px 8px oklch(0% 0 0 / 0.18);

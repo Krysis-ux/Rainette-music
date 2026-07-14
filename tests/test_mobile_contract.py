@@ -51,7 +51,7 @@ class MobileContractTests(unittest.TestCase):
 
     def test_android_pair_ack_is_durable_retried_and_reconciled_after_restart(self):
         plugin = (MOBILE / "android" / "app" / "src" / "main" / "java" / "com" / "krysisux" / "rainettemusic" / "RainetteCompanionPlugin.java").read_text(encoding="utf-8")
-        load = _braced_block(plugin, "protected void load()")
+        load = _braced_block(plugin, "public void load()")
         self.assertIn("reconcilePendingAcknowledgement", load)
         self.assertIn('putString("pending_ack_request_id", requestId)', plugin)
         self.assertIn('getString("pending_ack_request_id", "")', plugin)

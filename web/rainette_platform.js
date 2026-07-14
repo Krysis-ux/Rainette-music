@@ -4,6 +4,7 @@
 (function () {
 	const plugins = window.Capacitor?.Plugins;
 	if (!plugins) return;
+	document.documentElement.classList.add('rw-native-mobile');
 	const player = plugins.RainettePlayer;
 	const companion = plugins.RainetteCompanion;
 	if (!player && !companion) return;
@@ -26,4 +27,14 @@
 
 	player?.addListener('rainettePlaybackState', event => publish(event));
 	companion?.addListener('rainetteCompanionMessage', event => publish(event));
+	companion?.addListener('rainetteCompanionSync', event => {
+		if (event?.reset_required) publish({ type: 'rainette_companion_refresh', revision: event.revision });
+		for (const item of event?.events || []) {
+			if (item?.message) publish({ ...item.message, companion_revision: item.revision });
+		}
+		if (event?.status) publish({ type: 'rainette_companion_sync', ...event });
+	});
+	// Native long-polling is deliberately started here instead of being tied to
+	// one page, so Search, Library, and the player all receive live updates.
+	companion?.startSync?.().catch(() => {});
 })();

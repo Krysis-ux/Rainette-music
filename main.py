@@ -39,7 +39,11 @@ PLAYER_EXPANDED_HEIGHT = 184
 
 APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path(__file__).resolve().parent) / "Rainette Music"
 LOG_PATH = APP_DATA_DIR / "rainette-music.log"
-ICON_PATH = Path(__file__).resolve().parent / "web" / "assets" / "rainette-icon.ico"
+# PyInstaller exposes bundled data under _MEIPASS.  Source runs continue to use
+# the repository root, while a self-contained --onedir build uses its internal
+# resource directory instead of relying on Python being installed on PATH.
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+ICON_PATH = RESOURCE_DIR / "web" / "assets" / "rainette-icon.ico"
 ANDROID_APK_URL = (
     "https://github.com/Krysis-ux/Rainette-music/releases/latest/download/"
     "rainette-music-android.apk"

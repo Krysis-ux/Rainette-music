@@ -2434,10 +2434,9 @@ function ensureDockedBar() {
 	const bar = _host?.querySelector('#rwDockedBar');
 	if (!bar || _dockedBarBuilt) return bar;
 	_dockedBarBuilt = true;
-	// A pop-out button appears only when the floating miniplayer is enabled -
-	// it re-reveals that window if it was hidden, without disturbing this bar.
-	const popoutBtn = window.RW_MINIPLAYER_ENABLED
-		? `<button class="rw-now-btn rw-now-popout" data-act="popout" title="Pop out player" aria-label="Pop out floating player">${iconMarkup('chevronUp', 16)}</button>`
+	// The pop-out is always available. Automatic opening is a separate setting.
+	const popoutBtn = window.RW_REMOTE
+		? `<button class="rw-now-btn rw-now-popout" data-act="popout" title="Open mini player" aria-label="Open mini player">${iconMarkup('chevronUp', 16)}</button>`
 		: '';
 	bar.innerHTML = `
 		<div class="rw-now-seek" role="slider" aria-label="Seek"><div class="rw-now-seek-fill"></div></div>
@@ -2595,7 +2594,12 @@ async function startMixFromSeed(seed) {
 
 function _empty(title, sub) {
 	const wrap = el('div', 'rw-empty');
-	wrap.append(el('div', 'rw-empty-icon', '♪'), el('h3', '', title), el('p', '', sub));
+	const icon = el('div', 'rw-empty-icon');
+	const image = document.createElement('img');
+	image.src = '/assets/rainette-icon-256.png';
+	image.alt = '';
+	icon.appendChild(image);
+	wrap.append(icon, el('h3', '', title), el('p', '', sub));
 	return wrap;
 }
 
@@ -2918,7 +2922,7 @@ function buildPage(host) {
 					<div class="rw-music-mark" aria-hidden="true"><img src="/assets/rainette-icon-256.png" alt=""></div>
 					<div class="rw-music-brand-text">
 						<div class="rw-music-brand-name">Rainette</div>
-						<div class="rw-music-brand-sub">Music desk</div>
+						<div class="rw-music-brand-sub">Quiet listening</div>
 					</div>
 				</div>
 				<nav class="rw-music-nav" id="rwMusicTabs">${tabs}</nav>
@@ -2936,7 +2940,6 @@ function buildPage(host) {
 			<div class="rw-music-main">
 				<div class="rw-page-head">
 					<div>
-						<div class="rw-page-eyebrow" id="rwMusicEyebrow">Catalog</div>
 						<h1 class="rw-page-title" id="rwMusicTitle">Search the catalog</h1>
 						<p class="rw-page-sub" id="rwMusicSub">Find songs, artists, and albums without leaving the listening flow.</p>
 					</div>
