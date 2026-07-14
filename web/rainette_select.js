@@ -74,9 +74,28 @@ export function createSelect({ options, value, onChange, ariaLabel, className = 
 	// "portal" pattern) and positioned with computed viewport coordinates.
 	function positionList() {
 		const r = button.getBoundingClientRect();
+		const viewport = window.visualViewport;
+		const safeTop = viewport?.offsetTop ?? 0;
+		const viewportBottom = (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight);
+		const dock = document.querySelector('#rwDockedBar');
+		const dockRect = dock && !dock.hidden ? dock.getBoundingClientRect() : null;
+		// A fixed player bar is visually part of the viewport, but not a usable
+		// region for a menu. Only reserve it when it actually reaches the bottom.
+		const safeBottom = dockRect && dockRect.bottom >= viewportBottom - 1
+			? Math.min(viewportBottom, dockRect.top)
+			: viewportBottom;
+		const gap = 6;
+		const below = Math.max(0, safeBottom - r.bottom - gap);
+		const above = Math.max(0, r.top - safeTop - gap);
+		const naturalHeight = Math.min(280, list.scrollHeight || 280);
+		const openAbove = below < naturalHeight && above > below;
+		const available = openAbove ? above : below;
+		const height = Math.max(72, Math.min(naturalHeight, available));
 		list.style.left = r.left + 'px';
-		list.style.top = (r.bottom + 6) + 'px';
+		list.style.top = openAbove ? (r.top - gap - height) + 'px' : (r.bottom + gap) + 'px';
 		list.style.width = r.width + 'px';
+		list.style.maxHeight = height + 'px';
+		list.classList.toggle('opens-upward', openAbove);
 	}
 
 	function openSelf() {
@@ -90,6 +109,8 @@ export function createSelect({ options, value, onChange, ariaLabel, className = 
 		document.addEventListener('mousedown', onDocMouseDown, true);
 		document.addEventListener('scroll', positionList, true);
 		window.addEventListener('resize', positionList);
+		window.visualViewport?.addEventListener('resize', positionList);
+		window.visualViewport?.addEventListener('scroll', positionList);
 	}
 
 	function closeSelf() {
@@ -101,6 +122,10 @@ export function createSelect({ options, value, onChange, ariaLabel, className = 
 		document.removeEventListener('mousedown', onDocMouseDown, true);
 		document.removeEventListener('scroll', positionList, true);
 		window.removeEventListener('resize', positionList);
+		window.visualViewport?.removeEventListener('resize', positionList);
+		window.visualViewport?.removeEventListener('scroll', positionList);
+		list.style.removeProperty('max-height');
+		list.classList.remove('opens-upward');
 	}
 
 	function highlightedIndex() {
