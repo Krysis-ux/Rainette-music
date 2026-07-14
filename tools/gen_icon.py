@@ -1,4 +1,4 @@
-"""Render Rainette Music's raindrop app mark and bundled icon assets.
+"""Render Rainette Music's Kagebana app mark and bundled icon assets.
 
 The artwork is intentionally built from geometry instead of a platform font so
 the output remains deterministic and the silhouette stays clear at Windows'
@@ -6,7 +6,7 @@ smallest icon sizes. Run this script whenever the icon design changes.
 """
 from __future__ import annotations
 
-import math
+from math import cos, pi, sin
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -14,42 +14,16 @@ from PIL import Image, ImageDraw
 OUT_DIR = Path(__file__).resolve().parent.parent / "web" / "assets"
 OUT_ICO = OUT_DIR / "rainette-icon.ico"
 OUT_PNG = OUT_DIR / "rainette-icon-256.png"
+ANDROID_RES = Path(__file__).resolve().parent.parent / "mobile" / "android" / "app" / "src" / "main" / "res"
 
 CANVAS = 1024  # supersampled, then downsampled for crisp edges at small sizes
 ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 
-
-def oklch_to_srgb(l: float, c: float, h_deg: float) -> tuple[int, int, int]:
-    h = math.radians(h_deg)
-    a = c * math.cos(h)
-    b = c * math.sin(h)
-
-    l_ = l + 0.3963377774 * a + 0.2158037573 * b
-    m_ = l - 0.1055613458 * a - 0.0638541728 * b
-    s_ = l - 0.0894841775 * a - 1.2914855480 * b
-
-    l3, m3, s3 = l_**3, m_**3, s_**3
-
-    r_lin = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3
-    g_lin = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3
-    b_lin = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3
-
-    def to_srgb(c_lin: float) -> int:
-        c_lin = max(0.0, min(1.0, c_lin))
-        c_srgb = c_lin * 12.92 if c_lin <= 0.0031308 else 1.055 * (c_lin ** (1 / 2.4)) - 0.055
-        return round(max(0.0, min(1.0, c_srgb)) * 255)
-
-    return to_srgb(r_lin), to_srgb(g_lin), to_srgb(b_lin)
-
-
-# Matches web/rainette_tokens.css :root values.
-ACCENT = oklch_to_srgb(0.64, 0.120, 38)
-ACCENT_STRONG = oklch_to_srgb(0.50, 0.130, 35)
-ON_ACCENT = oklch_to_srgb(0.99, 0.010, 80)
-
-
-def lerp_color(c1, c2, t):
-    return tuple(round(a + (b - a) * t) for a, b in zip(c1, c2))
+# The canonical editable source is brand/rainette-kagebana.svg. This renderer
+# repeats its geometry with Pillow so the Windows and Android raster outputs
+# are deterministic and crisp at the system's smallest icon sizes.
+INK = (11, 15, 13)
+BONE = (247, 247, 242)
 
 
 def cubic_points(
@@ -81,69 +55,87 @@ def cubic_points(
     return points
 
 
-def raindrop_points() -> list[tuple[float, float]]:
-    """Return a broad, balanced drop that survives reduction to 16 px."""
-    top = (CANVAS * 0.5, CANVAS * 0.17)
-    bottom = (CANVAS * 0.5, CANVAS * 0.82)
-    right = cubic_points(
-        top,
-        (CANVAS * 0.55, CANVAS * 0.25),
-        (CANVAS * 0.72, CANVAS * 0.43),
-        (CANVAS * 0.72, CANVAS * 0.59),
+def _rotated(x: float, y: float, angle: float) -> tuple[float, float]:
+    return (
+        CANVAS * 0.5 + x * cos(angle) - y * sin(angle),
+        CANVAS * 0.5 + x * sin(angle) + y * cos(angle),
     )
-    right_bottom = cubic_points(
-        right[-1],
-        (CANVAS * 0.72, CANVAS * 0.73),
-        (CANVAS * 0.62, CANVAS * 0.82),
-        bottom,
-    )
-    left_bottom = cubic_points(
-        bottom,
-        (CANVAS * 0.38, CANVAS * 0.82),
-        (CANVAS * 0.28, CANVAS * 0.73),
-        (CANVAS * 0.28, CANVAS * 0.59),
-    )
-    left = cubic_points(
-        left_bottom[-1],
-        (CANVAS * 0.28, CANVAS * 0.43),
-        (CANVAS * 0.45, CANVAS * 0.25),
-        top,
-    )
-    return [top, *right, *right_bottom, *left_bottom, *left]
+
+
+def petal_points(angle: float) -> list[tuple[float, float]]:
+    """A tapered petal with enough mass to remain legible at 16 px."""
+    points = []
+    for index in range(25):
+        t = index / 24
+        points.append(_rotated(-105 * sin(t * pi), -74 - 338 * t, angle))
+    for index in range(24, -1, -1):
+        t = index / 24
+        points.append(_rotated(105 * sin(t * pi), -74 - 338 * t, angle))
+    return points
+
+
+def render_mark(*, round_tile: bool = False) -> Image.Image:
+    img = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
+    mask = Image.new("L", (CANVAS, CANVAS), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    if round_tile:
+        mask_draw.ellipse([0, 0, CANVAS - 1, CANVAS - 1], fill=255)
+    else:
+        radius = round(CANVAS * 0.235)
+        mask_draw.rounded_rectangle([0, 0, CANVAS - 1, CANVAS - 1], radius=radius, fill=255)
+    tile = Image.new("RGBA", (CANVAS, CANVAS), INK + (255,))
+    img.paste(tile, (0, 0), mask)
+    draw = ImageDraw.Draw(img)
+    for index in range(7):
+        draw.polygon(petal_points(index * 2 * pi / 7), fill=BONE + (255,))
+    draw.ellipse([CANVAS * .337, CANVAS * .337, CANVAS * .663, CANVAS * .663], fill=INK + (255,), outline=BONE + (255,), width=24)
+    draw.arc([CANVAS * .17, CANVAS * .17, CANVAS * .83, CANVAS * .83], 122, 194, fill=BONE + (255,), width=22)
+    draw.arc([CANVAS * .17, CANVAS * .17, CANVAS * .83, CANVAS * .83], 286, 354, fill=BONE + (255,), width=22)
+    draw.ellipse([CANVAS * .744, CANVAS * .154, CANVAS * .78, CANVAS * .19], fill=BONE + (255,))
+    return img
+
+
+def render_foreground() -> Image.Image:
+    img = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    for index in range(7):
+        draw.polygon(petal_points(index * 2 * pi / 7), fill=BONE + (255,))
+    return img
+
+
+def write_android_icons(mark: Image.Image) -> None:
+    round_mark = render_mark(round_tile=True)
+    foreground = render_foreground()
+    sizes = {
+        "mdpi": (48, 108),
+        "hdpi": (72, 162),
+        "xhdpi": (96, 216),
+        "xxhdpi": (144, 324),
+        "xxxhdpi": (192, 432),
+    }
+    for density, (legacy_size, foreground_size) in sizes.items():
+        directory = ANDROID_RES / f"mipmap-{density}"
+        directory.mkdir(parents=True, exist_ok=True)
+        mark.resize((legacy_size, legacy_size), Image.Resampling.LANCZOS).save(directory / "ic_launcher.png")
+        round_mark.resize((legacy_size, legacy_size), Image.Resampling.LANCZOS).save(directory / "ic_launcher_round.png")
+        foreground.resize((foreground_size, foreground_size), Image.Resampling.LANCZOS).save(directory / "ic_launcher_foreground.png")
 
 
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    img = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
-
-    # Diagonal gradient background (matches the app's own
-    # linear-gradient(160deg, --rw-accent, --rw-accent-strong) treatment
-    # used for the play button/pill), inside a squircle-ish rounded square.
-    grad = Image.new("RGBA", (CANVAS, CANVAS))
-    for y in range(CANVAS):
-        t = y / (CANVAS - 1)
-        row_color = lerp_color(ACCENT, ACCENT_STRONG, t)
-        grad.paste(row_color + (255,), (0, y, CANVAS, y + 1))
-
-    mask = Image.new("L", (CANVAS, CANVAS), 0)
-    mask_draw = ImageDraw.Draw(mask)
-    radius = round(CANVAS * 0.225)  # squircle-like corner radius
-    mask_draw.rounded_rectangle([0, 0, CANVAS - 1, CANVAS - 1], radius=radius, fill=255)
-    img.paste(grad, (0, 0), mask)
-
-    # A single high-contrast silhouette remains legible in the 16 px ICO frame.
-    draw = ImageDraw.Draw(img)
-    draw.polygon(raindrop_points(), fill=ON_ACCENT + (255,))
+    img = render_mark()
 
     preview = img.resize((256, 256), Image.Resampling.LANCZOS)
     preview.save(OUT_PNG, format="PNG")
 
     # Pillow's ICO writer produces one embedded frame for each requested size.
     img.save(OUT_ICO, format="ICO", sizes=[(size, size) for size in ICO_SIZES])
+    write_android_icons(img)
     print(f"wrote {OUT_ICO} and {OUT_PNG}")
+    print(f"wrote Android launcher icons under {ANDROID_RES}")
     print(f"ico sizes: {', '.join(f'{size}x{size}' for size in ICO_SIZES)}")
-    print(f"colors: accent={ACCENT} accent_strong={ACCENT_STRONG} on_accent={ON_ACCENT}")
+    print(f"colors: ink={INK} bone={BONE}")
 
 
 if __name__ == "__main__":

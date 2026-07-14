@@ -703,12 +703,10 @@ export function bootMusicPlayer() {
 	});
 }
 
-// In detached-player mode (remote + miniplayer enabled) the transport lives in
-// miniplayer.js (its own native window), so the docked in-page player stays
-// inert here. It boots as the local engine in the other two cases: a plain
-// browser tab (no ?remote flag), or remote mode with the miniplayer popout
-// turned off in Settings (docked bar instead of the floating window).
-if (typeof document !== 'undefined' && (!window.RW_REMOTE || !window.RW_MINIPLAYER_ENABLED)) {
+// The desktop native window is always the remote playback engine.  The
+// miniplayer preference affects only whether that window is revealed, never
+// which engine owns audio.
+if (typeof document !== 'undefined' && !window.RW_REMOTE) {
 	if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootMusicPlayer);
 	else bootMusicPlayer();
 	window.RainetteMusic = RainetteMusic;

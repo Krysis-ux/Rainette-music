@@ -39,6 +39,7 @@ APP_TOKEN = secrets.token_urlsafe(32)
 CLIENT_KEY = web.AppKey("rainette_http_client", aiohttp.ClientSession)
 COMPANION_REGISTRY_KEY = web.AppKey("rainette_companion_registry", CompanionRegistry)
 COMMAND_TIMEOUT_KEY = web.AppKey("rainette_companion_command_timeout", float)
+SYNC_BROKER_KEY = web.AppKey("rainette_companion_sync_broker", object)
 
 _ARTWORK_TYPES = {
     "image/png": ("png", lambda data: data.startswith(b"\x89PNG\r\n\x1a\n")),
@@ -107,6 +108,7 @@ COMPANION_COMMAND_TYPES = frozenset({
     "music_progress",
     "music_remote_play",
     "music_remote_control",
+    "music_output_transfer",
     "music_request_state",
     "music_open_artist",
     "music_status",
@@ -114,7 +116,9 @@ COMPANION_COMMAND_TYPES = frozenset({
 
 # These playback messages are fan-out notifications, not request/response
 # calls. Their bridge handlers intentionally do not emit an id-correlated
-# result, so the HTTP API acknowledges them immediately after dispatch.
+# result, so the HTTP API acknowledges them immediately after dispatch. Output
+# transfer is intentionally excluded: the target has to confirm it loaded
+# before the source may pause.
 COMPANION_ONE_WAY_COMMAND_TYPES = frozenset({
     "music_now_playing_set",
     "music_progress",
@@ -123,6 +127,56 @@ COMPANION_ONE_WAY_COMMAND_TYPES = frozenset({
     "music_request_state",
     "music_open_artist",
 })
+
+
+class CompanionSyncBroker:
+    """Small, replayable event log shared by all paired companion devices.
+
+    The desktop hub is the source of truth.  Phones long-poll this broker and
+    use its monotonic revision to detect reconnect gaps without opening the
+    desktop WebSocket to the LAN.
+    """
+
+    _SYNC_TYPES = frozenset({
+        "music_now_playing", "music_progress", "music_remote_play",
+        "music_remote_control", "music_output_transfer",
+        "music_library_index_result", "music_playlist_list_result",
+        "music_followed_artists_result", "music_recent_result",
+        "music_artist_follow_result", "music_artist_unfollow_result",
+        "music_playlist_create_result", "music_playlist_rename_result",
+        "music_playlist_delete_result", "music_playlist_add_track_result",
+        "music_playlist_remove_track_result",
+    })
+
+    def __init__(self, *, history_limit: int = 256) -> None:
+        self._history_limit = max(32, int(history_limit))
+        self._revision = 0
+        self._events: list[dict] = []
+        self._condition = threading.Condition()
+
+    def publish(self, message: dict) -> None:
+        if not isinstance(message, dict) or message.get("type") not in self._SYNC_TYPES:
+            return
+        with self._condition:
+            self._revision += 1
+            self._events.append({"revision": self._revision, "message": dict(message)})
+            if len(self._events) > self._history_limit:
+                del self._events[: len(self._events) - self._history_limit]
+            self._condition.notify_all()
+
+    def _read_after_locked(self, after: int) -> dict:
+        first = self._events[0]["revision"] if self._events else self._revision
+        reset_required = bool(self._events and after < first - 1)
+        events = [] if reset_required else [event for event in self._events if event["revision"] > after]
+        return {"revision": self._revision, "reset_required": reset_required, "events": events}
+
+    def read_after(self, after: int, wait_s: float) -> dict:
+        with self._condition:
+            result = self._read_after_locked(after)
+            if result["events"] or result["reset_required"] or wait_s <= 0:
+                return result
+            self._condition.wait(timeout=min(max(wait_s, 0), 25))
+            return self._read_after_locked(after)
 
 
 class CommandBroker:
@@ -188,6 +242,7 @@ class Hub:
         """Wired into shared.notify_browsers. Called from the loop thread
         (CRUD handlers) and from daemon threads (yt-dlp workers) alike."""
         command_broker.receive(msg)
+        companion_sync_broker.publish(msg)
         loop = self.loop
         if loop is None:
             return
@@ -202,6 +257,7 @@ class Hub:
 hub = Hub()
 command_broker = CommandBroker()
 companion_registry = CompanionRegistry(storage_path=APP_DATA_DIR / "companion-devices.json")
+companion_sync_broker = CompanionSyncBroker()
 _companion_runtime: dict = {}
 _companion_lock = threading.Lock()
 
@@ -503,8 +559,21 @@ async def companion_status(request: web.Request) -> web.StreamResponse:
     return web.json_response({
         "ok": True,
         "device_id": request["companion_device_id"],
-        "capabilities": ["pairing", "library"],
+        "capabilities": ["pairing", "library", "events", "output-transfer"],
     })
+
+
+async def companion_events(request: web.Request) -> web.StreamResponse:
+    """Return companion events after a known revision, waiting up to 25s."""
+    try:
+        after = max(0, int(request.query.get("after", "0")))
+        wait_s = min(25.0, max(0.0, float(request.query.get("wait", "25"))))
+    except ValueError:
+        return _json_error(400, "after and wait must be numeric")
+    broker = request.app[SYNC_BROKER_KEY]
+    payload = await asyncio.to_thread(broker.read_after, after, wait_s)
+    payload.update({"ok": True, "device_id": request["companion_device_id"]})
+    return web.json_response(payload)
 
 
 async def companion_command(request: web.Request) -> web.StreamResponse:
@@ -581,6 +650,7 @@ def build_companion_app(
     registry: CompanionRegistry | None = None,
     *,
     command_timeout_s: float = 25.0,
+    sync_broker: CompanionSyncBroker | None = None,
 ) -> web.Application:
     """Build the LAN-only companion API without exposing desktop web routes.
 
@@ -591,12 +661,14 @@ def build_companion_app(
     app = web.Application(middlewares=[_companion_auth])
     app[COMPANION_REGISTRY_KEY] = registry or companion_registry
     app[COMMAND_TIMEOUT_KEY] = float(command_timeout_s)
+    app[SYNC_BROKER_KEY] = sync_broker or companion_sync_broker
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
     app.router.add_post("/pair/request", companion_pair_request)
     app.router.add_post("/pair/result", companion_pair_result)
     app.router.add_post("/pair/ack", companion_pair_ack)
     app.router.add_get("/status", companion_status)
+    app.router.add_get("/events", companion_events)
     app.router.add_post("/command", companion_command)
     app.router.add_get("/audio/{grant}", companion_audio_relay)
     return app
