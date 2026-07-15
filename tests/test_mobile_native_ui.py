@@ -1,5 +1,7 @@
 import functools
 import threading
+import time
+import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -22,6 +24,17 @@ def test_native_mobile_loading_pairing_and_recovery_states_are_real_and_scoped()
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/"
+    deadline = time.monotonic() + 3
+    while True:
+        try:
+            with urllib.request.urlopen(url, timeout=0.5) as response:
+                assert response.status == 200
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"local mobile fixture did not start: {url}")
+            time.sleep(0.025)
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
@@ -56,7 +69,7 @@ def test_native_mobile_loading_pairing_and_recovery_states_are_real_and_scoped()
                 window.Capacitor = {Plugins: {RainetteCompanion: companion, RainettePlayer: player}};
                 """
             )
-            page.goto(f"http://127.0.0.1:{server.server_port}/", wait_until="domcontentloaded")
+            page.goto(url, wait_until="domcontentloaded")
             page.locator("#rwMobileApp .rw-mobile-tabs").wait_for(state="visible")
 
             page.get_by_text("Syncing your library", exact=True).wait_for()

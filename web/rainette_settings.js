@@ -304,6 +304,106 @@ function renderBehavior() {
 // Each entry is a checkbox in the clear-data picker. `client: true` means it is
 // cleared here in the browser (localStorage); the rest are erased server-side by
 // the music_clear_data command, keyed by these ids (see state.clear_user_data).
+// -- App updates ------------------------------------------------------------
+
+const UPDATE_REPOSITORY_URL = 'https://github.com/Krysis-ux/Rainette-music';
+
+function updateCopy(state = {}) {
+	const result = state.result || {};
+	const current = result.current || '';
+	const latest = result.latest || result.version || '';
+	if (!state.nativeAvailable && state.phase !== 'checking') {
+		return ['Updates are available in the Windows app', 'Open the installed desktop app to check and install verified releases.'];
+	}
+	if (state.phase === 'checking') {
+		return ['Checking for updates...', 'Looking for an eligible signed Windows release on GitHub.'];
+	}
+	if (state.phase === 'installing') {
+		return [latest ? `Installing ${latest}...` : 'Installing update...', 'Rainette will close only after the installer has been verified and started.'];
+	}
+	if (state.phase === 'stale') {
+		return ['The available update changed', state.message || 'Check again before installing.'];
+	}
+	if (state.phase === 'error') {
+		return ['The update could not be installed', state.message || 'Try the installation again, or check for a refreshed release.'];
+	}
+	if (result.status === 'update' && state.candidateId) {
+		return [latest ? `${latest} is ready` : 'An update is ready', state.message || 'The signed Windows installer will be verified before it opens.'];
+	}
+	if (result.status === 'current') {
+		return ['Rainette is up to date', current ? `You have version ${current}. No eligible Windows update is available.` : 'No eligible Windows update is available.'];
+	}
+	if (result.status === 'unavailable' || state.phase === 'unsupported') {
+		return ['Updates are unavailable here', state.message || 'Update checks are available in the installed Windows app.'];
+	}
+	if (result.status === 'check_failed') {
+		return ['Could not check for updates', state.message || 'Check your connection and try again.'];
+	}
+	return ['Check for updates', 'Rainette checks GitHub for eligible Windows releases.'];
+}
+
+export function syncUpdateSettings(host, state = {}) {
+	const card = host?.querySelector('#rwUpdateSettings');
+	if (!card) return;
+	const [label, hint] = updateCopy(state);
+	const status = card.querySelector('.rw-update-settings-status');
+	const detail = card.querySelector('.rw-update-settings-detail');
+	const check = card.querySelector('.rw-update-settings-check');
+	const install = card.querySelector('.rw-update-settings-install');
+	if (status) status.textContent = label;
+	if (detail) detail.textContent = hint;
+	const busy = state.phase === 'checking' || state.phase === 'installing';
+	if (check) {
+		check.disabled = busy || !state.nativeAvailable;
+		check.textContent = state.phase === 'checking' ? 'Checking...' : (state.result ? 'Check again' : 'Check now');
+	}
+	if (install) {
+		install.hidden = !(state.result?.status === 'update' && state.candidateId);
+		install.disabled = busy;
+		install.textContent = state.phase === 'installing'
+			? 'Installing...'
+			: (state.phase === 'error' ? 'Try installation again' : 'Download and install');
+	}
+	card.classList.toggle('is-busy', busy);
+}
+
+function renderAppUpdates(updater = {}) {
+	const card = settingsCard('App updates', 'Check the official Rainette repository for a newer Windows release.');
+	card.id = 'rwUpdateSettings';
+
+	const row = el('div', 'rw-settings-row rw-update-settings-row');
+	const text = el('div', 'rw-settings-row-text');
+	const status = el('div', 'rw-settings-row-label rw-update-settings-status');
+	status.setAttribute('role', 'status');
+	status.setAttribute('aria-live', 'polite');
+	text.append(status, el('div', 'rw-settings-row-hint rw-update-settings-detail'));
+
+	const actions = el('div', 'rw-update-settings-actions');
+	const check = document.createElement('button');
+	check.type = 'button';
+	check.className = 'rw-btn rw-btn-ghost rw-update-settings-check';
+	check.addEventListener('click', () => updater.check?.({ manual: true }));
+	const install = document.createElement('button');
+	install.type = 'button';
+	install.className = 'rw-btn rw-btn-primary rw-update-settings-install';
+	install.addEventListener('click', () => updater.install?.());
+	actions.append(check, install);
+	row.append(text, actions);
+	card.appendChild(row);
+
+	const source = el('p', 'rw-update-settings-source');
+	source.append('Release source: ');
+	const link = document.createElement('a');
+	link.href = UPDATE_REPOSITORY_URL;
+	link.target = '_blank';
+	link.rel = 'noopener noreferrer';
+	link.textContent = 'Krysis-ux/Rainette-music';
+	source.appendChild(link);
+	card.appendChild(source);
+	syncUpdateSettings({ querySelector: selector => selector === '#rwUpdateSettings' ? card : null }, updater.snapshot?.() || {});
+	return card;
+}
+
 const CLEAR_CATEGORIES = [
 	{ id: 'recents', label: 'Recently played & history', hint: 'Your play history, Recents, and Insights.' },
 	{ id: 'following', label: 'Followed artists', hint: 'Every artist you follow.' },
@@ -430,12 +530,12 @@ function bindEqListener() {
 	});
 }
 
-export function renderSettings(host) {
+export function renderSettings(host, updater = {}) {
 	const body = host.querySelector('#rwMusicBody');
 	if (!body) return;
 	body.innerHTML = '';
 	const wrap = el('div', 'rw-settings-wrap');
-	wrap.append(renderAppearance(), renderEqualizer(), renderPlaybackDefaults(), renderBehavior(), renderDangerZone());
+	wrap.append(renderAppearance(), renderEqualizer(), renderPlaybackDefaults(), renderBehavior(), renderAppUpdates(updater), renderDangerZone());
 	body.appendChild(wrap);
 	bindEqListener();
 	if (QUEUE_SUPPORTED) eqControl({ action: 'eq_request_state' });

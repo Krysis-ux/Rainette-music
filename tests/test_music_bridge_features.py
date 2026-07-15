@@ -1,5 +1,7 @@
 import unittest
 import tempfile
+import subprocess
+import sys
 from pathlib import Path
 
 import music_bridge
@@ -87,6 +89,32 @@ class FakeState:
 class MusicBridgeFeatureTests(unittest.TestCase):
     def test_network_clients_use_the_windows_system_trust_store(self):
         self.assertTrue(music_bridge.SYSTEM_TRUST_ENABLED)
+        self.assertIn("no-certifi", music_bridge._SEARCH_OPTS["compat_opts"])
+        self.assertIn("no-certifi", music_bridge._STREAM_OPTS["compat_opts"])
+
+    def test_import_does_not_replace_the_process_ssl_context(self):
+        """Client trust configuration must not globally replace SSLContext.
+
+        truststore's injected client-only context cannot host the companion TLS
+        server and caused accepted HTTPS connections to be dropped immediately.
+        Check in a fresh interpreter so the assertion is independent of this
+        test process's import order.
+        """
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import ssl; original = ssl.SSLContext; import music_bridge; "
+                    "raise SystemExit(0 if ssl.SSLContext is original else 1)"
+                ),
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
 
     def setUp(self):
         self.state = FakeState()

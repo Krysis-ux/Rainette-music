@@ -18,7 +18,7 @@ export const app = {
 	helperPending: new Map(),   // reserved for parity; unused by music modules
 	memPending: new Map(),      // id → resolve() for helperRequest round-trips
 	musicNowPlaying: null,
-	musicQueue: { tracks: [], index: -1, playing: false, loop: false, duration: 0 },
+	musicQueue: { tracks: [], index: -1, playing: false, state: 'idle', loop: false, duration: 0 },
 };
 
 const RAINETTE_TOKEN = new URLSearchParams(location.search).get('token') || '';
@@ -51,6 +51,11 @@ export function ensureHelperWS() {
 	ws.addEventListener('open', () => {
 		const queue = app.helperQueue.splice(0);
 		for (const json of queue) ws.send(json);
+		// Both WebViews use this as their reconnect handshake.  The server is a
+		// live fan-out relay (not a durable command queue), so anything broadcast
+		// while one window was offline must be recovered from the other window's
+		// authoritative state after every successful socket open.
+		document.dispatchEvent(new CustomEvent('rainette:helper-open'));
 	});
 	ws.addEventListener('close', () => {
 		app.helperWS = null;
@@ -153,6 +158,10 @@ function _mountWhenReady(page) {
 
 if (typeof window !== 'undefined' && window.RW_REMOTE) {
 	let _lastPlay = null;
+	const _restoreState = (state, playing = false) => {
+		if (state === 'playing' || state === 'paused' || state === 'loading') return state;
+		return playing ? 'playing' : 'paused';
+	};
 	// Automatic pop-out is deliberately opt-in. Read the preference at action
 	// time so changing Settings takes effect immediately without reloading either
 	// native window. The docked player remains the normal playback surface.
@@ -168,7 +177,7 @@ if (typeof window !== 'undefined' && window.RW_REMOTE) {
 
 	window.RainetteMusic = {
 		playQueue(tracks, startIndex = 0) {
-			_lastPlay = { tracks: tracks || [], index: startIndex };
+			_lastPlay = { tracks: tracks || [], index: startIndex, restoreState: 'loading' };
 			sendHelper({ type: 'music_remote_play', tracks: _lastPlay.tracks, index: startIndex });
 			_showPlayerIfEnabled();
 		},
@@ -214,6 +223,13 @@ if (typeof window !== 'undefined' && window.RW_REMOTE) {
 		if (msg.type === 'music_now_playing') {
 			if (msg.track) app.musicNowPlaying = msg.track;
 			if (Array.isArray(msg.queue)) {
+				const incomingState = msg.state || (msg.playing ? 'playing' : 'paused');
+				// On a cold player reload, the main window's reconnect probe can
+				// arrive before the player's own music_request_state. The empty
+				// player then answers `idle`; that is not an authoritative queue
+				// clear and must not erase the cached paused/loading intent that the
+				// player is about to request. Real queue clears broadcast `paused`.
+				if (!msg.queue.length && incomingState === 'idle' && _lastPlay?.tracks?.length) return;
 				// Keep the current repeat mode when a producer says nothing about it
 				// (the phone has no repeat control); an absent field must not read
 				// as "off" and silently reset the button mid-session.
@@ -222,19 +238,45 @@ if (typeof window !== 'undefined' && window.RW_REMOTE) {
 					tracks: msg.queue,
 					index: Number.isFinite(Number(msg.index)) ? Number(msg.index) : -1,
 					playing: !!msg.playing,
+					state: incomingState,
 					repeat,
 					loop: loopFlagFor(repeat),
 					duration: Number(msg.queue_duration || 0),
 					count: Number(msg.queue_count || msg.queue.length || 0),
 				};
-				if (app.musicQueue.tracks.length) _lastPlay = { tracks: app.musicQueue.tracks, index: app.musicQueue.index };
+				if (app.musicQueue.tracks.length) {
+					_lastPlay = {
+						tracks: app.musicQueue.tracks,
+						index: app.musicQueue.index,
+						restoreState: _restoreState(incomingState, msg.playing),
+					};
+				} else {
+					_lastPlay = null;
+					app.musicNowPlaying = null;
+				}
 				document.dispatchEvent(new CustomEvent('rainette:music-queue', { detail: app.musicQueue }));
 			}
 		}
 		// The player window (re)connected and asked for the current queue.
 		else if (msg.type === 'music_request_state' && _lastPlay) {
-			sendHelper({ type: 'music_remote_play', tracks: _lastPlay.tracks, index: _lastPlay.index });
+			// Mark this as a state restore so the player can distinguish it from a
+			// fresh user play. In particular, `playing:false` alone cannot tell a
+			// paused transport from one that was actively resolving a stream.
+			const restoreState = _lastPlay.restoreState || 'paused';
+			sendHelper({
+				type: 'music_remote_play',
+				tracks: _lastPlay.tracks,
+				index: _lastPlay.index,
+				restore_state: restoreState,
+				playing: restoreState === 'playing',
+			});
 		}
+	});
+
+	// If the main WebView itself reconnects, ask the player for the transport
+	// state it may have continued advancing while this socket was unavailable.
+	document.addEventListener('rainette:helper-open', () => {
+		_queueControl({ action: 'queue_request_state' });
 	});
 }
 

@@ -21,16 +21,13 @@ from typing import Any
 
 import shared
 
-# Python/requests normally uses its bundled CA file, which can reject HTTPS on
-# Windows machines whose trusted enterprise/local CA exists only in the OS
-# certificate store.  Inject the native store before yt-dlp/ytmusicapi import.
-try:
-    import truststore  # type: ignore
-
-    truststore.inject_into_ssl()
-    SYSTEM_TRUST_ENABLED = True
-except Exception:
-    SYSTEM_TRUST_ENABLED = False
+# yt-dlp normally prefers certifi.  ``no-certifi`` asks its own request layer to
+# load the operating-system trust store instead, including enterprise roots on
+# Windows, without replacing ``ssl.SSLContext`` process-wide.  The old global
+# truststore injection installed a client-only context in the stdlib module;
+# that made the companion's TLS *server* accept and then drop every connection.
+_SYSTEM_TRUST_COMPAT = {"no-certifi"}
+SYSTEM_TRUST_ENABLED = True
 
 # yt-dlp is an optional dependency; the player degrades gracefully without it.
 try:
@@ -68,6 +65,7 @@ _SEARCH_OPTS = {
     "extract_flat": True,   # metadata only, no per-result stream resolution
     "skip_download": True,
     "default_search": "ytsearch",
+    "compat_opts": _SYSTEM_TRUST_COMPAT,
 }
 
 _STREAM_OPTS = {
@@ -77,6 +75,7 @@ _STREAM_OPTS = {
     # Bias toward broadly HTML5-<audio>-compatible containers over a bare
     # bestaudio (which can hand back formats Chrome/Edge won't play).
     "format": "bestaudio[ext=m4a]/bestaudio/best",
+    "compat_opts": _SYSTEM_TRUST_COMPAT,
 }
 
 

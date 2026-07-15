@@ -16,6 +16,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,11 +29,14 @@ import urllib.request
 import urllib.error
 import webbrowser
 import ctypes
+from ctypes import wintypes
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import qrcode
 
+import release_identity
 import server
 import version
 
@@ -47,6 +51,18 @@ PLAYER_EXPANDED_HEIGHT = 184
 AUTOPLAY_FLAG = "--autoplay-policy=no-user-gesture-required"
 # The exact arguments pywebview 6.2.1 hardcodes onto every WebView2 it creates.
 PYWEBVIEW_BROWSER_ARGS = "--disable-features=ElasticOverscroll"
+# Position used to "park" the player window instead of hiding/minimizing it.
+# Confirmed empirically: a .hide()'d or .minimize()'d window reports
+# document.hidden === true via the Page Visibility API, and WebView2/Chromium
+# throttles media RESOURCE LOADING (not just the play() gesture check) for such
+# a document indefinitely - audio.play() gets called, but its promise never
+# even settles, because the underlying media never finishes loading. This is a
+# separate mechanism from the autoplay-gesture policy AUTOPLAY_FLAG addresses,
+# and is the actual reason playback previously never started until the mini
+# player was opened. Keeping the window "shown" (document.hidden stays false)
+# but positioned far outside any real monitor avoids the throttling entirely
+# while remaining fully invisible to the user. See show_player()/_park_player().
+PLAYER_PARK_POS = (-32000, -32000)
 
 APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path(__file__).resolve().parent) / "Rainette Music"
 LOG_PATH = APP_DATA_DIR / "rainette-music.log"
@@ -56,14 +72,21 @@ LOG_PATH = APP_DATA_DIR / "rainette-music.log"
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 ICON_PATH = RESOURCE_DIR / "web" / "assets" / "rainette-icon.ico"
 GITHUB_REPO = "Krysis-ux/Rainette-music"
-GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=20"
+GITHUB_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
+GITHUB_ASSET_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/assets"
 RELEASE_DOWNLOAD_BASE = f"https://github.com/{GITHUB_REPO}/releases/latest/download"
 ANDROID_APK_URL = f"{RELEASE_DOWNLOAD_BASE}/rainette-music-android.apk"
-WINDOWS_SETUP_URL = f"{RELEASE_DOWNLOAD_BASE}/RainetteMusicSetup.exe"
-WINDOWS_SETUP_SHA_URL = f"{WINDOWS_SETUP_URL}.sha256"
 UPDATE_USER_AGENT = "RainetteMusic (local desktop app)"
-# Re-check on this cadence so a machine left running still notices a release.
-UPDATE_CHECK_INTERVAL_S = 6 * 60 * 60
+UPDATE_API_VERSION = "2022-11-28"
+WINDOWS_INSTALLER_ASSET = "RainetteMusicSetup.exe"
+WINDOWS_CHECKSUM_ASSET = f"{WINDOWS_INSTALLER_ASSET}.sha256"
+WINDOWS_MANIFEST_ASSET = "windows-release.json"
+MAX_INSTALLER_BYTES = 512 * 1024 * 1024
+MAX_INTEGRITY_ASSET_BYTES = 64 * 1024
+MAX_RELEASE_METADATA_BYTES = 2 * 1024 * 1024
+_STABLE_TAG_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+_CERT_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def log(msg: str) -> None:
@@ -116,77 +139,517 @@ def _is_url_published(url: str) -> bool:
     return _android_release_status(url) == "published"
 
 
+def _default_player_pos() -> tuple[int, int]:
+    """First-launch player position, before the user has ever dragged it:
+    bottom-right corner of the primary screen, matching where such a widget
+    conventionally sits."""
+    try:
+        import webview  # type: ignore
+
+        screen = webview.screens[0]
+        margin = 24
+        return (
+            int(screen.x + screen.width - PLAYER_SIZE[0] - margin),
+            int(screen.y + screen.height - PLAYER_SIZE[1] - margin),
+        )
+    except Exception:
+        return (100, 100)
+
+
 # ── In-app updater ──────────────────────────────────────────────────────────
 #
-# The player owns no releases yet (no v* tag has been pushed), so every status
-# below has to degrade gracefully. `unavailable` (no release found) is a normal,
-# expected state, distinct from `check_failed` (network/parse error), so the UI
-# can stay quiet for the former and offer a retry for the latter.
+# A GitHub release may contain Android builds, source archives, or unrelated
+# attachments. Only these three exact Windows asset names are ever eligible for
+# the native updater, and their numeric GitHub asset IDs are pinned together.
 
 
-def check_for_updates(current: str = version.APP_VERSION) -> dict:
-    """Ask GitHub whether a newer release exists.
+@dataclass(frozen=True)
+class _UpdateAsset:
+    asset_id: int
+    name: str
+    size: int
+    sha256: str
+    content_type: str
 
-    Returns a status dict: 'update' (newer release found), 'current' (up to date),
-    'unavailable' (no release published), or 'check_failed' (couldn't reach or
-    parse GitHub). Never raises - a failed check must not take down the caller.
-    """
-    request = urllib.request.Request(
-        GITHUB_LATEST_RELEASE_API,
-        headers={"User-Agent": UPDATE_USER_AGENT, "Accept": "application/vnd.github+json"},
+
+@dataclass(frozen=True)
+class _UpdateCandidate:
+    release_id: int
+    tag: str
+    release_version: str
+    version_parts: tuple[int, int, int]
+    installer: _UpdateAsset
+    checksum: _UpdateAsset
+    manifest: _UpdateAsset
+    notes: str
+
+    @property
+    def candidate_id(self) -> str:
+        identity = {
+            "release_id": self.release_id,
+            "tag": self.tag,
+            "version": self.release_version,
+            "assets": [
+                [self.installer.asset_id, self.installer.name, self.installer.size, self.installer.sha256],
+                [self.checksum.asset_id, self.checksum.name, self.checksum.size, self.checksum.sha256],
+                [self.manifest.asset_id, self.manifest.name, self.manifest.size, self.manifest.sha256],
+            ],
+        }
+        encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @property
+    def pinned_identity(self) -> tuple:
+        return (
+            self.release_id,
+            self.tag,
+            self.release_version,
+            self.installer,
+            self.checksum,
+            self.manifest,
+        )
+
+
+def _github_request(url: str, *, accept: str = "application/vnd.github+json") -> urllib.request.Request:
+    return urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": UPDATE_USER_AGENT,
+            "Accept": accept,
+            "X-GitHub-Api-Version": UPDATE_API_VERSION,
+        },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=6) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        return {"status": "unavailable" if exc.code == 404 else "check_failed", "current": current}
-    except Exception:
-        return {"status": "check_failed", "current": current}
 
-    tag = str(payload.get("tag_name") or "")
-    latest = version.normalize(tag)
-    if not latest:
-        return {"status": "check_failed", "current": current}
+
+def _read_limited(response, limit: int) -> bytes:
+    data = response.read(limit + 1)
+    if len(data) > limit:
+        raise RuntimeError("GitHub response exceeded the allowed size")
+    return data
+
+
+def _fetch_json(url: str, *, timeout: int = 6):
+    with urllib.request.urlopen(_github_request(url), timeout=timeout) as response:
+        return json.loads(_read_limited(response, MAX_RELEASE_METADATA_BYTES).decode("utf-8"))
+
+
+def _strict_release_version(tag: object) -> tuple[str, tuple[int, int, int]] | None:
+    match = _STABLE_TAG_RE.fullmatch(str(tag or ""))
+    if not match:
+        return None
+    parts = tuple(int(part) for part in match.groups())
+    return ".".join(str(part) for part in parts), parts
+
+
+def _asset_from_payload(payload: object, expected_name: str) -> _UpdateAsset | None:
+    if not isinstance(payload, dict) or payload.get("name") != expected_name:
+        return None
+    asset_id = payload.get("id")
+    size = payload.get("size")
+    if isinstance(asset_id, bool) or not isinstance(asset_id, int) or asset_id <= 0:
+        return None
+    if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+        return None
+    if payload.get("state") != "uploaded":
+        return None
+    digest = str(payload.get("digest") or "")
+    digest_match = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", digest)
+    if not digest_match:
+        return None
+    if expected_name == WINDOWS_INSTALLER_ASSET:
+        if size > MAX_INSTALLER_BYTES:
+            return None
+        allowed_types = {"application/x-msdownload", "application/octet-stream"}
+    elif expected_name == WINDOWS_CHECKSUM_ASSET:
+        if size > MAX_INTEGRITY_ASSET_BYTES:
+            return None
+        allowed_types = {"text/plain", "application/octet-stream"}
+    else:
+        if size > MAX_INTEGRITY_ASSET_BYTES:
+            return None
+        allowed_types = {"application/json", "text/plain", "application/octet-stream"}
+    content_type = str(payload.get("content_type") or "").lower()
+    if content_type not in allowed_types:
+        return None
+    return _UpdateAsset(asset_id, expected_name, size, digest_match.group(1).lower(), content_type)
+
+
+def _candidate_from_release(payload: object) -> _UpdateCandidate | None:
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("draft") is not False or payload.get("prerelease") is not False:
+        return None
+    if not payload.get("published_at"):
+        return None
+    release_id = payload.get("id")
+    if isinstance(release_id, bool) or not isinstance(release_id, int) or release_id <= 0:
+        return None
+    parsed = _strict_release_version(payload.get("tag_name"))
+    if parsed is None:
+        return None
+    release_version, version_parts = parsed
+    assets = payload.get("assets")
+    if not isinstance(assets, list):
+        return None
+    selected = {}
+    for expected_name in (WINDOWS_INSTALLER_ASSET, WINDOWS_CHECKSUM_ASSET, WINDOWS_MANIFEST_ASSET):
+        matches = [asset for asset in assets if isinstance(asset, dict) and asset.get("name") == expected_name]
+        if len(matches) != 1:
+            return None
+        selected[expected_name] = _asset_from_payload(matches[0], expected_name)
+        if selected[expected_name] is None:
+            return None
+    selected_assets = list(selected.values())
+    if len({asset.asset_id for asset in selected_assets}) != len(selected_assets):
+        return None
+    return _UpdateCandidate(
+        release_id=release_id,
+        tag=str(payload["tag_name"]),
+        release_version=release_version,
+        version_parts=version_parts,
+        installer=selected[WINDOWS_INSTALLER_ASSET],
+        checksum=selected[WINDOWS_CHECKSUM_ASSET],
+        manifest=selected[WINDOWS_MANIFEST_ASSET],
+        notes=str(payload.get("body") or "")[:2000],
+    )
+
+
+def _public_update_result(current: str, candidate: _UpdateCandidate) -> dict:
     return {
-        "status": "update" if version.is_newer(latest, current) else "current",
+        "status": "update",
         "current": current,
-        "latest": latest,
-        "tag": tag,
-        "notes": str(payload.get("body") or "")[:2000],
-        "release_url": str(payload.get("html_url") or ""),
+        "latest": candidate.release_version,
+        "tag": candidate.tag,
+        "candidate_id": candidate.candidate_id,
+        "release_id": candidate.release_id,
+        "notes": candidate.notes,
+        "release_url": (
+            f"https://github.com/{GITHUB_REPO}/releases/tag/"
+            f"{urllib.parse.quote(candidate.tag, safe='')}"
+        ),
     }
 
 
-def _fetch_bytes(url: str, timeout: int = 30) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": UPDATE_USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read()
+def _check_for_updates(current: str = version.APP_VERSION) -> tuple[dict, _UpdateCandidate | None]:
+    try:
+        payload = _fetch_json(GITHUB_RELEASES_API)
+    except urllib.error.HTTPError as exc:
+        status = "unavailable" if exc.code == 404 else "check_failed"
+        return {"status": status, "current": current}, None
+    except Exception:
+        return {"status": "check_failed", "current": current}, None
+    if not isinstance(payload, list):
+        return {"status": "check_failed", "current": current}, None
+    if not payload:
+        return {"status": "unavailable", "current": current}, None
+    current_parts = version.parse_version(current)
+    candidates = [candidate for item in payload if (candidate := _candidate_from_release(item))]
+    newer = [candidate for candidate in candidates if candidate.version_parts > current_parts]
+    if not newer:
+        return {"status": "current", "current": current}, None
+    candidate = max(newer, key=lambda item: item.version_parts)
+    return _public_update_result(current, candidate), candidate
+
+
+def check_for_updates(current: str = version.APP_VERSION) -> dict:
+    """Return the highest valid newer Windows release, never an arbitrary asset."""
+    result, _candidate = _check_for_updates(current)
+    return result
+
+
+def _revalidate_candidate(candidate: _UpdateCandidate) -> _UpdateCandidate | None:
+    """Re-fetch one pinned release and reject any changed identity or downgrade."""
+    payload = _fetch_json(f"{GITHUB_RELEASE_API}/{candidate.release_id}", timeout=10)
+    refreshed = _candidate_from_release(payload)
+    if refreshed is None:
+        return None
+    if refreshed.version_parts <= version.parse_version(version.APP_VERSION):
+        return None
+    if refreshed.pinned_identity != candidate.pinned_identity:
+        return None
+    return refreshed
 
 
 def _expected_sha256(sha_bytes: bytes) -> str:
-    """Pull the hash out of a `<hash>  <filename>` sha256 sidecar file."""
-    text = sha_bytes.decode("utf-8", "replace").strip()
-    return text.split()[0].lower() if text else ""
+    """Parse the one allowed GNU-style checksum line for the Rainette installer."""
+    if len(sha_bytes) > MAX_INTEGRITY_ASSET_BYTES:
+        return ""
+    try:
+        text = sha_bytes.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return ""
+    match = re.fullmatch(
+        rf"([0-9a-fA-F]{{64}})[ \t]+\*?{re.escape(WINDOWS_INSTALLER_ASSET)}",
+        text,
+    )
+    return match.group(1).lower() if match else ""
 
 
-def _download_verified_installer(dest_dir: Path) -> Path:
-    """Download the setup .exe and its checksum, refusing a mismatch.
+def _validate_asset_response_url(url: str, asset_id: int) -> None:
+    parsed = urllib.parse.urlparse(str(url or ""))
+    if parsed.scheme.lower() != "https":
+        raise RuntimeError("GitHub returned an insecure update asset URL")
+    host = (parsed.hostname or "").lower()
+    if host == "api.github.com":
+        expected_path = f"/repos/{GITHUB_REPO}/releases/assets/{asset_id}"
+        if parsed.path != expected_path:
+            raise RuntimeError("GitHub returned the wrong update asset")
+        return
+    if host not in {"objects.githubusercontent.com", "release-assets.githubusercontent.com"}:
+        raise RuntimeError("GitHub redirected an update asset to an untrusted host")
 
-    Trusting the downloaded asset + its published SHA-256 (rather than the version
-    in windows-release.json) sidesteps the known build skew where CI ships a
-    committed installer whose version can disagree with the release tag.
-    """
-    expected = _expected_sha256(_fetch_bytes(WINDOWS_SETUP_SHA_URL, timeout=15))
-    if len(expected) != 64:
+
+def _read_asset_response(response, asset: _UpdateAsset, max_bytes: int, sink=None) -> bytes:
+    _validate_asset_response_url(response.geturl(), asset.asset_id)
+    content_length = response.headers.get("Content-Length") if getattr(response, "headers", None) else None
+    if content_length:
+        try:
+            declared = int(content_length)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("update asset had an invalid Content-Length") from exc
+        if declared != asset.size or declared > max_bytes:
+            raise RuntimeError("update asset size did not match its GitHub metadata")
+
+    hasher = hashlib.sha256()
+    collected = bytearray()
+    total = 0
+    while True:
+        chunk = response.read(64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes or total > asset.size:
+            raise RuntimeError("update asset exceeded its allowed size")
+        hasher.update(chunk)
+        if sink is None:
+            collected.extend(chunk)
+        else:
+            sink.write(chunk)
+    if total != asset.size:
+        raise RuntimeError("update asset was truncated")
+    if hasher.hexdigest().lower() != asset.sha256:
+        raise RuntimeError("update asset failed its GitHub digest check")
+    return bytes(collected)
+
+
+def _fetch_asset_bytes(asset: _UpdateAsset, max_bytes: int, *, timeout: int = 30) -> bytes:
+    if asset.size > max_bytes:
+        raise RuntimeError("update integrity metadata exceeded its allowed size")
+    url = f"{GITHUB_ASSET_API}/{asset.asset_id}"
+    with urllib.request.urlopen(
+        _github_request(url, accept="application/octet-stream"),
+        timeout=timeout,
+    ) as response:
+        return _read_asset_response(response, asset, max_bytes)
+
+
+def _stream_asset_to_path(asset: _UpdateAsset, path: Path, *, timeout: int = 180) -> Path:
+    if asset.size > MAX_INSTALLER_BYTES:
+        raise RuntimeError("installer exceeded its allowed size")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    partial = path.with_name(path.name + ".part")
+    if path.exists() or partial.exists():
+        raise RuntimeError("update destination was not empty")
+    url = f"{GITHUB_ASSET_API}/{asset.asset_id}"
+    try:
+        with urllib.request.urlopen(
+            _github_request(url, accept="application/octet-stream"),
+            timeout=timeout,
+        ) as response, open(partial, "xb") as output:
+            _read_asset_response(response, asset, MAX_INSTALLER_BYTES, sink=output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(partial, path)
+        return path
+    except Exception:
+        try:
+            partial.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
+def _validate_release_manifest(candidate: _UpdateCandidate, manifest_bytes: bytes, expected_hash: str) -> None:
+    try:
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError("release manifest is malformed") from exc
+    if not isinstance(manifest, dict):
+        raise RuntimeError("release manifest is malformed")
+    if manifest.get("artifact") != WINDOWS_INSTALLER_ASSET:
+        raise RuntimeError("release manifest named the wrong installer")
+    if str(manifest.get("version") or "") != candidate.release_version:
+        raise RuntimeError("release manifest version did not match its tag")
+    if manifest.get("channel") not in {"stable", "release"}:
+        raise RuntimeError("release manifest was not a stable Windows release")
+    if manifest.get("signed") is not True or manifest.get("signatureVerified") is not True:
+        raise RuntimeError("release manifest did not require a signed installer")
+    if str(manifest.get("sha256") or "").lower() != expected_hash:
+        raise RuntimeError("release manifest checksum did not match the installer")
+
+
+def _download_verified_installer(candidate: _UpdateCandidate, dest_dir: Path) -> Path:
+    """Download the three pinned assets and stream the authenticated installer."""
+    checksum_bytes = _fetch_asset_bytes(candidate.checksum, MAX_INTEGRITY_ASSET_BYTES, timeout=15)
+    expected = _expected_sha256(checksum_bytes)
+    if not expected:
         raise RuntimeError("release checksum is missing or malformed")
-    installer_bytes = _fetch_bytes(WINDOWS_SETUP_URL, timeout=180)
-    actual = hashlib.sha256(installer_bytes).hexdigest().lower()
-    if actual != expected:
-        raise RuntimeError("downloaded installer failed its checksum check")
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    installer_path = dest_dir / "RainetteMusicSetup.exe"
-    installer_path.write_bytes(installer_bytes)
-    return installer_path
+    if expected != candidate.installer.sha256:
+        raise RuntimeError("release checksum did not match GitHub's installer digest")
+    manifest_bytes = _fetch_asset_bytes(candidate.manifest, MAX_INTEGRITY_ASSET_BYTES, timeout=15)
+    _validate_release_manifest(candidate, manifest_bytes, expected)
+    return _stream_asset_to_path(candidate.installer, dest_dir / WINDOWS_INSTALLER_ASSET)
+
+
+def _configured_update_signer_hashes() -> frozenset[str]:
+    """Return the embedded Rainette signer allow-list, failing closed if absent."""
+    configured = release_identity.UPDATE_SIGNER_CERT_SHA256
+    if not isinstance(configured, str):
+        raise RuntimeError("Rainette update signer identity is invalid")
+    values = [value.strip().lower() for value in configured.split(",") if value.strip()]
+    if not values:
+        raise RuntimeError("Rainette update signer identity is not configured")
+    if any(not _CERT_SHA256_RE.fullmatch(value) for value in values):
+        raise RuntimeError("Rainette update signer identity is invalid")
+    return frozenset(values)
+
+
+def _authenticode_signer_sha256(path: Path) -> str:
+    """Read the SHA-256 fingerprint of the file's embedded signer certificate."""
+    system_root = Path(os.environ.get("SystemRoot") or r"C:\Windows")
+    powershell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if not powershell.is_file():
+        raise RuntimeError("Windows signer inspection is unavailable")
+
+    # The path is passed through a dedicated child-process environment variable,
+    # never interpolated into the PowerShell program. SignatureType rejects a
+    # catalog-only signature: Rainette installers must carry their signer.
+    script = """
+$ErrorActionPreference = 'Stop'
+$signature = Get-AuthenticodeSignature -LiteralPath $env:RAINETTE_UPDATE_INSTALLER
+if ($null -eq $signature.SignerCertificate) { exit 3 }
+if ([string]$signature.SignatureType -ne 'Authenticode') { exit 4 }
+$sha256 = [Security.Cryptography.SHA256]::Create()
+try {
+    $hash = $sha256.ComputeHash($signature.SignerCertificate.RawData)
+} finally {
+    $sha256.Dispose()
+}
+[BitConverter]::ToString($hash).Replace('-', '').ToLowerInvariant()
+""".strip()
+    environment = os.environ.copy()
+    environment["RAINETTE_UPDATE_INSTALLER"] = str(path.resolve())
+    try:
+        completed = subprocess.run(
+            [
+                str(powershell),
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=environment,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("Windows signer inspection failed") from exc
+    signer_hash = completed.stdout.strip().lower()
+    if completed.returncode != 0 or not _CERT_SHA256_RE.fullmatch(signer_hash):
+        raise RuntimeError("installer signer certificate could not be verified")
+    return signer_hash
+
+
+def _verify_windows_authenticode_trust(path: Path) -> None:
+    """Require Windows to trust the installer's embedded Authenticode signature."""
+    if os.name != "nt":
+        raise RuntimeError("Windows Authenticode verification is unavailable")
+    if not path.is_file():
+        raise RuntimeError("downloaded installer is missing")
+
+    class _GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", wintypes.BYTE * 8),
+        ]
+
+    class _WINTRUST_FILE_INFO(ctypes.Structure):
+        _fields_ = [
+            ("cbStruct", wintypes.DWORD),
+            ("pcwszFilePath", wintypes.LPCWSTR),
+            ("hFile", wintypes.HANDLE),
+            ("pgKnownSubject", ctypes.POINTER(_GUID)),
+        ]
+
+    class _WINTRUST_DATA(ctypes.Structure):
+        _fields_ = [
+            ("cbStruct", wintypes.DWORD),
+            ("pPolicyCallbackData", wintypes.LPVOID),
+            ("pSIPClientData", wintypes.LPVOID),
+            ("dwUIChoice", wintypes.DWORD),
+            ("fdwRevocationChecks", wintypes.DWORD),
+            ("dwUnionChoice", wintypes.DWORD),
+            ("pFile", ctypes.POINTER(_WINTRUST_FILE_INFO)),
+            ("dwStateAction", wintypes.DWORD),
+            ("hWVTStateData", wintypes.HANDLE),
+            ("pwszURLReference", wintypes.LPCWSTR),
+            ("dwProvFlags", wintypes.DWORD),
+            ("dwUIContext", wintypes.DWORD),
+        ]
+
+    action = _GUID(
+        0x00AAC56B,
+        0xCD44,
+        0x11D0,
+        (wintypes.BYTE * 8)(0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE),
+    )
+    file_info = _WINTRUST_FILE_INFO()
+    file_info.cbStruct = ctypes.sizeof(_WINTRUST_FILE_INFO)
+    file_info.pcwszFilePath = str(path.resolve())
+    file_info.hFile = None
+    file_info.pgKnownSubject = None
+
+    trust_data = _WINTRUST_DATA()
+    trust_data.cbStruct = ctypes.sizeof(_WINTRUST_DATA)
+    trust_data.dwUIChoice = 2  # WTD_UI_NONE
+    trust_data.fdwRevocationChecks = 1  # WTD_REVOKE_WHOLECHAIN
+    trust_data.dwUnionChoice = 1  # WTD_CHOICE_FILE
+    trust_data.pFile = ctypes.pointer(file_info)
+    trust_data.dwStateAction = 1  # WTD_STATEACTION_VERIFY
+    trust_data.dwProvFlags = 0x00000040  # WTD_REVOCATION_CHECK_CHAIN
+    trust_data.dwUIContext = 0  # WTD_UICONTEXT_EXECUTE
+
+    wintrust = ctypes.WinDLL("wintrust", use_last_error=True)
+    verify = wintrust.WinVerifyTrust
+    verify.argtypes = [wintypes.HWND, ctypes.POINTER(_GUID), ctypes.POINTER(_WINTRUST_DATA)]
+    verify.restype = wintypes.LONG
+    hwnd = wintypes.HWND(-1)
+    result = int(verify(hwnd, ctypes.byref(action), ctypes.byref(trust_data)))
+    try:
+        if result != 0:
+            raise RuntimeError(f"installer Authenticode verification failed (0x{result & 0xFFFFFFFF:08x})")
+    finally:
+        trust_data.dwStateAction = 2  # WTD_STATEACTION_CLOSE
+        verify(hwnd, ctypes.byref(action), ctypes.byref(trust_data))
+
+
+def _verify_authenticode(path: Path) -> None:
+    """Require OS trust and an embedded signer explicitly pinned to Rainette."""
+    if os.name != "nt":
+        raise RuntimeError("Windows Authenticode verification is unavailable")
+    if not path.is_file():
+        raise RuntimeError("downloaded installer is missing")
+    allowed_signers = _configured_update_signer_hashes()
+    _verify_windows_authenticode_trust(path)
+    actual_signer = _authenticode_signer_sha256(path)
+    if actual_signer not in allowed_signers:
+        raise RuntimeError("installer signer certificate is not Rainette's trusted release identity")
 
 
 class WindowApi:
@@ -196,6 +659,12 @@ class WindowApi:
         self._player_on_top = False
         self._player_can_show = False
         self._player_collapsed = True
+        self._update_candidate = None
+        self._update_candidate_lock = threading.Lock()
+        self._update_apply_lock = threading.Lock()
+        # Remembers where the user last dragged the player window so reveals
+        # restore it there instead of resetting to a fixed spot each time.
+        self._player_onscreen_pos = _default_player_pos()
 
     def bind_player(self, player_window) -> None:
         self._player_window = player_window
@@ -251,9 +720,14 @@ class WindowApi:
 
     def check_for_updates(self):
         """Report whether a newer GitHub release exists (see check_for_updates())."""
-        return check_for_updates()
+        result, candidate = _check_for_updates()
+        with self._update_candidate_lock:
+            # A failed refresh clears the old candidate. Installation must be
+            # tied to the most recent successful check, never stale UI state.
+            self._update_candidate = candidate
+        return result
 
-    def apply_update(self):
+    def apply_update(self, candidate_id: str = ""):
         """Download, verify, and launch the new installer, then quit so it can
         replace the running files. The installer relaunches the app when done.
 
@@ -263,25 +737,49 @@ class WindowApi:
         if not getattr(sys, "frozen", False):
             return {"status": "unsupported",
                     "msg": "Updates apply to the installed Rainette Music app, not a source run."}
+        if not self._update_apply_lock.acquire(blocking=False):
+            return {"status": "busy", "msg": "An update is already being installed."}
+        update_dir = None
+        install_started = False
         try:
-            installer = _download_verified_installer(Path(tempfile.gettempdir()) / "RainetteMusicUpdate")
-        except Exception as exc:
-            log(f"update download failed: {exc}")
-            return {"status": "failed", "msg": str(exc)}
-        try:
+            with self._update_candidate_lock:
+                candidate = self._update_candidate
+            if candidate is None:
+                return {"status": "no_update", "msg": "Check for updates before installing."}
+            if not isinstance(candidate_id, str) or candidate_id != candidate.candidate_id:
+                return {"status": "stale", "msg": "The selected update is no longer current. Check again."}
+            candidate = _revalidate_candidate(candidate)
+            if candidate is None:
+                return {"status": "stale", "msg": "The selected release changed. Check for updates again."}
+            update_dir = Path(tempfile.mkdtemp(prefix="RainetteMusicUpdate-"))
+            installer = _download_verified_installer(candidate, update_dir)
+            _verify_authenticode(installer)
             # /autorelaunch=1 is read by the installer's [Code] to relaunch the app
             # after a silent install; /VERYSILENT keeps the whole thing headless.
             subprocess.Popen(
                 [str(installer), "/VERYSILENT", "/NORESTART", "/autorelaunch=1"],
                 close_fds=True,
             )
+            # Keep the lock held until this process exits. Releasing it during
+            # the 0.6-second UI handoff window allowed a second bridge call to
+            # delete or launch the already-verified installer again.
+            install_started = True
         except Exception as exc:
-            log(f"update installer launch failed: {exc}")
-            return {"status": "failed", "msg": str(exc)}
+            if update_dir is not None:
+                shutil.rmtree(update_dir, ignore_errors=True)
+            log(f"update install failed: {exc}")
+            return {
+                "status": "failed",
+                "code": "verification_or_launch_failed",
+                "msg": "Rainette could not verify or start the update. Please try again.",
+            }
+        finally:
+            if not install_started:
+                self._update_apply_lock.release()
         # Give the return value a moment to reach the UI, then exit so the running
         # exe and _internal files unlock for the installer.
         threading.Timer(0.6, self._quit_for_update).start()
-        return {"status": "installing"}
+        return {"status": "installing", "version": candidate.release_version}
 
     def _quit_for_update(self) -> None:
         try:
@@ -312,6 +810,7 @@ class WindowApi:
     def show_player(self):
         if not (self._player_window and self._player_can_show):
             return
+        self._player_window.move(*self._player_onscreen_pos)
         self._player_window.show()
         self._player_window.restore()
         # Shape only once the window is back at its Normal-state size.
@@ -334,12 +833,34 @@ class WindowApi:
         self.show_player()
 
     def player_hide(self):
-        if self._player_window:
-            self._player_window.hide()
+        self._park_player()
 
     def player_minimize(self):
-        if self._player_window:
-            self._player_window.minimize()
+        # Minimizing (like hiding) previously put the window into a state where
+        # document.hidden becomes true, which would throttle an already-playing
+        # stream's buffering to a halt the moment the user minimized it. Parking
+        # off-screen keeps it "shown" so playback that's already underway keeps
+        # running in the background.
+        self._park_player()
+
+    def _park_player(self) -> None:
+        """Move the player window far off-screen instead of hiding/minimizing it.
+
+        See PLAYER_PARK_POS for why: a .hide()'d or .minimize()'d window reports
+        document.hidden === true, which makes WebView2/Chromium throttle media
+        resource loading indefinitely - audio.play() gets called but its promise
+        never settles. Staying "shown" but off-screen avoids that while remaining
+        fully invisible to the user.
+        """
+        if not self._player_window:
+            return
+        try:
+            x, y = int(self._player_window.x), int(self._player_window.y)
+            if (x, y) != PLAYER_PARK_POS:
+                self._player_onscreen_pos = (x, y)
+        except Exception:
+            pass
+        self._player_window.move(*PLAYER_PARK_POS)
 
     def player_toggle_pin(self):
         if not self._player_window:
@@ -385,6 +906,31 @@ class WindowApi:
     def close_player(self):
         if self._player_window:
             self._player_window.destroy()
+
+    def _hide_player_from_taskbar(self) -> None:
+        """The player window is now created "shown" rather than hidden=True (see
+        PLAYER_PARK_POS), so without this it would get its own taskbar button and
+        Alt+Tab entry even while parked off-screen and invisible to the user."""
+        if os.name != "nt" or not self._player_window:
+            return
+        try:
+            from webview.platforms import winforms  # type: ignore
+            from System import Action  # type: ignore
+
+            form = winforms.BrowserView.instances.get(self._player_window.uid)
+            if form is not None:
+                def suppress_taskbar_entry():
+                    form.ShowInTaskbar = False
+
+                # on_started() runs in pywebview's worker thread.  Accessing a
+                # WinForms control directly from there can deadlock WebView2 at
+                # startup, so marshal this exactly as the shape/pin helpers do.
+                if form.InvokeRequired:
+                    form.Invoke(Action(suppress_taskbar_entry))
+                else:
+                    suppress_taskbar_entry()
+        except Exception as exc:
+            log(f"player taskbar suppression failed: {exc}")
 
     def _shape_player(self):
         if os.name != "nt" or not self._player_window:
@@ -497,12 +1043,28 @@ def _try_pywebview(url: str) -> bool:
         player_window = webview.create_window(
             "Player", f"{url}miniplayer.html?token={token}", js_api=api,
             width=PLAYER_SIZE[0], height=PLAYER_SIZE[1], min_size=PLAYER_SIZE,
-            hidden=True, frameless=True, easy_drag=False, resizable=False,
+            # Created "shown" (not hidden=True) but positioned off-screen: see
+            # PLAYER_PARK_POS for why a truly hidden window silently starves the
+            # audio engine of any autoplay-flag benefit.
+            x=PLAYER_PARK_POS[0], y=PLAYER_PARK_POS[1],
+            frameless=True, easy_drag=False, resizable=False,
             shadow=False, background_color="#FFFFFF",
         )
         api.bind_main(main_window)
         api.bind_player(player_window)
-        main_window.events.closed += api.close_player
+        # ShowInTaskbar recreates/adjusts the native form handle.  Doing that
+        # from pywebview's global ``on_started`` callback is still too early for
+        # the second WebView2 controller and can abort its initialization with
+        # E_ABORT.  ``loaded`` is the first lifecycle point at which the player
+        # controller is fully initialized; the helper itself then marshals the
+        # WinForms property write onto the UI thread.
+        player_window.events.loaded += lambda *_: api._hide_player_from_taskbar()
+        # The parked player is still a real WinForms window. Tear it down while
+        # the main form is closing, not from ``closed``: pywebview dispatches
+        # ``closed`` handlers on a worker thread after WinForms has begun
+        # disposing the main form, which can leave the off-screen player alive
+        # with no visible application window and keep pythonw running forever.
+        main_window.events.closing += api.close_player
         try:
             # Best-effort mitigation for the "cutout corners" glitch: re-apply
             # the player window's rounded-corner region whenever the main

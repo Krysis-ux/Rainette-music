@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from unittest.mock import patch
 import urllib.error
 from urllib.parse import parse_qs, urlparse
 
@@ -8,13 +9,94 @@ import main
 import server
 
 
+class _FakeEvent:
+    def __init__(self):
+        self.handlers = []
+
+    def __iadd__(self, handler):
+        self.handlers.append(handler)
+        return self
+
+
+class _FakeNativeWindow:
+    def __init__(self, uid):
+        self.uid = uid
+        self.events = type("Events", (), {
+            "closed": _FakeEvent(),
+            "closing": _FakeEvent(),
+            "loaded": _FakeEvent(),
+            "resized": _FakeEvent(),
+        })()
+
+    def move(self, *_):
+        pass
+
+    def destroy(self):
+        pass
+
+
+class _FakeWebview:
+    def __init__(self):
+        self.windows = []
+
+    def create_window(self, *_args, **_kwargs):
+        window = _FakeNativeWindow("main" if not self.windows else "player")
+        self.windows.append(window)
+        return window
+
+    def start(self, callback, **_kwargs):
+        callback()
+
+
+class PlayerShutdownLifecycleTests(unittest.TestCase):
+    def test_main_window_closing_starts_player_teardown_before_form_is_closed(self):
+        """A parked player is a real visible WinForms window.  Destroying it
+        after the main form has already closed can leave it alive without any
+        user-visible window, keeping the pythonw process running indefinitely.
+        The ``closing`` event is synchronous; ``closed`` launches callbacks on
+        a worker thread only after WinForms has begun disposing the main form.
+        """
+        webview = _FakeWebview()
+        with patch.dict("sys.modules", {"webview": webview}):
+            self.assertTrue(main._try_pywebview("http://127.0.0.1:8777/"))
+
+        main_window = webview.windows[0]
+        self.assertEqual(len(main_window.events.closing.handlers), 1)
+        self.assertEqual(main_window.events.closed.handlers, [])
+
+    def test_taskbar_suppression_waits_for_player_webview_loaded(self):
+        """Changing ShowInTaskbar while WebView2 is still creating its second
+        controller aborts that controller with E_ABORT.  The native mutation
+        must therefore be wired to the player window's loaded event, not run
+        from pywebview's earlier global startup callback.
+        """
+        calls = []
+
+        class RecordingApi(main.WindowApi):
+            def _hide_player_from_taskbar(self):
+                calls.append("suppress-taskbar")
+
+        webview = _FakeWebview()
+        with patch.dict("sys.modules", {"webview": webview}), patch.object(main, "WindowApi", RecordingApi):
+            self.assertTrue(main._try_pywebview("http://127.0.0.1:8777/"))
+
+        player_window = webview.windows[1]
+        self.assertEqual(calls, [], "startup callback mutated the form before WebView2 loaded")
+        self.assertEqual(len(player_window.events.loaded.handlers), 1)
+
+        player_window.events.loaded.handlers[0]()
+        self.assertEqual(calls, ["suppress-taskbar"])
+
+
 class FakePlayerWindow:
     """Records calls instead of touching a real pywebview window."""
 
-    def __init__(self):
+    def __init__(self, x=200, y=300):
         self.calls = []
         self._on_top = False
         self.raise_on_top = False
+        self.x = x
+        self.y = y
 
     def show(self):
         self.calls.append("show")
@@ -27,6 +109,10 @@ class FakePlayerWindow:
 
     def minimize(self):
         self.calls.append("minimize")
+
+    def move(self, x, y):
+        self.calls.append(("move", x, y))
+        self.x, self.y = x, y
 
     def resize(self, width, height):
         self.calls.append(("resize", width, height))
@@ -58,6 +144,57 @@ class MissingNativeFormPlayer(FakePlayerWindow):
     uid = "missing-native-form"
 
 
+class PlayerTaskbarThreadingTests(unittest.TestCase):
+    def test_taskbar_suppression_marshals_to_the_winforms_thread(self):
+        """``on_started`` runs on pywebview's worker thread.  WinForms form
+        properties must therefore be changed through Invoke, just like the
+        rounded-region and TopMost paths, or WebView2 startup can deadlock.
+        """
+        class Form:
+            InvokeRequired = True
+
+            def __init__(self):
+                self.invocations = 0
+                self._inside_invoke = False
+                self._show_in_taskbar = True
+
+            def Invoke(self, callback):
+                self.invocations += 1
+                self._inside_invoke = True
+                callback()
+                self._inside_invoke = False
+
+            @property
+            def ShowInTaskbar(self):
+                return self._show_in_taskbar
+
+            @ShowInTaskbar.setter
+            def ShowInTaskbar(self, value):
+                if not self._inside_invoke:
+                    raise RuntimeError("cross-thread WinForms property access")
+                self._show_in_taskbar = bool(value)
+
+        form = Form()
+        winforms = types.SimpleNamespace(BrowserView=types.SimpleNamespace(instances={"player": form}))
+        webview_module = types.ModuleType("webview")
+        platforms_module = types.ModuleType("webview.platforms")
+        system_module = types.ModuleType("System")
+        system_module.Action = lambda callback: callback
+        api = main.WindowApi()
+        api.bind_player(types.SimpleNamespace(uid="player"))
+
+        with patch.dict(sys.modules, {
+            "webview": webview_module,
+            "webview.platforms": platforms_module,
+            "webview.platforms.winforms": winforms,
+            "System": system_module,
+        }):
+            api._hide_player_from_taskbar()
+
+        self.assertEqual(form.invocations, 1)
+        self.assertFalse(form.ShowInTaskbar)
+
+
 class WindowApiGatingTests(unittest.TestCase):
     """reveal_player() replaced a two-call player_allow_show()+show_player()
     handshake that was a guaranteed no-op on its only first-play call site
@@ -78,6 +215,11 @@ class WindowApiGatingTests(unittest.TestCase):
         self.api.reveal_player()
         self.assertIn("show", self.player.calls)
         self.assertIn("restore", self.player.calls)
+        # Confirmed by direct WebView2 measurement: a window that was ever
+        # truly .hide()'d/.minimize()'d reports document.hidden === true, which
+        # freezes media resource loading indefinitely - reveal must move the
+        # window on-screen rather than rely on show()/restore() alone.
+        self.assertIn(("move", *self.api._player_onscreen_pos), self.player.calls)
 
     def test_reveal_player_unlocks_can_show_flag(self):
         self.assertFalse(self.api._player_can_show)
@@ -100,10 +242,35 @@ class WindowApiGatingTests(unittest.TestCase):
         self.api.show_player()
         self.assertIn("show", self.player.calls)
 
-    def test_player_hide_and_minimize_do_not_require_reveal(self):
+    def test_player_hide_and_minimize_park_offscreen_instead_of_hiding(self):
+        # Native .hide()/.minimize() make document.hidden report true, which
+        # freezes the audio engine's media loading indefinitely (confirmed via
+        # direct WebView2 measurement) - both must move the window off-screen
+        # instead, keeping it "shown" so playback is never throttled.
         self.api.player_hide()
         self.api.player_minimize()
-        self.assertEqual(self.player.calls, ["hide", "minimize"])
+        self.assertEqual(self.player.calls, [("move", *main.PLAYER_PARK_POS), ("move", *main.PLAYER_PARK_POS)])
+        self.assertNotIn("hide", self.player.calls)
+        self.assertNotIn("minimize", self.player.calls)
+
+    def test_player_hide_remembers_onscreen_position_for_next_reveal(self):
+        # The window is user-draggable; parking it must not forget where the
+        # user left it, or every reveal would reset to a fixed spot.
+        self.player.x, self.player.y = 555, 666
+        self.api.player_hide()
+        self.assertEqual(self.api._player_onscreen_pos, (555, 666))
+        self.api.player_allow_show()
+        self.api.show_player()
+        self.assertIn(("move", 555, 666), self.player.calls)
+
+    def test_parking_an_already_parked_window_does_not_clobber_remembered_position(self):
+        self.player.x, self.player.y = 555, 666
+        self.api.player_hide()
+        self.assertEqual(self.api._player_onscreen_pos, (555, 666))
+        # Player is now at PLAYER_PARK_POS; hiding again must not overwrite the
+        # remembered on-screen position with the park position itself.
+        self.api.player_hide()
+        self.assertEqual(self.api._player_onscreen_pos, (555, 666))
 
     def test_player_resize_tracks_collapsed_state(self):
         self.api.player_resize(False)
@@ -171,12 +338,12 @@ class PlayerShapeOrderingTests(unittest.TestCase):
 
     def test_reveal_player_shapes_only_after_show_and_restore(self):
         self.api.reveal_player()
-        self.assertEqual(self.player.calls, ["show", "restore", "shape"])
+        self.assertEqual(self.player.calls, [("move", *self.api._player_onscreen_pos), "show", "restore", "shape"])
 
     def test_show_player_shapes_only_after_show_and_restore(self):
         self.api.player_allow_show()
         self.api.show_player()
-        self.assertEqual(self.player.calls, ["show", "restore", "shape"])
+        self.assertEqual(self.player.calls, [("move", *self.api._player_onscreen_pos), "show", "restore", "shape"])
 
     def test_show_player_still_shapes_nothing_before_reveal(self):
         self.api.show_player()
@@ -189,7 +356,8 @@ class PlayerShapeOrderingTests(unittest.TestCase):
         self.api.player_minimize()
         self.api.reveal_player()
         self.assertEqual(self.player.calls.count("shape"), 2)
-        self.assertEqual(self.player.calls[-3:], ["show", "restore", "shape"])
+        onscreen = self.api._player_onscreen_pos
+        self.assertEqual(self.player.calls[-4:], [("move", *onscreen), "show", "restore", "shape"])
 
     def test_player_resize_keeps_sizing_before_shaping(self):
         self.api.player_resize(False)

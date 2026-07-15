@@ -109,6 +109,20 @@ class PlaybackLoadGuardTests(unittest.TestCase):
             """
         )
 
+    def test_never_settling_play_attempt_reaches_a_deadline(self):
+        self.run_node(
+            """
+            import assert from 'node:assert/strict';
+            import { settleWithin } from './web/playback_load_guard.mjs';
+            const never = new Promise(() => {});
+            const started = Date.now();
+            const result = await settleWithin(never, 20);
+            assert.equal(result.status, 'timeout');
+            assert.ok(Date.now() - started >= 15);
+            assert.ok(Date.now() - started < 500);
+            """
+        )
+
     def test_miniplayer_replaces_media_element_for_each_selected_or_retried_load(self):
         source = (ROOT / "web" / "miniplayer.js").read_text(encoding="utf-8")
         self.assertGreaterEqual(source.count("_freshAudioElement();"), 2)
@@ -123,6 +137,7 @@ class PlaybackLoadGuardTests(unittest.TestCase):
     def test_miniplayer_uses_guard_for_loads_and_media_retries(self):
         source = (ROOT / "web" / "miniplayer.js").read_text(encoding="utf-8")
         self.assertIn("PlaybackLoadGuard", source)
+        self.assertIn("settleWithin", source)
         self.assertIn("claimRetry", source)
         self.assertIn("forceRefresh", source)
 

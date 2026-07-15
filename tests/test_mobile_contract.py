@@ -174,12 +174,17 @@ class MobileContractTests(unittest.TestCase):
         self.assertIn("fail_on_unmatched_files: true", workflow)
         self.assertIn("assembleRelease", workflow)
 
-    def test_android_release_workflow_has_version_tag_trigger_and_write_permission(self):
+    def test_android_release_workflow_has_version_tag_trigger_and_least_privilege_permissions(self):
         workflow = (ROOT / ".github" / "workflows" / "android-release.yml").read_text(encoding="utf-8")
         self.assertRegex(workflow, r"(?m)^on:\n  push:\n    tags:\n      - 'v\*'$")
-        self.assertRegex(workflow, r"(?m)^permissions:\n  contents: write$")
-        self.assertIn('RAINETTE_VERSION_NAME="${GITHUB_REF_NAME#v}"', workflow)
-        self.assertIn('RAINETTE_VERSION_CODE="${GITHUB_RUN_NUMBER}"', workflow)
+        self.assertRegex(workflow, r"(?m)^permissions:\n  contents: read$")
+        self.assertEqual(workflow.count("contents: write"), 1)
+        publish_job = workflow[workflow.index("  publish:"):]
+        self.assertRegex(publish_job, r"(?m)^    permissions:\n      contents: write$")
+        self.assertIn("Release tags must use the exact vMAJOR.MINOR.PATCH format.", workflow)
+        self.assertIn("version.APP_VERSION", workflow)
+        self.assertIn("RAINETTE_VERSION_NAME: ${{ needs.test.outputs.release_version }}", workflow)
+        self.assertIn("RAINETTE_VERSION_CODE: ${{ github.run_number }}", workflow)
         self.assertIn("chmod +x ./gradlew", workflow)
 
     def test_android_signing_secrets_are_scoped_only_to_required_steps(self):
@@ -188,17 +193,21 @@ class MobileContractTests(unittest.TestCase):
         self.assertNotIn("    env:", job_header)
 
         expected_secret_names = {
-            "Verify signing secrets": {
+            "Verify Android signing secrets": {
                 "ANDROID_KEYSTORE_BASE64",
                 "ANDROID_KEYSTORE_PASSWORD",
                 "ANDROID_KEY_ALIAS",
                 "ANDROID_KEY_PASSWORD",
+                "ANDROID_SIGNING_CERT_SHA256",
             },
             "Decode release keystore": {"ANDROID_KEYSTORE_BASE64"},
             "Build signed release APK": {
                 "ANDROID_KEYSTORE_PASSWORD",
                 "ANDROID_KEY_ALIAS",
                 "ANDROID_KEY_PASSWORD",
+            },
+            "Verify production Android signature and prepare assets": {
+                "ANDROID_SIGNING_CERT_SHA256",
             },
         }
         for step_name, expected in expected_secret_names.items():
@@ -207,20 +216,20 @@ class MobileContractTests(unittest.TestCase):
             self.assertEqual(expected, actual, step_name)
 
         for step_name in (
-            "Check out repository",
+            "Check out tagged source",
             "Set up Java",
             "Set up Node.js",
             "Install mobile dependencies",
             "Sync Capacitor Android project",
             "Add Android signing tools to PATH",
-            "Verify and prepare release assets",
+            "Upload verified Android release assets",
             "Publish GitHub Release assets",
         ):
             self.assertNotIn("secrets.", _workflow_step(workflow, step_name), step_name)
 
     def test_android_release_workflow_fails_before_build_when_secrets_are_missing(self):
         workflow = (ROOT / ".github" / "workflows" / "android-release.yml").read_text(encoding="utf-8")
-        preflight = workflow.index("Verify signing secrets")
+        preflight = workflow.index("Verify Android signing secrets")
         build = workflow.index("assembleRelease")
         self.assertLess(preflight, build)
         for variable in (
@@ -228,8 +237,37 @@ class MobileContractTests(unittest.TestCase):
             "ANDROID_KEYSTORE_PASSWORD",
             "ANDROID_KEY_ALIAS",
             "ANDROID_KEY_PASSWORD",
+            "ANDROID_SIGNING_CERT_SHA256",
         ):
             self.assertIn(f'test -n "${{{variable}}}"', workflow[preflight:build])
+
+    def test_windows_signing_credentials_are_isolated_from_the_python_build_runner(self):
+        workflow = (ROOT / ".github" / "workflows" / "android-release.yml").read_text(encoding="utf-8")
+        build_job = workflow[workflow.index("  windows-build:"):workflow.index("  windows:")]
+        signing_job = workflow[workflow.index("  windows:"):workflow.index("  publish:")]
+        unsigned_step = _workflow_step(workflow, "Build unsigned Windows application with pinned update signer")
+        credential_step = _workflow_step(workflow, "Sign application and package Windows release in isolated phase")
+
+        self.assertIn("actions/setup-python@", build_job)
+        self.assertIn("python -m pip", build_job)
+        self.assertIn("-Phase BuildUnsigned", unsigned_step)
+        self.assertIn("vars.WINDOWS_CODESIGN_CERT_SHA256", unsigned_step)
+        self.assertNotIn("secrets.", build_job)
+
+        self.assertIn("needs: [test, windows-build]", signing_job)
+        self.assertIn("environment: windows-signing", signing_job)
+        self.assertIn("Download unsigned Windows application", signing_job)
+        self.assertNotIn("actions/setup-python@", signing_job)
+        self.assertNotIn("python -m pip", signing_job)
+        self.assertNotIn("PyInstaller", signing_job)
+        self.assertIn("secrets.WINDOWS_CODESIGN_CERT_BASE64", credential_step)
+        self.assertIn("secrets.WINDOWS_CODESIGN_CERT_PASSWORD", credential_step)
+        self.assertIn("-Phase SignAndPackage", credential_step)
+        self.assertNotIn("secrets.WINDOWS_CODESIGN_CERT_SHA256", workflow)
+
+        unsigned_build = workflow.index("-Phase BuildUnsigned")
+        credential_decode = workflow.index("[IO.File]::WriteAllBytes($certificatePath")
+        self.assertLess(unsigned_build, credential_decode)
 
     def test_android_release_workflow_only_uploads_a_verified_signed_apk(self):
         workflow = (ROOT / ".github" / "workflows" / "android-release.yml").read_text(encoding="utf-8")
@@ -240,8 +278,8 @@ class MobileContractTests(unittest.TestCase):
         self.assertLess(rename, upload)
         upload_config = workflow[upload:]
         self.assertIn("          files: |", upload_config)
-        self.assertIn("            rainette-music-android.apk", upload_config)
-        self.assertIn("            RainetteMusicSetup.exe", upload_config)
+        self.assertIn("            release-assets/rainette-music-android.apk", upload_config)
+        self.assertIn("            release-assets/RainetteMusicSetup.exe", upload_config)
         self.assertNotRegex(upload_config, r"(?m)^          files: .*[*?\[]")
         self.assertNotIn("app-release-unsigned.apk", upload_config)
 

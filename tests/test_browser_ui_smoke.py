@@ -52,7 +52,70 @@ FAKE_WEBSOCKET_SCRIPT = """
 """
 
 
+FAKE_AUDIO_SCRIPT = """
+(() => {
+    window.__rainetteFakeAudioInstances = [];
+    class FakeAudio extends EventTarget {
+        constructor() {
+            super();
+            this._src = '';
+            this.preload = '';
+            this.volume = 1;
+            this.currentTime = 0;
+            this.duration = 120;
+            this.readyState = 0;
+            this.paused = true;
+            this.error = null;
+            this.playCalls = 0;
+            this.pauseCalls = 0;
+            this.loadCalls = 0;
+            window.__rainetteFakeAudioInstances.push(this);
+        }
+        get src() { return this._src; }
+        set src(value) {
+            this._src = value ? new URL(String(value), document.baseURI).href : '';
+            this.readyState = 0;
+            queueMicrotask(() => this.dispatchEvent(new Event('loadstart')));
+        }
+        get currentSrc() { return this._src; }
+        getAttribute(name) { return name === 'src' ? (this._src || null) : null; }
+        removeAttribute(name) { if (name === 'src') this._src = ''; }
+        play() {
+            this.playCalls += 1;
+            this.paused = false;
+            this.readyState = 4;
+            queueMicrotask(() => this.dispatchEvent(new Event('playing')));
+            return Promise.resolve();
+        }
+        pause() {
+            this.pauseCalls += 1;
+            const changed = !this.paused;
+            this.paused = true;
+            if (changed) queueMicrotask(() => this.dispatchEvent(new Event('pause')));
+        }
+        load() {
+            this.loadCalls += 1;
+            if (this._src) {
+                this.readyState = 1;
+                queueMicrotask(() => this.dispatchEvent(new Event('loadedmetadata')));
+            } else {
+                this.readyState = 0;
+                queueMicrotask(() => this.dispatchEvent(new Event('emptied')));
+            }
+        }
+    }
+    window.Audio = FakeAudio;
+})();
+"""
+
+
 class QuietStaticHandler(SimpleHTTPRequestHandler):
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        ".js": "text/javascript",
+        ".mjs": "text/javascript",
+    }
+
     def log_message(self, _format, *_args):
         pass
 
@@ -68,13 +131,29 @@ def emit(page, payload):
     )
 
 
+def emit_ws(page, payload):
+    """Deliver a server message through music_shell's real WebSocket handler."""
+    page.evaluate(
+        """payload => {
+            const socket = window.__rainetteFakeWebSockets.at(-1);
+            if (!socket) throw new Error('fake WebSocket is not connected');
+            socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(payload) }));
+        }""",
+        payload,
+    )
+
+
 def fulfill_test_asset(route):
     parsed = urlparse(route.request.url)
     if parsed.hostname in {"127.0.0.1", "localhost"}:
         relative = parsed.path.lstrip("/") or "index.html"
         path = (WEB_DIR / relative).resolve()
         if WEB_DIR.resolve() in path.parents and path.is_file():
-            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            content_type = (
+                "text/javascript"
+                if path.suffix.lower() in {".js", ".mjs"}
+                else (mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+            )
             route.fulfill(status=200, path=str(path), content_type=content_type)
             return
     if parsed.hostname == "fonts.googleapis.com":
@@ -84,6 +163,23 @@ def fulfill_test_asset(route):
         route.abort()
         return
     route.continue_()
+
+
+def open_fake_miniplayer(browser, base_url):
+    """Open the real detached-player module with deterministic browser APIs."""
+    page = browser.new_page(viewport={"width": 352, "height": 184})
+    diagnostics = []
+    page.set_default_timeout(5_000)
+    page.add_init_script(FAKE_WEBSOCKET_SCRIPT)
+    page.add_init_script(FAKE_AUDIO_SCRIPT)
+    page.on("pageerror", lambda error: diagnostics.append(f"pageerror:{error}"))
+    page.route("**/*", fulfill_test_asset)
+    page.goto(base_url + "miniplayer.html", wait_until="domcontentloaded")
+    page.locator("#mpPlayPill").wait_for(state="attached")
+    page.wait_for_function(
+        "() => (window.__rainetteSentMessages || []).some(message => message.type === 'music_request_state')"
+    )
+    return page, diagnostics
 
 
 def sample_tracks(count=14):
@@ -260,6 +356,11 @@ def test_core_release_browser_flow():
             page.get_by_text("Create new playlist", exact=True).wait_for()
             page.get_by_text("Cancel", exact=True).click()
 
+            page.locator('#rwMusicTabs button[data-tab="playlists"]').click()
+            # Match the production order: opening the tab requests the list,
+            # then the backend response renders into the active view. Keeping
+            # the response before the click made this smoke test depend on a
+            # stale pre-navigation render during heavily loaded full-suite runs.
             emit(
                 page,
                 {
@@ -277,7 +378,6 @@ def test_core_release_browser_flow():
                     ],
                 },
             )
-            page.locator('#rwMusicTabs button[data-tab="playlists"]').click()
             art = page.locator('.rw-playlist-card img[src*="playlist-artwork"]').first
             assert art.get_attribute("src").endswith("playlist-art_0123456789abcdef0123456789abcdef.png")
 
@@ -447,6 +547,739 @@ def test_core_release_browser_flow():
                 "el => getComputedStyle(el).gridTemplateColumns.trim().split(/\\s+/).length === 1"
             )
 
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_track_row_reflects_now_playing_state_and_toggles_in_place():
+    """Track rows never reflected playback state at all: the play button
+    always showed the play icon and there was no "now playing" indicator,
+    regardless of whether that exact track was the one currently playing.
+
+    Also guards a stale-closure bug in the fix: the click handler must
+    re-check live now-playing state at click time, not a snapshot captured
+    when the row was first built - otherwise clicking the active row's own
+    button restarts the queue instead of toggling play/pause.
+    """
+    handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
+    server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/?remote=1"
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1060, "height": 730})
+            diagnostics = []
+            page.add_init_script(FAKE_WEBSOCKET_SCRIPT)
+            page.on("pageerror", lambda error: diagnostics.append(f"pageerror:{error}"))
+            page.route("**/*", fulfill_test_asset)
+            page.set_default_timeout(7_000)
+            page.goto(url, wait_until="domcontentloaded")
+            page.locator("#rwMusicTabs").wait_for(state="visible")
+            page.locator('#rwMusicTabs button[data-tab="recent"]').click()
+
+            tracks = sample_tracks()
+            emit(page, {"type": "music_recent_result", "ok": True, "tracks": tracks})
+            page.locator(".rw-track-card").first.wait_for(state="visible")
+
+            def row(i):
+                return page.locator(".rw-track-card").nth(i)
+
+            def is_pause_icon(locator):
+                # The pause glyph is two solid bars (see rainette_icons.js); the
+                # play glyph is a single triangle - distinct path data either way.
+                return "M7 5h4v14H7z" in locator.locator(".rw-play-action").inner_html()
+
+            assert "now-playing" not in (row(0).get_attribute("class") or "")
+            assert not is_pause_icon(row(0))
+
+            # This row is built BEFORE anything is playing, then becomes the
+            # active track - the scenario that exposed the stale-closure bug.
+            emit(page, {
+                "type": "music_now_playing", "state": "playing", "playing": True,
+                "queue": tracks[:3], "index": 0, "current_time": 5, "duration": 180,
+            })
+            page.wait_for_timeout(150)
+            assert "now-playing" in row(0).get_attribute("class")
+            assert row(0).locator(".rw-track-now-badge").is_visible()
+            assert is_pause_icon(row(0))
+            assert "now-playing" not in (row(1).get_attribute("class") or "")
+
+            row(0).locator(".rw-play-action").click()
+            page.wait_for_timeout(100)
+            sent = page.evaluate("() => window.__rainetteSentMessages || []")
+            toggles = [m for m in sent if isinstance(m, dict)
+                      and m.get("type") == "music_remote_control" and m.get("action") == "toggle"]
+            assert len(toggles) == 1, (
+                "clicking the active row's own button must toggle play/pause in place, "
+                f"not restart the queue - messages sent: {sent[-3:]}"
+            )
+
+            # Pausing keeps this as the current track: its button becomes Play,
+            # the badge says Paused, and clicking resumes with toggle instead
+            # of sending a fresh music_remote_play that rewinds the track.
+            emit(page, {
+                "type": "music_now_playing", "state": "paused", "playing": False,
+                "queue": tracks[:3], "index": 0, "current_time": 12, "duration": 180,
+            })
+            page.wait_for_timeout(100)
+            assert "now-playing" in row(0).get_attribute("class")
+            assert row(0).locator(".rw-track-now-badge").text_content() == "Paused"
+            assert not is_pause_icon(row(0))
+            row(0).locator(".rw-play-action").click()
+            page.wait_for_timeout(100)
+            sent = page.evaluate("() => window.__rainetteSentMessages || []")
+            toggles = [m for m in sent if isinstance(m, dict)
+                      and m.get("type") == "music_remote_control" and m.get("action") == "toggle"]
+            assert len(toggles) == 2
+
+            # Loading is current too. It must not lose row feedback or restart
+            # the queue when the user presses its cancel/pause affordance.
+            emit(page, {
+                "type": "music_now_playing", "state": "loading", "playing": False,
+                "queue": tracks[:3], "index": 0, "current_time": 0, "duration": 180,
+            })
+            page.wait_for_timeout(100)
+            assert row(0).locator(".rw-track-now-badge").text_content() == "Loading"
+            assert is_pause_icon(row(0))
+            row(0).locator(".rw-play-action").click()
+            page.wait_for_timeout(100)
+            sent = page.evaluate("() => window.__rainetteSentMessages || []")
+            toggles = [m for m in sent if isinstance(m, dict)
+                      and m.get("type") == "music_remote_control" and m.get("action") == "toggle"]
+            assert len(toggles) == 3
+
+            # A progress tick can be the first post-reconnect proof that audio
+            # is playing. Recover the queue/row presentation from it even when
+            # the matching now_playing broadcast was missed.
+            emit(page, {
+                "type": "music_now_playing", "state": "paused", "playing": False,
+                "queue": tracks[:3], "index": 0, "current_time": 12, "duration": 180,
+            })
+            emit(page, {
+                "type": "music_progress", "playing": True, "source_id": tracks[0]["source_id"],
+                "current_time": 13, "duration": 180,
+            })
+            page.wait_for_timeout(100)
+            assert row(0).locator(".rw-track-now-badge").text_content() == "Now playing"
+            assert is_pause_icon(row(0))
+
+            # Switching the active track must revert the old row and activate the new one.
+            emit(page, {
+                "type": "music_now_playing", "state": "playing", "playing": True,
+                "queue": tracks[:3], "index": 1, "current_time": 0, "duration": 180,
+            })
+            page.wait_for_timeout(150)
+            assert "now-playing" not in (row(0).get_attribute("class") or "")
+            assert not is_pause_icon(row(0))
+            assert "now-playing" in row(1).get_attribute("class")
+            assert is_pause_icon(row(1))
+
+            # Heavy Rotation builds a custom track row; it must carry the same
+            # status badge as every standard track card.
+            page.locator('#rwMusicTabs button[data-tab="insights"]').click()
+            emit(page, {
+                "type": "music_insights_result", "ok": True,
+                "total_plays": 3, "total_minutes": 10,
+                "unique_tracks": 1, "unique_artists": 1,
+                "daily": [], "top_tracks": [{**tracks[1], "play_count": 3}], "top_artists": [],
+            })
+            page.wait_for_timeout(100)
+            insight_row = page.locator(".rw-insights-rank-row").first
+            assert insight_row.locator(".rw-track-now-badge").text_content() == "Now playing"
+            assert insight_row.locator(".rw-track-now-badge").is_visible()
+
+            assert diagnostics == [], diagnostics
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_miniplayer_terminal_stream_failure_survives_state_request():
+    """A failed replacement track must not fall back to stale playing state."""
+    handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
+    server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/"
+    track_a = {
+        "id": "track-a",
+        "source": "youtube",
+        "source_id": "source-a",
+        "title": "Track A",
+        "artist": "Artist A",
+        "duration_s": 120,
+    }
+    track_b = {
+        "id": "track-b",
+        "source": "youtube",
+        "source_id": "source-b",
+        "title": "Track B",
+        "artist": "Artist B",
+        "duration_s": 150,
+    }
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page, diagnostics = open_fake_miniplayer(browser, base)
+
+            # Establish a genuinely playing predecessor first. This catches the
+            # stale-state regression that only appears when the next load fails.
+            emit_ws(page, {"type": "music_remote_play", "tracks": [track_a], "index": 0})
+            page.wait_for_function(
+                "sourceId => window.__rainetteSentMessages.some(message => "
+                "message.type === 'music_stream_url' && message.source_id === sourceId && !message.prefetch)",
+                arg=track_a["source_id"],
+            )
+            request_a = page.evaluate(
+                "sourceId => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_stream_url' && message.source_id === sourceId && !message.prefetch).at(-1)",
+                track_a["source_id"],
+            )
+            emit_ws(page, {
+                "type": "music_stream_url_result",
+                "id": request_a["id"],
+                "ok": True,
+                "source_id": track_a["source_id"],
+                "url": "https://audio.invalid/a.mp3",
+            })
+            page.wait_for_function(
+                "sourceId => window.__rainetteSentMessages.some(message => "
+                "message.type === 'music_now_playing_set' && message.track?.source_id === sourceId "
+                "&& message.state === 'playing' && message.playing === true)",
+                arg=track_a["source_id"],
+            )
+
+            emit_ws(page, {"type": "music_remote_play", "tracks": [track_a, track_b], "index": 1})
+            page.wait_for_function(
+                "sourceId => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_stream_url' && message.source_id === sourceId && !message.prefetch).length === 1",
+                arg=track_b["source_id"],
+            )
+            first_b_request = page.evaluate(
+                "sourceId => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_stream_url' && message.source_id === sourceId && !message.prefetch).at(-1)",
+                track_b["source_id"],
+            )
+            assert first_b_request["force_refresh"] is False
+            emit_ws(page, {
+                "type": "music_stream_url_result",
+                "id": first_b_request["id"],
+                "ok": False,
+                "msg": "initial resolve failed",
+            })
+
+            page.wait_for_function(
+                "sourceId => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_stream_url' && message.source_id === sourceId && !message.prefetch).length === 2",
+                arg=track_b["source_id"],
+            )
+            retry_b_request = page.evaluate(
+                "sourceId => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_stream_url' && message.source_id === sourceId && !message.prefetch).at(-1)",
+                track_b["source_id"],
+            )
+            assert retry_b_request["id"] != first_b_request["id"]
+            assert retry_b_request["force_refresh"] is True
+            emit_ws(page, {
+                "type": "music_stream_url_result",
+                "id": retry_b_request["id"],
+                "ok": False,
+                "msg": "retry failed",
+            })
+            page.wait_for_function(
+                "sourceId => window.__rainetteSentMessages.some(message => "
+                "message.type === 'music_now_playing_set' && message.track?.source_id === sourceId "
+                "&& message.state === 'error' && message.playing === false)",
+                arg=track_b["source_id"],
+            )
+
+            before_request = page.evaluate(
+                "() => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_now_playing_set').length"
+            )
+            emit_ws(page, {"type": "music_remote_control", "action": "queue_request_state"})
+            page.wait_for_function(
+                "count => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_now_playing_set').length > count",
+                arg=before_request,
+            )
+            reported = page.evaluate(
+                "() => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_now_playing_set').at(-1)"
+            )
+            assert reported["track"]["source_id"] == track_b["source_id"]
+            assert reported["state"] == "error"
+            assert reported["playing"] is False
+
+            for selector in (".mp-play", "#mpPlayPill"):
+                paths = page.locator(f"{selector} path")
+                assert paths.count() == 1, f"{selector} must render the single-path Play glyph"
+                assert paths.first.get_attribute("d") == "M8 5v14l11-7-11-7z"
+            assert page.locator(".mp-artist").text_content() == "Playback failed"
+            assert diagnostics == [], diagnostics
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_miniplayer_toggle_during_resolution_keeps_successful_load_paused():
+    """Canceling autoplay while resolving must survive the late URL response."""
+    handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
+    server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/"
+    track_b = {
+        "id": "track-b",
+        "source": "youtube",
+        "source_id": "source-b",
+        "title": "Track B",
+        "artist": "Artist B",
+        "duration_s": 150,
+    }
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page, diagnostics = open_fake_miniplayer(browser, base)
+
+            emit_ws(page, {"type": "music_remote_play", "tracks": [track_b], "index": 0})
+            page.wait_for_function(
+                "sourceId => window.__rainetteSentMessages.some(message => "
+                "message.type === 'music_stream_url' && message.source_id === sourceId && !message.prefetch)",
+                arg=track_b["source_id"],
+            )
+            pending_request = page.evaluate(
+                "sourceId => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_stream_url' && message.source_id === sourceId && !message.prefetch).at(-1)",
+                track_b["source_id"],
+            )
+
+            emit_ws(page, {"type": "music_remote_control", "action": "toggle"})
+            page.wait_for_function(
+                "sourceId => window.__rainetteSentMessages.some(message => "
+                "message.type === 'music_now_playing_set' && message.track?.source_id === sourceId "
+                "&& message.state === 'paused' && message.playing === false)",
+                arg=track_b["source_id"],
+            )
+            paused_before_resolution = page.evaluate(
+                "sourceId => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_now_playing_set' && message.track?.source_id === sourceId "
+                "&& message.state === 'paused' && message.playing === false).length",
+                track_b["source_id"],
+            )
+
+            emit_ws(page, {
+                "type": "music_stream_url_result",
+                "id": pending_request["id"],
+                "ok": True,
+                "source_id": track_b["source_id"],
+                "url": "https://audio.invalid/b.mp3",
+            })
+            page.wait_for_function(
+                "args => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_now_playing_set' && message.track?.source_id === args.sourceId "
+                "&& message.state === 'paused' && message.playing === false).length > args.count",
+                arg={"sourceId": track_b["source_id"], "count": paused_before_resolution},
+            )
+            page.wait_for_function(
+                "() => window.__rainetteFakeAudioInstances.at(-1)?.loadCalls >= 1"
+            )
+            media = page.evaluate(
+                "() => { const audio = window.__rainetteFakeAudioInstances.at(-1); return { "
+                "src: audio.src, paused: audio.paused, playCalls: audio.playCalls, loadCalls: audio.loadCalls }; }"
+            )
+            assert media == {
+                "src": "https://audio.invalid/b.mp3",
+                "paused": True,
+                "playCalls": 0,
+                "loadCalls": 1,
+            }
+            playing_broadcasts = page.evaluate(
+                "sourceId => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_now_playing_set' && message.track?.source_id === sourceId "
+                "&& message.state === 'playing' && message.playing === true).length",
+                track_b["source_id"],
+            )
+            assert playing_broadcasts == 0
+
+            before_request = page.evaluate(
+                "() => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_now_playing_set').length"
+            )
+            emit_ws(page, {"type": "music_remote_control", "action": "queue_request_state"})
+            page.wait_for_function(
+                "count => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_now_playing_set').length > count",
+                arg=before_request,
+            )
+            reported = page.evaluate(
+                "() => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_now_playing_set').at(-1)"
+            )
+            assert reported["track"]["source_id"] == track_b["source_id"]
+            assert reported["state"] == "paused"
+            assert reported["playing"] is False
+            assert diagnostics == [], diagnostics
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_both_playback_windows_resynchronize_after_websocket_reconnect():
+    """A remote command broadcast while either WebView is disconnected is
+    otherwise lost forever. Each side must request the authoritative state on
+    every socket open, not only once during its initial module boot.
+    """
+    handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
+    server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/"
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+
+            player = browser.new_page()
+            player.set_default_timeout(5_000)
+            player.add_init_script(FAKE_WEBSOCKET_SCRIPT)
+            player.goto(base + "miniplayer.html", wait_until="domcontentloaded")
+            player.wait_for_function(
+                "() => (window.__rainetteSentMessages || []).some(m => m.type === 'music_request_state')"
+            )
+            first_player_requests = player.evaluate(
+                "() => window.__rainetteSentMessages.filter(m => m.type === 'music_request_state').length"
+            )
+            player.evaluate("() => window.__rainetteFakeWebSockets.at(-1).close()")
+            player.wait_for_function("() => window.__rainetteFakeWebSockets.length >= 2", timeout=4_000)
+            player.wait_for_function(
+                "count => window.__rainetteSentMessages.filter(m => m.type === 'music_request_state').length > count",
+                arg=first_player_requests,
+            )
+
+            main_page = browser.new_page()
+            main_page.set_default_timeout(5_000)
+            main_page.add_init_script(FAKE_WEBSOCKET_SCRIPT)
+            main_page.route("**/*", fulfill_test_asset)
+            main_page.goto(base + "?remote=1", wait_until="domcontentloaded")
+            main_page.locator("#rwMusicTabs").wait_for(state="visible")
+            main_page.wait_for_function(
+                "() => (window.__rainetteSentMessages || []).some(m => m.type === 'music_remote_control' && m.action === 'queue_request_state')"
+            )
+            first_main_requests = main_page.evaluate(
+                "() => window.__rainetteSentMessages.filter(m => m.type === 'music_remote_control' && m.action === 'queue_request_state').length"
+            )
+            main_page.evaluate("() => window.__rainetteFakeWebSockets.at(-1).close()")
+            main_page.wait_for_function("() => window.__rainetteFakeWebSockets.length >= 2", timeout=4_000)
+            main_page.wait_for_function(
+                "count => window.__rainetteSentMessages.filter(m => m.type === 'music_remote_control' && m.action === 'queue_request_state').length > count",
+                arg=first_main_requests,
+            )
+
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_state_handshake_restores_paused_transport_without_blocking_active_recovery():
+    """Reconnect recovery must carry transport intent, not masquerade as a
+    fresh user-initiated play. A paused queue stays paused after a cold player
+    restore, while a queue that was still loading is allowed to finish and
+    begin playback.
+    """
+    handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
+    server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/"
+    paused_track = {
+        "id": "paused-track",
+        "source": "youtube",
+        "source_id": "paused-source",
+        "title": "Paused Track",
+        "artist": "Quiet Artist",
+        "duration_s": 120,
+    }
+    loading_track = {
+        "id": "loading-track",
+        "source": "youtube",
+        "source_id": "loading-source",
+        "title": "Loading Track",
+        "artist": "Active Artist",
+        "duration_s": 150,
+    }
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+
+            main_page = browser.new_page(viewport={"width": 1060, "height": 730})
+            main_page.set_default_timeout(5_000)
+            main_page.add_init_script(FAKE_WEBSOCKET_SCRIPT)
+            main_page.route("**/*", fulfill_test_asset)
+            main_page.goto(base + "?remote=1", wait_until="domcontentloaded")
+            main_page.locator("#rwMusicTabs").wait_for(state="visible")
+
+            def request_restore(track, state, playing, *, cold_idle_first=False):
+                emit(main_page, {
+                    "type": "music_now_playing",
+                    "state": state,
+                    "playing": playing,
+                    "track": track,
+                    "queue": [track],
+                    "index": 0,
+                    "current_time": 37 if state == "paused" else 0,
+                    "duration": track["duration_s"],
+                })
+                if cold_idle_first:
+                    # Reproduces the real two-window race: the main window asks
+                    # for player state on reconnect, the newly loaded player
+                    # answers from its empty idle queue, then asks the main for
+                    # the cached queue. That idle response must not turn a
+                    # cached pause into a loading/autoplay restore.
+                    emit(main_page, {
+                        "type": "music_now_playing",
+                        "state": "idle",
+                        "playing": False,
+                        "track": None,
+                        "queue": [],
+                        "index": -1,
+                        "current_time": 0,
+                        "duration": 0,
+                    })
+                before = main_page.evaluate(
+                    "() => window.__rainetteSentMessages.filter(message => "
+                    "message.type === 'music_remote_play').length"
+                )
+                emit(main_page, {"type": "music_request_state"})
+                main_page.wait_for_function(
+                    "count => window.__rainetteSentMessages.filter(message => "
+                    "message.type === 'music_remote_play').length > count",
+                    arg=before,
+                )
+                command = main_page.evaluate(
+                    "() => window.__rainetteSentMessages.filter(message => "
+                    "message.type === 'music_remote_play').at(-1)"
+                )
+                assert command["restore_state"] == state
+                assert command["playing"] is playing
+                return command
+
+            paused_restore = request_restore(
+                paused_track, "paused", False, cold_idle_first=True
+            )
+            player, diagnostics = open_fake_miniplayer(browser, base)
+            emit_ws(player, paused_restore)
+            player.wait_for_function(
+                "sourceId => window.__rainetteSentMessages.some(message => "
+                "message.type === 'music_stream_url' && message.source_id === sourceId && !message.prefetch)",
+                arg=paused_track["source_id"],
+            )
+            paused_request = player.evaluate(
+                "sourceId => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_stream_url' && message.source_id === sourceId && !message.prefetch).at(-1)",
+                paused_track["source_id"],
+            )
+            emit_ws(player, {
+                "type": "music_stream_url_result",
+                "id": paused_request["id"],
+                "ok": True,
+                "source_id": paused_track["source_id"],
+                "url": "https://audio.invalid/paused.mp3",
+            })
+            player.wait_for_function(
+                "sourceId => window.__rainetteSentMessages.some(message => "
+                "message.type === 'music_now_playing_set' && message.track?.source_id === sourceId "
+                "&& message.state === 'paused' && message.playing === false)",
+                arg=paused_track["source_id"],
+            )
+            paused_audio = player.evaluate(
+                "() => { const audio = window.__rainetteFakeAudioInstances.at(-1); return { "
+                "paused: audio.paused, playCalls: audio.playCalls, loadCalls: audio.loadCalls }; }"
+            )
+            assert paused_audio == {"paused": True, "playCalls": 0, "loadCalls": 1}
+
+            # The handshake carries all three live transport states. Loading
+            # remains distinct from paused even though both have playing=false.
+            request_restore(loading_track, "playing", True)
+            loading_restore = request_restore(loading_track, "loading", False)
+            emit_ws(player, loading_restore)
+            player.wait_for_function(
+                "sourceId => window.__rainetteSentMessages.some(message => "
+                "message.type === 'music_stream_url' && message.source_id === sourceId && !message.prefetch)",
+                arg=loading_track["source_id"],
+            )
+            loading_request = player.evaluate(
+                "sourceId => window.__rainetteSentMessages.filter(message => "
+                "message.type === 'music_stream_url' && message.source_id === sourceId && !message.prefetch).at(-1)",
+                loading_track["source_id"],
+            )
+            emit_ws(player, {
+                "type": "music_stream_url_result",
+                "id": loading_request["id"],
+                "ok": True,
+                "source_id": loading_track["source_id"],
+                "url": "https://audio.invalid/loading.mp3",
+            })
+            player.wait_for_function(
+                "sourceId => window.__rainetteSentMessages.some(message => "
+                "message.type === 'music_now_playing_set' && message.track?.source_id === sourceId "
+                "&& message.state === 'playing' && message.playing === true)",
+                arg=loading_track["source_id"],
+            )
+            recovered_audio = player.evaluate(
+                "() => { const audio = window.__rainetteFakeAudioInstances.at(-1); return { "
+                "paused: audio.paused, playCalls: audio.playCalls }; }"
+            )
+            assert recovered_audio == {"paused": False, "playCalls": 1}
+            assert diagnostics == [], diagnostics
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_update_badge_stays_hidden_and_binds_despite_late_pywebview_injection():
+    """Two regressions in the update badge, both confirmed and fixed:
+
+    1. `.rw-update-badge { display: inline-flex }` had equal CSS specificity to
+       the browser's `[hidden] { display: none }` rule, so author CSS won the
+       cascade tie and the badge showed "Update available" permanently
+       regardless of the hidden attribute or any check result.
+    2. bindUpdater() gated attaching the click listener on `window.pywebview`
+       being truthy at mount time. pywebview injects window.pywebview
+       asynchronously, so if it arrived even slightly after mount(), the click
+       listener was never attached at all - "clicking Update does nothing"
+       with no error, because nothing was listening.
+    """
+    handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
+    server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/?remote=1"
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1060, "height": 730})
+            diagnostics = []
+            page.add_init_script(FAKE_WEBSOCKET_SCRIPT)
+            page.on("pageerror", lambda error: diagnostics.append(f"pageerror:{error}"))
+            page.route("**/*", fulfill_test_asset)
+            page.set_default_timeout(7_000)
+            page.goto(url, wait_until="domcontentloaded")
+            page.locator("#rwMusicTabs").wait_for(state="visible")
+
+            badge = page.locator("#rwUpdateBadge")
+            assert badge.evaluate("el => el.hidden") is True
+            assert badge.evaluate("el => getComputedStyle(el).display") == "none"
+            assert not badge.is_visible(), "badge must not render before any update check has run"
+
+            # Inject pywebview.api LATE, after mount()/bindUpdater() already ran -
+            # the exact race that used to leave the click listener unattached.
+            page.wait_for_timeout(200)
+            candidate_id = "a" * 64
+            page.evaluate(
+                "candidateId => {"
+                "  window.__checkCalls = 0; window.__appliedCandidate = null;"
+                "  window.__updatePoll = null; const realSetInterval = window.setInterval.bind(window);"
+                "  window.setInterval = (fn, ms) => { window.__updatePoll = fn; return realSetInterval(() => {}, ms); };"
+                "  window.pywebview = { api: {"
+                "    check_for_updates: async () => { window.__checkCalls++; return {"
+                "      status: 'update', current: '0.2.2', latest: '0.9.0', candidate_id: candidateId"
+                "    }; },"
+                "    apply_update: id => { window.__appliedCandidate = id; return new Promise(resolve => { window.__finishApply = resolve; }); },"
+                "  } }; window.dispatchEvent(new Event('pywebviewready'));"
+                "}",
+                candidate_id,
+            )
+            badge.wait_for(state="visible")
+            assert "0.9.0" in badge.inner_text()
+
+            page.locator('#rwMusicTabs button[data-tab="settings"]').click()
+            update_card = page.locator("#rwUpdateSettings")
+            update_card.wait_for(state="visible")
+            assert "0.9.0 is ready" in update_card.inner_text()
+            update_card.get_by_role("button", name="Check again").click()
+            page.wait_for_function("() => window.__checkCalls >= 2")
+
+            badge.click()
+            page.get_by_text("Update Rainette Music").wait_for(state="visible")
+            page.locator(".rw-modal .rw-btn-primary").click()
+            page.wait_for_function("() => window.__appliedCandidate !== null")
+            assert page.evaluate("() => window.__appliedCandidate") == candidate_id, (
+                "apply_update did not receive the exact candidate returned by the check"
+            )
+
+            checks_before_install_poll = page.evaluate("() => window.__checkCalls")
+            page.evaluate("() => window.__updatePoll()")
+            page.wait_for_timeout(100)
+            assert page.evaluate("() => window.__checkCalls") == checks_before_install_poll, (
+                "the automatic poll replaced updater state during an active installation"
+            )
+            assert update_card.get_by_role("button", name="Checking...").count() == 0
+            assert update_card.get_by_role("button", name="Check again").is_disabled()
+            page.evaluate("() => window.__finishApply({status: 'installing', version: '0.9.0'})")
+
+            assert diagnostics == [], diagnostics
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_settings_manual_update_check_reports_current_without_showing_badge():
+    handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
+    server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/?remote=1"
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1060, "height": 730})
+            page.add_init_script(FAKE_WEBSOCKET_SCRIPT)
+            page.add_init_script(
+                """
+                window.__checkCalls = 0;
+                window.pywebview = {api: {
+                    check_for_updates: async () => {
+                        window.__checkCalls += 1;
+                        return {status: 'current', current: '0.2.2'};
+                    }
+                }};
+                """
+            )
+            page.route("**/*", fulfill_test_asset)
+            page.set_default_timeout(7_000)
+            page.goto(url, wait_until="domcontentloaded")
+            page.locator("#rwMusicTabs").wait_for(state="visible")
+            page.wait_for_function("() => window.__checkCalls >= 1")
+
+            assert not page.locator("#rwUpdateBadge").is_visible()
+            page.locator('#rwMusicTabs button[data-tab="settings"]').click()
+            card = page.locator("#rwUpdateSettings")
+            card.wait_for(state="visible")
+            assert "Rainette is up to date" in card.inner_text()
+            assert "0.2.2" in card.inner_text()
+            assert "Krysis-ux/Rainette-music" in card.inner_text()
+
+            before = page.evaluate("() => window.__checkCalls")
+            card.get_by_role("button", name="Check again").click()
+            page.wait_for_function("count => window.__checkCalls > count", arg=before)
+            assert not page.locator("#rwUpdateBadge").is_visible()
             browser.close()
     finally:
         server.shutdown()

@@ -11,7 +11,7 @@ import { RainetteRouter } from './music_shell.js';
 import { iconMarkup } from './rainette_icons.js';
 import { confirmDialog, textPrompt, pickerDialog, infoDialog, actionSheet, customDialog } from './rainette_modal.js';
 import { createSelect } from './rainette_select.js';
-import { renderSettings, defaultLandingTab, shouldAutoOpenQueue } from './rainette_settings.js';
+import { renderSettings, syncUpdateSettings, defaultLandingTab, shouldAutoOpenQueue } from './rainette_settings.js';
 import { renderMobile, unmountMobile } from './rainette_mobile.js';
 import { createRainetteLoader } from './rainette_loading.js';
 import { REPEAT_LABEL, repeatFromMessage, loopFlagFor } from './repeat_mode.js';
@@ -53,7 +53,7 @@ const pageState = {
 	topArtists: [],
 	library: { tracks: [], artists: [], albums: [], followed_artists: [] },
 	recentMode: 'songs',
-	queue: { tracks: [], index: -1, playing: false, loop: false, duration: 0 },
+	queue: { tracks: [], index: -1, playing: false, state: 'idle', loop: false, duration: 0 },
 	queueDrawerOpen: false,
 	queueSaveBusy: false,
 	queueSaveStatus: '',
@@ -111,6 +111,9 @@ let _mounted = false;
 let _listenerBound = false;
 let _updateBound = false;
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let _updateCheckPromise = null;
+let _updateInstallPromise = null;
+let _updateState = { phase: 'idle', result: null, candidateId: '', message: '' };
 let _paletteKeysBound = false;
 let _nowPlayingKeysBound = false;
 let _searchDebounce = null;
@@ -289,10 +292,77 @@ function inlineLink(text, onClick) {
 	return b;
 }
 
+// The identity convention used for the queue and every "is this row playing"
+// check - matches miniplayer.js's own trackKey() and the inline pattern
+// _queueSignature() already used for the current track.
+function trackKey(track) {
+	return `${track?.source || 'youtube'}:${track?.source_id || ''}`;
+}
+
+function currentTrackKey() {
+	const q = pageState.queue;
+	const current = q.tracks?.[q.index];
+	return current ? trackKey(current) : '';
+}
+
+function isCurrentTrack(track) {
+	const key = currentTrackKey();
+	return !!key && key === trackKey(track);
+}
+
+function currentTrackState() {
+	const q = pageState.queue;
+	if (!currentTrackKey()) return 'idle';
+	return q.state || (q.playing ? 'playing' : 'paused');
+}
+
+function currentTrackBadgeLabel() {
+	const state = currentTrackState();
+	if (state === 'loading') return 'Loading';
+	if (state === 'error') return 'Playback failed';
+	return pageState.queue?.playing ? 'Now playing' : 'Paused';
+}
+
+function currentTrackUsesPauseIcon() {
+	return !!currentTrackKey() && (pageState.queue?.playing || currentTrackState() === 'loading');
+}
+
+// Track rows are built once per list render and don't otherwise hear about
+// playback state changing elsewhere (a different tab's play button, the
+// docked bar's next/prev, repeat auto-advance, pause/resume). Called after
+// every music_now_playing broadcast to keep every currently-rendered row's
+// play/pause icon and highlight in sync without re-rendering whichever list
+// is on screen.
+function syncNowPlayingIndicators() {
+	const activeKey = currentTrackKey();
+	const pauseIcon = currentTrackUsesPauseIcon();
+	const badgeLabel = currentTrackBadgeLabel();
+	document.querySelectorAll('.rw-track-card[data-track-key]').forEach(card => {
+		const active = !!activeKey && card.dataset.trackKey === activeKey;
+		card.classList.toggle('now-playing', active);
+		const badge = card.querySelector('.rw-track-now-badge');
+		if (badge && active) badge.textContent = badgeLabel;
+		const button = card.querySelector('.rw-play-action');
+		if (!button) return;
+		button.innerHTML = iconMarkup(active && pauseIcon ? 'pause' : 'play');
+		const label = active
+			? (currentTrackState() === 'loading' ? 'Cancel loading' : (pageState.queue?.playing ? 'Pause' : 'Resume'))
+			: 'Play';
+		button.title = label;
+		button.setAttribute('aria-label', label);
+	});
+}
+
 function trackCard(track, actions) {
-	const card = el('div', 'rw-bubble rw-track-card');
+	const card = el('div', 'rw-bubble rw-track-card' + (isCurrentTrack(track) ? ' now-playing' : ''));
+	card.dataset.trackKey = trackKey(track);
 	const metaWrap = el('div', 'rw-track-meta');
+	const titleRow = el('div', 'rw-track-title-row');
 	const title = el('div', 'rw-track-title', track.title || '(untitled)');
+	// Visibility is driven entirely by the parent .now-playing class in CSS, so
+	// syncNowPlayingIndicators() only has to toggle that one class per card.
+	const nowPlayingBadge = el('span', 'rw-track-now-badge', isCurrentTrack(track) ? currentTrackBadgeLabel() : 'Now playing');
+	titleRow.append(title, nowPlayingBadge);
 	const sub = el('div', 'rw-track-sub');
 	const artist = artistName(track);
 	const album = albumInfo(track);
@@ -308,7 +378,7 @@ function trackCard(track, actions) {
 		if (sub.childNodes.length) sub.appendChild(document.createTextNode(' · '));
 		sub.appendChild(document.createTextNode(duration));
 	}
-	metaWrap.append(title, sub);
+	metaWrap.append(titleRow, sub);
 	const actWrap = el('div', 'rw-track-actions');
 	for (const a of actions) actWrap.appendChild(a);
 	card.append(thumbBox(track.thumbnail_url), metaWrap, actWrap);
@@ -353,10 +423,21 @@ function albumCard(album) {
 }
 
 function playAction(track, queue) {
-	return iconBtn('play', 'rw-icon-btn', () => {
+	const active = isCurrentTrack(track);
+	const pauseIcon = active && currentTrackUsesPauseIcon();
+	// rw-play-action is the hook syncNowPlayingIndicators() uses to update this
+	// icon in place when playback state changes elsewhere, without re-rendering
+	// the row it lives in.
+	return iconBtn(pauseIcon ? 'pause' : 'play', 'rw-icon-btn rw-play-action', () => {
+		// Re-check live state rather than closing over `active`: playback can
+		// start after this button was built (e.g. this row rendered before
+		// anything was playing, then became the active track), and the button's
+		// own icon/label already get updated in place by syncNowPlayingIndicators
+		// without this closure ever re-running.
+		if (isCurrentTrack(track) && currentTrackState() !== 'error') { window.RainetteMusic?.toggle?.(); return; }
 		if (queue) window.RainetteMusic?.playQueue(queue, queue.indexOf(track));
 		else window.RainetteMusic?.playTrack(track);
-	}, 'Play');
+	}, active ? (currentTrackState() === 'loading' ? 'Cancel loading' : (pageState.queue?.playing ? 'Pause' : 'Resume')) : 'Play');
 }
 
 function trackActions(track, queue, extras = []) {
@@ -1735,11 +1816,17 @@ function renderInsights() {
 		const list = el('div', 'rw-insights-ranked');
 		data.top_tracks.forEach((track, i) => {
 			const plays = insightCount(track.play_count);
-			const row = el('div', 'rw-bubble rw-track-card rw-insights-rank-row');
+			const row = el('div', 'rw-bubble rw-track-card rw-insights-rank-row' + (isCurrentTrack(track) ? ' now-playing' : ''));
+			row.dataset.trackKey = trackKey(track);
 			const rank = el('span', 'rw-insights-rank', String(i + 1));
 			const metaWrap = el('div', 'rw-track-meta');
-			metaWrap.append(
+			const titleRow = el('div', 'rw-track-title-row');
+			titleRow.append(
 				el('div', 'rw-track-title', track.title || '(untitled)'),
+				el('span', 'rw-track-now-badge', isCurrentTrack(track) ? currentTrackBadgeLabel() : 'Now playing'),
+			);
+			metaWrap.append(
+				titleRow,
 				el('div', 'rw-track-sub', [artistName(track), `${plays} play${plays === 1 ? '' : 's'}`].filter(Boolean).join(' · ')),
 			);
 			const actions = el('div', 'rw-track-actions');
@@ -2876,7 +2963,7 @@ function applyTab() {
 	else if (pageState.tab === 'insights') { renderInsights(); fetchInsights(); }
 	else if (pageState.tab === 'queue') { window.RainetteMusic?.requestQueueState?.(); renderQueue(); }
 	else if (pageState.tab === 'mobile') renderMobile(_host?.querySelector('#rwMusicBody'));
-	else if (pageState.tab === 'settings') renderSettings(_host);
+	else if (pageState.tab === 'settings') renderSettings(_host, updateController);
 	animatePageEnter();
 }
 
@@ -3027,6 +3114,7 @@ function onHelperMessage(msg) {
 					tracks: msg.queue,
 					index: Number.isFinite(Number(msg.index)) ? Number(msg.index) : -1,
 					playing: !!msg.playing,
+					state: msg.state || (msg.playing ? 'playing' : 'paused'),
 					repeat,
 					loop: loopFlagFor(repeat),
 					duration: Number(msg.queue_duration || 0),
@@ -3072,6 +3160,11 @@ function onHelperMessage(msg) {
 				else if (msg.playing || msg.state === 'playing' || msg.state === 'loading' || Number(msg.current_time) > 0) pageState.playbackStarted = true;
 			}
 			renderDockedBar();
+			// Keep every currently-rendered track row's play/pause icon and
+			// "now playing" highlight in sync - this fires on every track change,
+			// pause/resume, and repeat auto-advance, regardless of which tab sent
+			// the original play command.
+			syncNowPlayingIndicators();
 			if (pageState.nowPlayingOpen) {
 				// Track changed while the view is open + lyrics showing → refetch.
 				const cur = currentQueueTrack();
@@ -3092,11 +3185,26 @@ function onHelperMessage(msg) {
 				playing: !!msg.playing,
 				source_id: msg.source_id || pageState.progress.source_id,
 			};
+			// A progress tick may be the first transport state received after
+			// either window reconnects. Recover the queue and row presentation
+			// from it so a live track cannot still look idle and be restarted.
+			const recoveredPlaying = !!msg.playing;
+			const transportChanged = !!cur && pageState.queue.playing !== recoveredPlaying;
+			if (cur) {
+				pageState.queue.playing = recoveredPlaying;
+				if (recoveredPlaying) pageState.queue.state = 'playing';
+				else if (pageState.queue.state === 'playing') pageState.queue.state = 'paused';
+			}
 			// Safety net: if a progress tick shows real playback but the bar
 			// isn't up yet (e.g. a now_playing broadcast was missed), reveal it.
 			if ((msg.playing || Number(msg.current_time) > 0) && cur && !pageState.playbackStarted) {
 				pageState.playbackStarted = true;
 				renderDockedBar();
+			}
+			if (transportChanged) {
+				renderDockedBar();
+				syncNowPlayingIndicators();
+				if (pageState.nowPlayingOpen) renderNowPlayingView();
 			}
 			updateProgressUi();
 			break;
@@ -3278,66 +3386,151 @@ function buildPage(host) {
 
 function updateBadgeEl() { return _host?.querySelector('#rwUpdateBadge'); }
 
-function setUpdateBadge(status) {
+function updateSnapshot() {
+	return {
+		..._updateState,
+		nativeAvailable: !!window.pywebview?.api?.check_for_updates,
+	};
+}
+
+function setUpdateBadge(state = updateSnapshot()) {
 	const badge = updateBadgeEl();
 	if (!badge) return;
-	if (status.status === 'update') {
+	const status = state.result || {};
+	const eligible = status.status === 'update' && /^[0-9a-f]{64}$/i.test(state.candidateId || '');
+	if (eligible) {
 		badge.dataset.latest = status.latest || '';
-		badge.querySelector('.rw-update-label').textContent = status.latest ? `Update to ${status.latest}` : 'Update available';
+		badge.querySelector('.rw-update-label').textContent = state.phase === 'installing'
+			? 'Installing...'
+			: (status.latest ? `Update to ${status.latest}` : 'Update available');
 		badge.hidden = false;
+		badge.classList.toggle('busy', state.phase === 'installing');
+		badge.disabled = state.phase === 'installing';
 	} else {
 		badge.hidden = true;
+		badge.classList.remove('busy');
+		badge.disabled = false;
+		delete badge.dataset.latest;
 	}
 }
 
-async function checkForAppUpdate() {
-	const api = window.pywebview?.api;
-	if (!api?.check_for_updates) return;
-	try { setUpdateBadge(await api.check_for_updates()); }
-	catch { /* a failed check just leaves the badge hidden */ }
+function publishUpdateState(next) {
+	_updateState = { ..._updateState, ...next };
+	const state = updateSnapshot();
+	setUpdateBadge(state);
+	syncUpdateSettings(_host, state);
 }
 
-async function onUpdateBadgeClick() {
+async function checkForAppUpdate({ manual = false } = {}) {
+	if (_updateInstallPromise || _updateState.phase === 'installing') return { status: 'busy' };
+	if (_updateCheckPromise) return _updateCheckPromise;
 	const api = window.pywebview?.api;
-	const badge = updateBadgeEl();
-	if (!api?.apply_update || !badge) return;
-	const latest = badge.dataset.latest;
+	if (!api?.check_for_updates) {
+		if (manual) publishUpdateState({ phase: 'unsupported', result: null, candidateId: '', message: 'Update checks are available in the installed Windows app.' });
+		return { status: 'unavailable' };
+	}
+	_updateCheckPromise = (async () => {
+		publishUpdateState({ phase: 'checking', result: null, candidateId: '', message: '' });
+		let result;
+		try { result = await api.check_for_updates(); }
+		catch { result = { status: 'check_failed' }; }
+		if (result?.status === 'update') {
+			const candidateId = String(result.candidate_id || '');
+			if (/^[0-9a-f]{64}$/i.test(candidateId)) {
+				publishUpdateState({ phase: 'ready', result, candidateId, message: '' });
+				return result;
+			}
+			result = { status: 'check_failed' };
+		}
+		const phase = result?.status === 'current'
+			? 'current'
+			: (result?.status === 'unavailable' ? 'unsupported' : 'error');
+		publishUpdateState({
+			phase,
+			result: result || { status: 'check_failed' },
+			candidateId: '',
+			message: result?.msg || '',
+		});
+		return result;
+	})().finally(() => { _updateCheckPromise = null; });
+	return _updateCheckPromise;
+}
+
+async function installAppUpdate() {
+	if (_updateInstallPromise) return _updateInstallPromise;
+	const api = window.pywebview?.api;
+	if (!api?.apply_update) {
+		publishUpdateState({ phase: 'unsupported', candidateId: '', message: 'Updates can only be installed from the Windows desktop app.' });
+		return { status: 'unsupported' };
+	}
+	let state = updateSnapshot();
+	if (!(state.result?.status === 'update' && /^[0-9a-f]{64}$/i.test(state.candidateId || ''))) {
+		await checkForAppUpdate({ manual: true });
+		state = updateSnapshot();
+		if (!(state.result?.status === 'update' && state.candidateId)) return state.result || { status: 'no_update' };
+	}
+	_updateInstallPromise = performInstallAppUpdate(api, state).finally(() => { _updateInstallPromise = null; });
+	return _updateInstallPromise;
+}
+
+async function performInstallAppUpdate(api, state) {
+	const latest = state.result.latest || '';
 	const ok = await confirmDialog({
 		title: 'Update Rainette Music',
 		message: `Download and install ${latest ? 'version ' + latest : 'the latest release'}? Rainette will restart to finish.`,
 		confirmLabel: 'Update now',
 	});
-	if (!ok) return;
-	const label = badge.querySelector('.rw-update-label');
-	badge.classList.add('busy');
-	badge.disabled = true;
-	label.textContent = 'Downloading…';
+	if (!ok) return { status: 'cancelled' };
+	const candidateId = state.candidateId;
+	publishUpdateState({ phase: 'installing', message: '' });
 	let result;
-	try { result = await api.apply_update(); }
-	catch (err) { result = { status: 'failed', msg: String(err) }; }
+	try { result = await api.apply_update(candidateId); }
+	catch { result = { status: 'failed', msg: 'Rainette could not verify or start the update. Please try again.' }; }
 	if (result?.status === 'installing') {
-		label.textContent = 'Installing…';   // the app is about to exit and relaunch
-		return;
+		publishUpdateState({ phase: 'installing', message: '' });
+		return result;
 	}
-	badge.classList.remove('busy');
-	badge.disabled = false;
-	label.textContent = latest ? `Update to ${latest}` : 'Update available';
-	infoDialog({
-		title: 'Update failed',
-		message: result?.status === 'unsupported'
-			? (result.msg || 'Updates apply to the installed app.')
-			: (result?.msg || 'Could not install the update. Please try again later.'),
+	const stale = result?.status === 'stale' || result?.status === 'no_update';
+	if (stale) {
+		publishUpdateState({ phase: 'stale', result, candidateId: '', message: result?.msg || 'Check again before installing.' });
+	} else if (result?.status === 'unsupported') {
+		publishUpdateState({ phase: 'unsupported', result, candidateId: '', message: result?.msg || 'Updates apply to the installed app.' });
+	} else {
+		publishUpdateState({ phase: 'error', candidateId, message: result?.msg || 'Could not install the update. Please try again.' });
+	}
+	await infoDialog({
+		title: stale ? 'Update changed' : 'Update failed',
+		message: result?.msg || (stale ? 'Check for updates again before installing.' : 'Could not install the update. Please try again later.'),
 	});
+	return result;
 }
 
+const updateController = {
+	snapshot: updateSnapshot,
+	check: checkForAppUpdate,
+	install: installAppUpdate,
+};
+
+function onUpdateBadgeClick() { return installAppUpdate(); }
+
 function bindUpdater(host) {
-	if (_updateBound || typeof window === 'undefined' || !window.pywebview) return;
+	if (_updateBound || typeof window === 'undefined') return;
 	_updateBound = true;
+	// Bind unconditionally, matching the pattern used everywhere else pywebview
+	// readiness is uncertain (see miniplayer.js's nativeApi()): the click handler
+	// and checkForAppUpdate() each check window.pywebview?.api lazily at call
+	// time, so this is inert in browser/Edge-fallback mode. Gating the bind
+	// itself on window.pywebview being truthy at mount time meant the listener
+	// was silently never attached whenever pywebview injected even slightly
+	// late - "clicking Update does nothing" with no error, since there was
+	// nothing listening.
 	host.querySelector('#rwUpdateBadge')?.addEventListener('click', onUpdateBadgeClick);
-	// window.pywebview.api is injected asynchronously; wait for it, then poll on a
-	// slow cadence so a long-running app still notices a release.
+	// window.pywebview.api is injected asynchronously; check now in case it's
+	// already ready, and also listen for the ready event in case it isn't yet -
+	// covers both orderings. Then poll on a slow cadence so a long-running app
+	// still notices a release.
 	const start = () => { checkForAppUpdate(); setInterval(checkForAppUpdate, UPDATE_CHECK_INTERVAL_MS); };
-	if (window.pywebview.api) start();
+	if (window.pywebview?.api) start();
 	else window.addEventListener('pywebviewready', start, { once: true });
 }
 
@@ -3361,6 +3554,7 @@ export const MusicPage = {
 		if (QUEUE_SUPPORTED) {
 			pageState.queue = app.musicQueue || pageState.queue;
 			renderDockedBar();   // reflect any already-playing track immediately
+			syncNowPlayingIndicators();   // …and any track rows already in the DOM from a prior mount
 			window.RainetteMusic?.requestQueueState?.();
 		}
 		applyTab();

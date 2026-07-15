@@ -15,7 +15,7 @@
 
 import { sendHelper, helperRequest } from './music_shell.js';
 import { iconMarkup } from './rainette_icons.js';
-import { PlaybackLoadGuard, MediaEventGate } from './playback_load_guard.mjs';
+import { PlaybackLoadGuard, MediaEventGate, settleWithin } from './playback_load_guard.mjs';
 import { REPEAT_MODES, REPEAT_LABEL, normalizeRepeat, nextRepeat, loopFlagFor, repeatFromMessage } from './repeat_mode.js';
 
 // ── Persistence keys ─────────────────────────────────────────────────────────
@@ -24,6 +24,7 @@ import { REPEAT_MODES, REPEAT_LABEL, normalizeRepeat, nextRepeat, loopFlagFor, r
 const LS = { vol: 'rw.mp.volume', eq: 'rw.mp.eqGains', eqOn: 'rw.mp.eqOn', loop: 'rw.mp.loop', repeat: 'rw.mp.repeat' };
 const LOCAL_STREAM_TTL_MS = 50 * 60 * 1000;
 const PREFETCH_AHEAD = 3;
+const PLAY_START_TIMEOUT_MS = 12_000;
 
 function lsGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { /* best effort */ } }
@@ -56,6 +57,7 @@ const state = {
 	index: -1,
 	repeat: loadRepeat(),
 	playing: false,
+	status: 'idle',
 	resolvingId: null,
 	eqOn: lsGet(LS.eqOn) === '1',
 	eqGains: loadEqGains(),
@@ -353,19 +355,22 @@ async function _loadCurrent({ preservePaused = false } = {}) {
 	activeMediaToken = null;
 	activeMediaSrc = '';
 	activeMediaBinding = null;
+	state.playing = false;
+	state.status = 'loading';
+	_renderPlay();
 	await _drainPreviousMedia();
 	if (!loadGuard.isCurrent(loadToken, trackKey(state.queue[state.index]))) return;
 	_freshAudioElement();
 	_renderMeta(track, 'loading');
 	_setSeek(0);
 	state.resolvingId = track.source_id;
+	_broadcast('loading', false);
 	// Reuse a still-fresh resolved URL (e.g. after an EQ toggle reload) so we
 	// don't hit yt-dlp again just to switch the audio path.
 	if (streamFresh(track)) {
 		_applyAndPlay(track, track._url, loadToken);
 		return;
 	}
-	_broadcast('loading', false);
 	try {
 		const res = await requestStream(track, { loadToken });
 		if (!loadGuard.isCurrent(loadToken, trackKey(state.queue[state.index]))) return;
@@ -423,6 +428,7 @@ function _applyAndPlay(track, url, loadToken) {
 		pauseAfterReload = null;
 		const loaded = () => {
 			if (!loadGuard.isCurrent(mediaToken, trackKey(state.queue[state.index]))) return;
+			state.resolvingId = null;
 			resume();
 			state.playing = false;
 			_renderPlay();
@@ -434,18 +440,30 @@ function _applyAndPlay(track, url, loadToken) {
 		audio.load();
 		return;
 	}
-	audio.play().then(() => {
-		if (loadGuard.isCurrent(mediaToken, trackKey(state.queue[state.index]))) resume();
-	}).catch(() => {
-		// autoplay-policy block, decode error, etc. — surface it instead of
-		// leaving "now playing" showing with no sound.
+	let playAttempt;
+	try {
+		playAttempt = audio.play();
+	} catch {
 		_retryOrFail(mediaToken);
+		return;
+	}
+	settleWithin(playAttempt, PLAY_START_TIMEOUT_MS).then(result => {
+		if (!loadGuard.isCurrent(mediaToken, trackKey(state.queue[state.index]))) return;
+		if (result.status === 'fulfilled') resume();
+		else {
+			// Rejections and promises that never settle share the same single,
+			// token-scoped refresh attempt before becoming a visible error.
+			_retryOrFail(mediaToken);
+		}
 	});
 }
 
 function _terminalLoadFailure(loadToken) {
 	const track = state.queue[state.index];
 	if (!track || !loadGuard.isCurrent(loadToken, trackKey(track))) return false;
+	state.resolvingId = null;
+	state.playing = false;
+	_renderPlay();
 	_renderMeta(track, 'error');
 	_broadcast('error', false);
 	if (pendingOutputTransfer?.trackKey === trackKey(track)) finishOutputTransfer(false, 'Desktop could not load this track');
@@ -505,6 +523,12 @@ function _bindMediaLifecycle(binding, owner) {
 		mediaLifecycle.push([type, handler]);
 	};
 	on('playing', () => {
+		if (pauseAfterReload === binding.token.generation) {
+			pauseAfterReload = null;
+			state.resolvingId = null;
+			owner.pause();
+			return;
+		}
 		state.resolvingId = null;
 		state.playing = true; _renderPlay();
 		const track = state.queue[state.index];
@@ -609,6 +633,16 @@ function _rampVolume(from, to, ms, done) {
 
 function _togglePlay() {
 	if (!audio || !state.queue.length) return;
+	if (state.resolvingId && activeLoad) {
+		const cancelPending = pauseAfterReload !== activeLoad.generation;
+		pauseAfterReload = cancelPending ? activeLoad.generation : null;
+		state.playing = false;
+		_renderPlay();
+		const track = state.queue[state.index];
+		if (track) _renderMeta(track, cancelPending ? 'paused' : 'loading');
+		_broadcast(cancelPending ? 'paused' : 'loading', false);
+		return;
+	}
 	if (!_currentMediaEvent()) return;
 	if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
 	if (audio.paused) {
@@ -645,9 +679,11 @@ async function _autoplaySimilar() {
 			state.index++;
 			_loadCurrent();
 		} else {
+			_renderPlay();
 			_broadcast('paused', false);
 		}
 	} catch {
+		_renderPlay();
 		_broadcast('paused', false);
 	} finally {
 		_autoplayBusy = false;
@@ -705,13 +741,16 @@ function _syncRepeatButton() {
 }
 
 // Public queue entry points (also used by the remote-play listener).
-function playQueue(tracks, startIndex = 0) {
+function playQueue(tracks, startIndex = 0, { restoreState = '' } = {}) {
 	const filtered = validTracks(tracks);
 	const nextId = filtered[startIndex]?.source_id;
 	const curId = state.queue[state.index]?.source_id;
+	const restoring = ['playing', 'paused', 'loading'].includes(restoreState);
 	// If we're already on this exact track (e.g. a duplicate remote_play from the
 	// connect-time state handshake), just adopt the queue without restarting it.
-	if (nextId && nextId === curId && (state.playing || state.resolvingId)) {
+	// The local player remains authoritative when it survived a socket reconnect:
+	// a cached "paused" response must never resume or reload its current media.
+	if (nextId && nextId === curId && (restoring || state.playing || state.resolvingId)) {
 		state.queue = filtered;
 		state.index = clamp(startIndex, 0, Math.max(0, filtered.length - 1));
 		_broadcast(undefined, state.playing);
@@ -719,7 +758,7 @@ function playQueue(tracks, startIndex = 0) {
 	}
 	state.queue = filtered;
 	state.index = clamp(startIndex, 0, Math.max(0, state.queue.length - 1));
-	if (state.queue.length) _loadCurrent();
+	if (state.queue.length) _loadCurrent({ preservePaused: restoreState === 'paused' });
 	else _stopEmptyQueue();
 }
 
@@ -871,10 +910,13 @@ function _broadcast(mode, playing) {
 	const track = state.queue[state.index] || null;
 	const cleanTrack = publicTrack(track);
 	const cleanQueue = state.queue.map(publicTrack).filter(Boolean);
+	const resolvedMode = mode || state.status || (state.playing ? 'playing' : 'paused');
+	state.status = resolvedMode;
+	state.playing = !!playing;
 	sendHelper({
 		type: 'music_now_playing_set',
 		track: cleanTrack,
-		state: mode || (state.playing ? 'playing' : 'paused'),
+		state: resolvedMode,
 		playing: !!playing,
 		repeat: state.repeat,
 		// Derived compatibility field: every consumer that predates three-state
@@ -1115,7 +1157,7 @@ function wireRemote() {
 	document.addEventListener('rainette:helper-message', e => {
 		const msg = e.detail; if (!msg) return;
 		if (msg.type === 'music_remote_play' && Array.isArray(msg.tracks)) {
-			playQueue(msg.tracks, msg.index || 0);
+			playQueue(msg.tracks, msg.index || 0, { restoreState: msg.restore_state });
 		} else if (msg.type === 'music_output_transfer' && msg.target_device_id === 'desktop') {
 			beginOutputTransfer(msg);
 		} else if (msg.type === 'music_theme_set') {
@@ -1162,6 +1204,9 @@ function boot() {
 	initAudio();
 	buildUI();
 	wireRemote();
+	document.addEventListener('rainette:helper-open', () => {
+		sendHelper({ type: 'music_request_state' });
+	});
 	// If the player window was hidden while a play was issued, ask the main
 	// window for the current queue once we're connected (sendHelper queues until
 	// the socket opens). Harmless when nothing has played yet.

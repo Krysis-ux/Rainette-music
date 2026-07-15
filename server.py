@@ -858,8 +858,29 @@ def _companion_port_candidates(requested: int | None) -> tuple[list[int], bool]:
     return candidates, True
 
 
+def _bind_companion_socket(host: str, port: int) -> socket.socket:
+    """Bind the LAN listener without Windows wildcard-port sharing.
+
+    ``asyncio.create_server``/``TCPSite`` may successfully bind ``0.0.0.0`` on
+    Windows while another process already owns ``127.0.0.1`` on the same port.
+    That makes the persisted phone endpoint ambiguous and defeats the fail-closed
+    paired-device port policy.  SO_EXCLUSIVEADDRUSE reserves the complete port
+    before aiohttp takes ownership of the socket.
+    """
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if os.name == "nt":
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        listener.bind((host, port))
+        listener.setblocking(False)
+        return listener
+    except Exception:
+        listener.close()
+        raise
+
+
 def _run_companion_loop(app: web.Application, ssl_context, host: str, ports: list[int],
-                        holder: dict, ready: threading.Event) -> None:
+                         holder: dict, ready: threading.Event) -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     runner = web.AppRunner(app)
@@ -867,14 +888,18 @@ def _run_companion_loop(app: web.Application, ssl_context, host: str, ports: lis
         loop.run_until_complete(runner.setup())
         last_error: Exception | None = None
         for candidate in ports:
+            listener: socket.socket | None = None
             try:
-                site = web.TCPSite(runner, host, candidate, ssl_context=ssl_context)
+                listener = _bind_companion_socket(host, candidate)
+                site = web.SockSite(runner, listener, ssl_context=ssl_context)
                 loop.run_until_complete(site.start())
                 sockets = site._server.sockets if site._server is not None else []  # aiohttp exposes no public port accessor
                 holder["port"] = int(sockets[0].getsockname()[1]) if sockets else candidate
                 break
             except OSError as exc:
                 last_error = exc
+                if listener is not None:
+                    listener.close()
         if "port" not in holder:
             raise RuntimeError("no companion LAN port is available") from last_error
         holder["loop"] = loop
