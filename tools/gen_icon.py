@@ -23,7 +23,9 @@ ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 # repeats its geometry with Pillow so the Windows and Android raster outputs
 # are deterministic and crisp at the system's smallest icon sizes.
 INK = (11, 15, 13)
-BONE = (247, 247, 242)
+PAPER = (218, 224, 216)
+SAGE = (126, 156, 135)
+CORE = (23, 52, 39)
 
 
 def cubic_points(
@@ -62,16 +64,27 @@ def _rotated(x: float, y: float, angle: float) -> tuple[float, float]:
     )
 
 
-def petal_points(angle: float) -> list[tuple[float, float]]:
-    """A tapered petal with enough mass to remain legible at 16 px."""
+def petal_points(angle: float, *, inner: bool = False) -> list[tuple[float, float]]:
+    """A tapered paper-cut petal with enough mass to remain legible at 16 px."""
+    width = 64 if inner else 92
+    base = 61 if inner else 92
+    tip = 278 if inner else 388
     points = []
     for index in range(25):
         t = index / 24
-        points.append(_rotated(-105 * sin(t * pi), -74 - 338 * t, angle))
+        points.append(_rotated(-width * sin(t * pi), -base - (tip - base) * t, angle))
     for index in range(24, -1, -1):
         t = index / 24
-        points.append(_rotated(105 * sin(t * pi), -74 - 338 * t, angle))
+        points.append(_rotated(width * sin(t * pi), -base - (tip - base) * t, angle))
     return points
+
+
+def draw_flower(draw: ImageDraw.ImageDraw) -> None:
+    for index in range(7):
+        draw.polygon(petal_points(index * 2 * pi / 7), fill=PAPER + (255,))
+    for index in range(7):
+        draw.polygon(petal_points((index + 0.5) * 2 * pi / 7, inner=True), fill=SAGE + (255,))
+    draw.ellipse([392, 392, 632, 632], fill=CORE + (255,), outline=PAPER + (255,), width=14)
 
 
 def render_mark(*, round_tile: bool = False) -> Image.Image:
@@ -86,20 +99,14 @@ def render_mark(*, round_tile: bool = False) -> Image.Image:
     tile = Image.new("RGBA", (CANVAS, CANVAS), INK + (255,))
     img.paste(tile, (0, 0), mask)
     draw = ImageDraw.Draw(img)
-    for index in range(7):
-        draw.polygon(petal_points(index * 2 * pi / 7), fill=BONE + (255,))
-    draw.ellipse([CANVAS * .337, CANVAS * .337, CANVAS * .663, CANVAS * .663], fill=INK + (255,), outline=BONE + (255,), width=24)
-    draw.arc([CANVAS * .17, CANVAS * .17, CANVAS * .83, CANVAS * .83], 122, 194, fill=BONE + (255,), width=22)
-    draw.arc([CANVAS * .17, CANVAS * .17, CANVAS * .83, CANVAS * .83], 286, 354, fill=BONE + (255,), width=22)
-    draw.ellipse([CANVAS * .744, CANVAS * .154, CANVAS * .78, CANVAS * .19], fill=BONE + (255,))
+    draw_flower(draw)
     return img
 
 
 def render_foreground() -> Image.Image:
     img = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    for index in range(7):
-        draw.polygon(petal_points(index * 2 * pi / 7), fill=BONE + (255,))
+    draw_flower(draw)
     return img
 
 
@@ -135,7 +142,7 @@ def main() -> None:
     print(f"wrote {OUT_ICO} and {OUT_PNG}")
     print(f"wrote Android launcher icons under {ANDROID_RES}")
     print(f"ico sizes: {', '.join(f'{size}x{size}' for size in ICO_SIZES)}")
-    print(f"colors: ink={INK} bone={BONE}")
+    print(f"colors: ink={INK} paper={PAPER} sage={SAGE} core={CORE}")
 
 
 if __name__ == "__main__":

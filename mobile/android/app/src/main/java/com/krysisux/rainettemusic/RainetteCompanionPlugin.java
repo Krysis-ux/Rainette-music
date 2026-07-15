@@ -58,6 +58,10 @@ public final class RainetteCompanionPlugin extends Plugin {
     private static final int ACK_MAX_ATTEMPTS = 3;
     private static final long[] ACK_BACKOFF_MS = {250L, 1000L};
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    // Transfer requests deliberately wait for the target's acknowledgement.
+    // A separate bounded pool lets that same phone post the acknowledgement
+    // while its initiating request is still waiting, avoiding a self-deadlock.
+    private final ExecutorService commandWorker = Executors.newFixedThreadPool(3);
     private final ExecutorService syncWorker = Executors.newSingleThreadExecutor();
     private volatile boolean syncRequested = false;
 
@@ -92,7 +96,7 @@ public final class RainetteCompanionPlugin extends Plugin {
 
     @PluginMethod
     public void request(PluginCall call) {
-        worker.execute(() -> {
+        commandWorker.execute(() -> {
             try {
                 SharedPreferences prefs = securePreferences();
                 String endpoint = prefs.getString("endpoint", "");
@@ -114,6 +118,59 @@ public final class RainetteCompanionPlugin extends Plugin {
                 call.resolve(result);
             } catch (Exception error) {
                 call.reject(error.getMessage(), error);
+            }
+        });
+    }
+
+    @PluginMethod
+    public void connectionStatus(PluginCall call) {
+        worker.execute(() -> {
+            JSObject state = new JSObject();
+            state.put("type", "rainette_companion_pairing_status");
+            boolean hasCredential = false;
+            try {
+                SharedPreferences prefs = securePreferences();
+                String endpoint = prefs.getString("endpoint", "");
+                String pin = prefs.getString("certificate_sha256", "");
+                String deviceId = prefs.getString("device_id", "");
+                String token = prefs.getString("device_token", "");
+                hasCredential = !endpoint.isEmpty() && !pin.isEmpty() && !deviceId.isEmpty() && !token.isEmpty();
+                if (!hasCredential) {
+                    state.put("ok", true);
+                    state.put("paired", false);
+                    state.put("status", "unpaired");
+                    call.resolve(state);
+                    return;
+                }
+                URL endpointUrl = validateCompanionEndpoint(endpoint);
+                HttpsURLConnection connection = openPinned(new URL(endpoint + "/status"), pin);
+                connection.setRequestMethod("GET");
+                connection.setReadTimeout(10_000);
+                connection.setRequestProperty("Authorization", "Bearer " + token);
+                int statusCode = connection.getResponseCode();
+                JSONObject response = readJson(connection, statusCode);
+                String authenticatedDeviceId = response.optString("device_id", "");
+                if (!deviceId.equals(authenticatedDeviceId)) {
+                    throw new SecurityException("Rainette desktop returned a different device identity");
+                }
+                state.put("ok", true);
+                state.put("paired", true);
+                state.put("status", "connected");
+                state.put("device_id", deviceId);
+                state.put("endpoint_host", endpointUrl.getHost());
+                if (response.has("capabilities")) {
+                    state.put("capabilities", response.getJSONArray("capabilities"));
+                }
+                call.resolve(state);
+            } catch (Exception error) {
+                // An unreachable desktop does not erase a durable credential.
+                // Report a reconnecting state so the UI can distinguish it
+                // from a phone that has never been paired.
+                state.put("ok", false);
+                state.put("paired", hasCredential);
+                state.put("status", hasCredential ? "reconnecting" : "unpaired");
+                state.put("msg", error.getMessage());
+                call.resolve(state);
             }
         });
     }
@@ -142,15 +199,32 @@ public final class RainetteCompanionPlugin extends Plugin {
 
     private void runSyncLoop() {
         long revision = 0L;
+        String activeEndpoint = "";
+        String activeDeviceId = "";
+        String activeToken = "";
         while (syncRequested && !Thread.currentThread().isInterrupted()) {
             try {
                 SharedPreferences prefs = securePreferences();
                 String endpoint = prefs.getString("endpoint", "");
                 String pin = prefs.getString("certificate_sha256", "");
+                String deviceId = prefs.getString("device_id", "");
                 String token = prefs.getString("device_token", "");
-                if (endpoint.isEmpty() || pin.isEmpty() || token.isEmpty()) {
+                if (endpoint.isEmpty() || pin.isEmpty() || deviceId.isEmpty() || token.isEmpty()) {
+                    revision = 0L;
+                    activeEndpoint = "";
+                    activeDeviceId = "";
+                    activeToken = "";
                     Thread.sleep(1000L);
                     continue;
+                }
+                if (!endpoint.equals(activeEndpoint) || !deviceId.equals(activeDeviceId) || !token.equals(activeToken)) {
+                    // Pairing can replace credentials while the long-poll loop
+                    // is already running.  Revisions are scoped to one desktop
+                    // broker and must never carry across that identity change.
+                    revision = 0L;
+                    activeEndpoint = endpoint;
+                    activeDeviceId = deviceId;
+                    activeToken = token;
                 }
                 validateCompanionEndpoint(endpoint);
                 HttpsURLConnection connection = openPinned(new URL(endpoint + "/events?after=" + revision + "&wait=25"), pin);
@@ -158,7 +232,23 @@ public final class RainetteCompanionPlugin extends Plugin {
                 connection.setReadTimeout(30_000);
                 connection.setRequestProperty("Authorization", "Bearer " + token);
                 JSONObject response = readJson(connection, connection.getResponseCode());
-                revision = Math.max(revision, response.optLong("revision", revision));
+                SharedPreferences latest = securePreferences();
+                if (!endpoint.equals(latest.getString("endpoint", ""))
+                    || !deviceId.equals(latest.getString("device_id", ""))
+                    || !token.equals(latest.getString("device_token", ""))) {
+                    // Pairing changed while the old desktop long-poll was in
+                    // flight.  Drop that stale response rather than applying
+                    // another desktop's playback or library event.
+                    revision = 0L;
+                    activeEndpoint = "";
+                    activeDeviceId = "";
+                    activeToken = "";
+                    continue;
+                }
+                long responseRevision = response.optLong("revision", revision);
+                revision = response.optBoolean("reset_required", false)
+                    ? responseRevision
+                    : Math.max(revision, responseRevision);
                 JSObject update = JSObject.fromJSONObject(response);
                 notifyListeners("rainetteCompanionSync", update, true);
             } catch (Exception error) {
@@ -197,6 +287,7 @@ public final class RainetteCompanionPlugin extends Plugin {
     private void startPairing(Uri uri, PluginCall call) {
         worker.execute(() -> {
             try {
+                emitPairingProgress("connecting", "Contacting Rainette desktop");
                 String endpoint = required(uri, "endpoint");
                 String pin = normalizePin(required(uri, "certificate_sha256"));
                 String invitation = required(uri, "invitation");
@@ -210,6 +301,7 @@ public final class RainetteCompanionPlugin extends Plugin {
                 writeJson(pairing, request);
                 JSONObject pending = readJson(pairing, pairing.getResponseCode());
                 String requestId = pending.getString("request_id");
+                emitPairingProgress("pending_approval", "Waiting for desktop approval");
 
                 long deadline = System.currentTimeMillis() + 300_000L;
                 while (System.currentTimeMillis() < deadline) {
@@ -222,6 +314,7 @@ public final class RainetteCompanionPlugin extends Plugin {
                     JSONObject result = readJson(poll, statusCode);
                     String status = result.optString("status", "");
                     if ("approved".equals(status)) {
+                        emitPairingProgress("securing", "Securing this phone");
                         String token = decryptToken(keyPair, result.getString("encrypted_device_token"));
                         boolean stored = securePreferences().edit()
                             .putString("endpoint", endpoint)
@@ -260,9 +353,11 @@ public final class RainetteCompanionPlugin extends Plugin {
             String pin = prefs.getString("certificate_sha256", "");
             String token = prefs.getString("device_token", "");
             if (endpoint.isEmpty() || pin.isEmpty() || token.isEmpty()) return;
+            emitPairingProgress("securing", "Finishing secure pairing");
             validateCompanionEndpoint(endpoint);
             if (acknowledgePairingWithRetry(endpoint, pin, token, requestId)) {
                 clearPendingAcknowledgement(prefs, requestId);
+                emitPairingProgress("approved", null);
             }
         } catch (Exception ignored) {
             // Keep the encrypted pending request id for the next app startup.
@@ -311,6 +406,7 @@ public final class RainetteCompanionPlugin extends Plugin {
 
     private void finishPairing(PluginCall call, boolean ok, String status, String message) {
         JSObject result = new JSObject();
+        result.put("type", "rainette_companion_pairing");
         result.put("ok", ok);
         result.put("status", status);
         if (message != null) result.put("msg", message);
@@ -318,6 +414,15 @@ public final class RainetteCompanionPlugin extends Plugin {
             if (ok) call.resolve(result); else call.reject(message == null ? status : message);
         }
         notifyListeners("rainetteCompanionMessage", result, true);
+    }
+
+    private void emitPairingProgress(String status, String message) {
+        JSObject progress = new JSObject();
+        progress.put("type", "rainette_companion_pairing");
+        progress.put("ok", true);
+        progress.put("status", status);
+        if (message != null) progress.put("msg", message);
+        notifyListeners("rainetteCompanionMessage", progress, true);
     }
 
     private KeyPair getOrCreatePairingKey() throws Exception {
@@ -340,7 +445,7 @@ public final class RainetteCompanionPlugin extends Plugin {
     private String decryptToken(KeyPair keyPair, String encrypted) throws Exception {
         Cipher cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
         OAEPParameterSpec spec = new OAEPParameterSpec(
-            "SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT);
+            "SHA-256", "MGF1", MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT);
         cipher.init(Cipher.DECRYPT_MODE, keyPair.getPrivate(), spec);
         byte[] clear = cipher.doFinal(Base64.decode(encrypted, Base64.DEFAULT));
         return new String(clear, StandardCharsets.UTF_8);
@@ -501,5 +606,13 @@ public final class RainetteCompanionPlugin extends Plugin {
             decoded[index] = (byte) Integer.parseInt(value.substring(index * 2, index * 2 + 2), 16);
         }
         return decoded;
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        syncRequested = false;
+        worker.shutdownNow();
+        commandWorker.shutdownNow();
+        syncWorker.shutdownNow();
     }
 }

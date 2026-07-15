@@ -11,6 +11,7 @@
 
 import { sendHelper, el } from './music_shell.js';
 import { createSelect } from './rainette_select.js';
+import { customDialog, confirmDialog } from './rainette_modal.js';
 
 const QUEUE_SUPPORTED = typeof window !== 'undefined' && !!window.RW_REMOTE;
 
@@ -271,6 +272,7 @@ function renderBehavior() {
 	if (window.RW_REMOTE) {
 		card.appendChild(settingsRow('Auto-open mini player', switchControl(lsGet(MINIPLAYER_ENABLED_KEY) === '1', on => {
 			lsSet(MINIPLAYER_ENABLED_KEY, on ? '1' : '0');
+			window.RW_MINIPLAYER_ENABLED = on;
 		}), 'Off by default. The bottom player bar always controls playback. Use Open mini player there whenever you want the separate window.'));
 	}
 
@@ -297,6 +299,223 @@ function renderBehavior() {
 	return card;
 }
 
+// ── Danger zone ───────────────────────────────────────────────────────────
+
+// Each entry is a checkbox in the clear-data picker. `client: true` means it is
+// cleared here in the browser (localStorage); the rest are erased server-side by
+// the music_clear_data command, keyed by these ids (see state.clear_user_data).
+// -- App updates ------------------------------------------------------------
+
+const UPDATE_REPOSITORY_URL = 'https://github.com/Krysis-ux/Rainette-music';
+
+function updateCopy(state = {}) {
+	const result = state.result || {};
+	const current = result.current || '';
+	const latest = result.latest || result.version || '';
+	if (!state.nativeAvailable && state.phase !== 'checking') {
+		return ['Updates are available in the Windows app', 'Open the installed desktop app to check and install verified releases.'];
+	}
+	if (state.phase === 'checking') {
+		return ['Checking for updates...', 'Looking for an eligible signed Windows release on GitHub.'];
+	}
+	if (state.phase === 'installing') {
+		return [latest ? `Installing ${latest}...` : 'Installing update...', 'Rainette will close only after the installer has been verified and started.'];
+	}
+	if (state.phase === 'stale') {
+		return ['The available update changed', state.message || 'Check again before installing.'];
+	}
+	if (state.phase === 'error') {
+		return ['The update could not be installed', state.message || 'Try the installation again, or check for a refreshed release.'];
+	}
+	if (result.status === 'update' && state.candidateId) {
+		return [latest ? `${latest} is ready` : 'An update is ready', state.message || 'The signed Windows installer will be verified before it opens.'];
+	}
+	if (result.status === 'current') {
+		return ['Rainette is up to date', current ? `You have version ${current}. No eligible Windows update is available.` : 'No eligible Windows update is available.'];
+	}
+	if (result.status === 'unavailable' || state.phase === 'unsupported') {
+		return ['Updates are unavailable here', state.message || 'Update checks are available in the installed Windows app.'];
+	}
+	if (result.status === 'check_failed') {
+		return ['Could not check for updates', state.message || 'Check your connection and try again.'];
+	}
+	return ['Check for updates', 'Rainette checks GitHub for eligible Windows releases.'];
+}
+
+export function syncUpdateSettings(host, state = {}) {
+	const card = host?.querySelector('#rwUpdateSettings');
+	if (!card) return;
+	const [label, hint] = updateCopy(state);
+	const status = card.querySelector('.rw-update-settings-status');
+	const detail = card.querySelector('.rw-update-settings-detail');
+	const check = card.querySelector('.rw-update-settings-check');
+	const install = card.querySelector('.rw-update-settings-install');
+	if (status) status.textContent = label;
+	if (detail) detail.textContent = hint;
+	const busy = state.phase === 'checking' || state.phase === 'installing';
+	if (check) {
+		check.disabled = busy || !state.nativeAvailable;
+		check.textContent = state.phase === 'checking' ? 'Checking...' : (state.result ? 'Check again' : 'Check now');
+	}
+	if (install) {
+		install.hidden = !(state.result?.status === 'update' && state.candidateId);
+		install.disabled = busy;
+		install.textContent = state.phase === 'installing'
+			? 'Installing...'
+			: (state.phase === 'error' ? 'Try installation again' : 'Download and install');
+	}
+	card.classList.toggle('is-busy', busy);
+}
+
+function renderAppUpdates(updater = {}) {
+	const card = settingsCard('App updates', 'Check the official Rainette repository for a newer Windows release.');
+	card.id = 'rwUpdateSettings';
+
+	const row = el('div', 'rw-settings-row rw-update-settings-row');
+	const text = el('div', 'rw-settings-row-text');
+	const status = el('div', 'rw-settings-row-label rw-update-settings-status');
+	status.setAttribute('role', 'status');
+	status.setAttribute('aria-live', 'polite');
+	text.append(status, el('div', 'rw-settings-row-hint rw-update-settings-detail'));
+
+	const actions = el('div', 'rw-update-settings-actions');
+	const check = document.createElement('button');
+	check.type = 'button';
+	check.className = 'rw-btn rw-btn-ghost rw-update-settings-check';
+	check.addEventListener('click', () => updater.check?.({ manual: true }));
+	const install = document.createElement('button');
+	install.type = 'button';
+	install.className = 'rw-btn rw-btn-primary rw-update-settings-install';
+	install.addEventListener('click', () => updater.install?.());
+	actions.append(check, install);
+	row.append(text, actions);
+	card.appendChild(row);
+
+	const source = el('p', 'rw-update-settings-source');
+	source.append('Release source: ');
+	const link = document.createElement('a');
+	link.href = UPDATE_REPOSITORY_URL;
+	link.target = '_blank';
+	link.rel = 'noopener noreferrer';
+	link.textContent = 'Krysis-ux/Rainette-music';
+	source.appendChild(link);
+	card.appendChild(source);
+	syncUpdateSettings({ querySelector: selector => selector === '#rwUpdateSettings' ? card : null }, updater.snapshot?.() || {});
+	return card;
+}
+
+const CLEAR_CATEGORIES = [
+	{ id: 'recents', label: 'Recently played & history', hint: 'Your play history, Recents, and Insights.' },
+	{ id: 'following', label: 'Followed artists', hint: 'Every artist you follow.' },
+	{ id: 'playlists', label: 'Playlists & folders', hint: 'Playlists you made, their folders, and saved artwork.' },
+	{ id: 'queues', label: 'Saved queues', hint: 'Saved queues and the restored last session.' },
+	{ id: 'preferences', label: 'Appearance & preferences', hint: 'Theme, accent, equalizer, and other local settings.', client: true },
+];
+
+function dangerButton(label, onClick) {
+	const button = document.createElement('button');
+	button.type = 'button';
+	button.className = 'rw-btn rw-btn-danger';
+	button.textContent = label;
+	if (onClick) button.addEventListener('click', onClick);
+	return button;
+}
+
+// Both app namespaces cover every current and future preference key, including
+// the rainette.musicFilters.* / rainette.folderClosed.* prefix families, so
+// clearing by namespace is more robust than enumerating individual keys.
+function clearLocalPreferences() {
+	try {
+		for (const key of Object.keys(localStorage)) {
+			if (key.startsWith('rainette.') || key.startsWith('rw.mp.')) localStorage.removeItem(key);
+		}
+	} catch { /* best effort */ }
+}
+
+async function performClear(selected) {
+	if (selected.length === CLEAR_CATEGORIES.length) {
+		const ok = await confirmDialog({
+			title: 'Erase everything?',
+			message: 'This removes your entire Rainette library on this computer — recents, follows, playlists, saved queues, and preferences. It cannot be undone.',
+			confirmLabel: 'Erase everything',
+			danger: true,
+		});
+		if (!ok) return;
+	}
+	const serverCategories = selected.filter(id => id !== 'preferences');
+	if (serverCategories.length) sendHelper({ type: 'music_clear_data', categories: serverCategories });
+	if (selected.includes('preferences')) {
+		clearLocalPreferences();
+		// Reload so appearance and defaults fall back cleanly, after a short beat
+		// that lets the clear command flush over the socket first.
+		setTimeout(() => location.reload(), 250);
+	}
+}
+
+function openClearDataDialog() {
+	const body = el('div', 'rw-clear-data');
+	body.appendChild(el('p', 'rw-modal-message', 'Choose what to remove from this computer. This cannot be undone.'));
+
+	const boxes = [];
+	const syncFromMaster = master => boxes.forEach(box => { box.checked = master.checked; });
+	const list = el('div', 'rw-clear-list');
+
+	const allRow = el('label', 'rw-clear-row rw-clear-row-all');
+	const allBox = document.createElement('input');
+	allBox.type = 'checkbox';
+	allRow.append(allBox, el('span', 'rw-clear-row-label', 'Select everything'));
+	list.appendChild(allRow);
+
+	for (const category of CLEAR_CATEGORIES) {
+		const row = el('label', 'rw-clear-row');
+		const box = document.createElement('input');
+		box.type = 'checkbox';
+		box.value = category.id;
+		const text = el('div', 'rw-clear-row-text');
+		text.append(el('span', 'rw-clear-row-label', category.label), el('span', 'rw-clear-row-hint', category.hint));
+		row.append(box, text);
+		list.appendChild(row);
+		boxes.push(box);
+	}
+	body.appendChild(list);
+
+	return customDialog({
+		title: 'Clear local data',
+		bodyNode: body,
+		className: 'rw-clear-data-modal',
+		wire: close => {
+			const clearBtn = dangerButton('Clear selected', async () => {
+				const selected = boxes.filter(box => box.checked).map(box => box.value);
+				if (!selected.length) return;
+				close(true);
+				await performClear(selected);
+			});
+			const refresh = () => {
+				allBox.checked = boxes.every(box => box.checked);
+				clearBtn.disabled = !boxes.some(box => box.checked);
+			};
+			allBox.addEventListener('change', () => { syncFromMaster(allBox); refresh(); });
+			boxes.forEach(box => box.addEventListener('change', refresh));
+			refresh();
+			const cancel = document.createElement('button');
+			cancel.type = 'button';
+			cancel.className = 'rw-btn rw-btn-ghost';
+			cancel.textContent = 'Cancel';
+			cancel.addEventListener('click', () => close(null));
+			return [cancel, clearBtn];
+		},
+	});
+}
+
+function renderDangerZone() {
+	const card = settingsCard('Danger zone', 'Permanently erase data stored on this computer.');
+	card.classList.add('rw-danger-zone');
+	const control = dangerButton('Clear local data…', openClearDataDialog);
+	card.appendChild(settingsRow('Clear local data', control,
+		'Pick exactly what to remove — recents, follows, playlists, queues, or preferences.'));
+	return card;
+}
+
 // ── Mount ─────────────────────────────────────────────────────────────────
 
 function bindEqListener() {
@@ -311,12 +530,12 @@ function bindEqListener() {
 	});
 }
 
-export function renderSettings(host) {
+export function renderSettings(host, updater = {}) {
 	const body = host.querySelector('#rwMusicBody');
 	if (!body) return;
 	body.innerHTML = '';
 	const wrap = el('div', 'rw-settings-wrap');
-	wrap.append(renderAppearance(), renderEqualizer(), renderPlaybackDefaults(), renderBehavior());
+	wrap.append(renderAppearance(), renderEqualizer(), renderPlaybackDefaults(), renderBehavior(), renderAppUpdates(updater), renderDangerZone());
 	body.appendChild(wrap);
 	bindEqListener();
 	if (QUEUE_SUPPORTED) eqControl({ action: 'eq_request_state' });

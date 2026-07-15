@@ -1,9 +1,9 @@
 {
-    "sha256":  "b6bbee7ea741874cc727765dde9f929386a65238c03e6258cba962e90aee6a7e",
-    "version":  "0.2.0-local",
+    "sha256":  "80863f53a4b06eb5e36392ca757b2ec696226c3f4c42bb55195509512e56f467",
+    "version":  "0.2.2-local",
     "channel":  "local-test",
     "signed":  false,
-    "versionCode":  2,
+    "versionCode":  4,
     "signatureVerified":  true,
     "artifact":  "rainette-music-android.apk"
 }

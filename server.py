@@ -51,6 +51,13 @@ _ARTWORK_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+_[0-9a-f]{32}\.(?:png|jpg|webp)$")
 # Ports tried in order until one binds (handles a stale instance / port clash).
 PORT_RANGE = range(8777, 8788)
 
+# Unlike the loopback UI, a paired phone has to reconnect to the same LAN port
+# after the desktop process restarts.  The first successfully bound port is
+# persisted below APP_DATA_DIR; this small range is used only before a phone is
+# paired (or after every old pairing has been revoked).
+COMPANION_PORT_RANGE = range(47878, 47888)
+COMPANION_PORT_FILENAME = "companion-port"
+
 # The /audio proxy only relays these hosts (googlevideo serves the actual audio;
 # youtube/ytimg for redirects/art). Keeps the local proxy from being a general
 # open relay even though it is bound to 127.0.0.1 only.
@@ -109,6 +116,7 @@ COMPANION_COMMAND_TYPES = frozenset({
     "music_remote_play",
     "music_remote_control",
     "music_output_transfer",
+    "music_output_transfer_result",
     "music_request_state",
     "music_open_artist",
     "music_status",
@@ -124,6 +132,7 @@ COMPANION_ONE_WAY_COMMAND_TYPES = frozenset({
     "music_progress",
     "music_remote_play",
     "music_remote_control",
+    "music_output_transfer_result",
     "music_request_state",
     "music_open_artist",
 })
@@ -142,10 +151,18 @@ class CompanionSyncBroker:
         "music_remote_control", "music_output_transfer",
         "music_library_index_result", "music_playlist_list_result",
         "music_followed_artists_result", "music_recent_result",
-        "music_artist_follow_result", "music_artist_unfollow_result",
-        "music_playlist_create_result", "music_playlist_rename_result",
-        "music_playlist_delete_result", "music_playlist_add_track_result",
-        "music_playlist_remove_track_result",
+        "music_top_artists_result", "music_insights_result",
+        "music_playlist_tracks_result", "music_smart_playlist_tracks_result",
+        "music_queue_session_list_result",
+        "music_artist_followed", "music_artist_unfollowed",
+        "music_playlist_created", "music_playlist_renamed",
+        "music_playlist_deleted", "music_playlist_meta_updated",
+        "music_playlist_folder_created", "music_playlist_folder_renamed",
+        "music_playlist_folder_deleted", "music_playlist_folder_moved",
+        "music_smart_playlist_created", "music_smart_playlist_updated",
+        "music_smart_playlist_deleted", "music_playlist_track_added",
+        "music_playlist_track_removed", "music_queue_session_saved",
+        "music_queue_session_deleted",
     })
 
     def __init__(self, *, history_limit: int = 256) -> None:
@@ -166,7 +183,11 @@ class CompanionSyncBroker:
 
     def _read_after_locked(self, after: int) -> dict:
         first = self._events[0]["revision"] if self._events else self._revision
-        reset_required = bool(self._events and after < first - 1)
+        # A client can be ahead when the desktop process (and therefore this
+        # in-memory broker) restarts.  Without this branch Android would keep
+        # polling an impossible future revision forever.  Falling behind the
+        # retained history has the same recovery contract.
+        reset_required = after > self._revision or bool(self._events and after < first - 1)
         events = [] if reset_required else [event for event in self._events if event["revision"] > after]
         return {"revision": self._revision, "reset_required": reset_required, "events": events}
 
@@ -211,6 +232,12 @@ class CommandBroker:
     def receive(self, message: dict) -> None:
         request_id = message.get("id") if isinstance(message, dict) else None
         if request_id is None:
+            return
+        # The transfer request itself is broadcast to prospective targets with
+        # the caller's id.  It is not an acknowledgement: resolving here would
+        # pause the source before the target loaded anything.  Only the
+        # explicit music_output_transfer_result may complete that waiter.
+        if message.get("type") == "music_output_transfer":
             return
         with self._lock:
             waiter = self._waiters.get(str(request_id))
@@ -755,17 +782,126 @@ def _lan_address() -> str:
         return "127.0.0.1"
 
 
-def _run_companion_loop(app: web.Application, ssl_context, host: str, preferred: int,
-                        holder: dict, ready: threading.Event) -> None:
+def _companion_port_path() -> Path:
+    return APP_DATA_DIR / COMPANION_PORT_FILENAME
+
+
+def _valid_port(value: object, *, allow_zero: bool = False) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("companion port must be numeric") from exc
+    minimum = 0 if allow_zero else 1
+    if port < minimum or port > 65535:
+        raise ValueError("companion port must be between 1 and 65535")
+    return port
+
+
+def _read_companion_port() -> int | None:
+    try:
+        value = _companion_port_path().read_text(encoding="ascii").strip()
+        return _valid_port(value)
+    except (OSError, ValueError):
+        return None
+
+
+def _persist_companion_port(port: int) -> None:
+    """Atomically remember the endpoint port; it is routing data, not a secret."""
+    selected = _valid_port(port)
+    path = _companion_port_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(str(selected), encoding="ascii")
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _active_companion_devices() -> bool:
+    return any(not bool(device.get("revoked")) for device in companion_registry.devices())
+
+
+def _companion_port_candidates(requested: int | None) -> tuple[list[int], bool]:
+    """Return bind candidates and whether changing the selected port is safe.
+
+    Once a device is paired, its pinned endpoint contains the port.  A busy
+    persisted port must therefore fail loudly instead of silently moving the
+    listener somewhere the phone cannot discover.  With no active devices we
+    may safely fall back and persist the newly selected port.
+    """
+    persisted = _read_companion_port()
+    active_devices = _active_companion_devices()
+    if requested is not None:
+        explicit = _valid_port(requested, allow_zero=True)
+        if active_devices and persisted is not None and explicit != persisted:
+            raise RuntimeError(
+                f"companion port {persisted} is pinned by paired devices; revoke them before changing it"
+            )
+        return [explicit], not active_devices
+    if persisted is not None:
+        candidates = [persisted]
+        if not active_devices:
+            candidates.extend(port for port in COMPANION_PORT_RANGE if port != persisted)
+        return candidates, not active_devices
+    configured = os.environ.get("RAINETTE_COMPANION_PORT", "").strip()
+    preferred = _valid_port(configured) if configured else COMPANION_PORT_RANGE.start
+    candidates = [preferred]
+    candidates.extend(port for port in COMPANION_PORT_RANGE if port != preferred)
+    # A legacy installation can have paired-device records but no saved port
+    # because older releases used an unknowable ephemeral endpoint.  Selecting
+    # and persisting a defined port is the only safe migration; the old phone
+    # will be shown as reconnecting until it is explicitly re-paired.
+    return candidates, True
+
+
+def _bind_companion_socket(host: str, port: int) -> socket.socket:
+    """Bind the LAN listener without Windows wildcard-port sharing.
+
+    ``asyncio.create_server``/``TCPSite`` may successfully bind ``0.0.0.0`` on
+    Windows while another process already owns ``127.0.0.1`` on the same port.
+    That makes the persisted phone endpoint ambiguous and defeats the fail-closed
+    paired-device port policy.  SO_EXCLUSIVEADDRUSE reserves the complete port
+    before aiohttp takes ownership of the socket.
+    """
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if os.name == "nt":
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        listener.bind((host, port))
+        listener.setblocking(False)
+        return listener
+    except Exception:
+        listener.close()
+        raise
+
+
+def _run_companion_loop(app: web.Application, ssl_context, host: str, ports: list[int],
+                         holder: dict, ready: threading.Event) -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     runner = web.AppRunner(app)
     try:
         loop.run_until_complete(runner.setup())
-        site = web.TCPSite(runner, host, preferred, ssl_context=ssl_context)
-        loop.run_until_complete(site.start())
-        sockets = site._server.sockets if site._server is not None else []  # aiohttp exposes no public port accessor
-        holder["port"] = int(sockets[0].getsockname()[1]) if sockets else preferred
+        last_error: Exception | None = None
+        for candidate in ports:
+            listener: socket.socket | None = None
+            try:
+                listener = _bind_companion_socket(host, candidate)
+                site = web.SockSite(runner, listener, ssl_context=ssl_context)
+                loop.run_until_complete(site.start())
+                sockets = site._server.sockets if site._server is not None else []  # aiohttp exposes no public port accessor
+                holder["port"] = int(sockets[0].getsockname()[1]) if sockets else candidate
+                break
+            except OSError as exc:
+                last_error = exc
+                if listener is not None:
+                    listener.close()
+        if "port" not in holder:
+            raise RuntimeError("no companion LAN port is available") from last_error
         holder["loop"] = loop
     except Exception as exc:
         holder["error"] = exc
@@ -777,21 +913,43 @@ def _run_companion_loop(app: web.Application, ssl_context, host: str, preferred:
     loop.close()
 
 
-def start_companion(*, host: str = "0.0.0.0", port: int = 0) -> dict:
-    """Opt in to the separate TLS LAN companion listener.
+def _stop_companion_runtime(runtime: dict, *, timeout_s: float = 5.0) -> bool:
+    loop = runtime.get("loop")
+    thread = runtime.get("thread")
+    if loop is not None and loop.is_running():
+        loop.call_soon_threadsafe(loop.stop)
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=max(0.1, float(timeout_s)))
+    return not bool(thread and thread.is_alive())
+
+
+def stop_companion(*, timeout_s: float = 5.0) -> bool:
+    """Stop the LAN listener (primarily for orderly shutdown and restart tests)."""
+    with _companion_lock:
+        runtime = dict(_companion_runtime)
+        _companion_runtime.clear()
+    if not runtime:
+        return True
+    return _stop_companion_runtime(runtime, timeout_s=timeout_s)
+
+
+def start_companion(*, host: str = "0.0.0.0", port: int | None = None) -> dict:
+    """Start the separate TLS LAN listener on a durable endpoint.
 
     This does not alter the loopback desktop app or make its routes public.
     Callers use :func:`create_companion_invitation` to obtain the QR payload.
+    Once a phone is paired the selected port is never silently changed.
     """
     with _companion_lock:
         if _companion_runtime.get("port"):
             return dict(_companion_runtime)
+        ports, may_change_port = _companion_port_candidates(port)
         certificate = ensure_tls_certificate(APP_DATA_DIR / "companion")
         holder: dict = {"certificate": certificate, "host": _lan_address()}
         ready = threading.Event()
         thread = threading.Thread(
             target=_run_companion_loop,
-            args=(build_companion_app(companion_registry), certificate.ssl_context, host, port, holder, ready),
+            args=(build_companion_app(companion_registry), certificate.ssl_context, host, ports, holder, ready),
             name="rainette-companion-server",
             daemon=True,
         )
@@ -800,9 +958,28 @@ def start_companion(*, host: str = "0.0.0.0", port: int = 0) -> dict:
             raise RuntimeError("companion listener did not start in time")
         if "error" in holder:
             raise holder["error"]
+        selected_port = int(holder["port"])
+        persisted = _read_companion_port()
+        if persisted is not None and selected_port != persisted and not may_change_port:
+            _stop_companion_runtime({**holder, "thread": thread})
+            raise RuntimeError(
+                f"companion port {persisted} is unavailable; paired-device endpoint was not changed"
+            )
+        try:
+            _persist_companion_port(selected_port)
+        except Exception:
+            _stop_companion_runtime({**holder, "thread": thread})
+            raise
         _companion_runtime.update(holder)
         _companion_runtime["thread"] = thread
         return dict(_companion_runtime)
+
+
+def start_paired_companion() -> dict | None:
+    """Restore the LAN listener automatically when durable devices exist."""
+    if not _active_companion_devices():
+        return None
+    return start_companion()
 
 
 def create_companion_invitation(*, ttl_s: int = 300) -> dict:

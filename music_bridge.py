@@ -1,7 +1,6 @@
 """Music player command handlers.
 
-Ported from Rainette (``Rainette_control_modules/music_bridge.py``). Playlist/track
-CRUD are thin sync wrappers over the SQLite state. Search and stream-URL
+Playlist/track CRUD are thin sync wrappers over the SQLite state. Search and stream-URL
 resolution hit yt-dlp, which blocks on network I/O, so those run on a daemon
 thread and broadcast their result via the thread-safe ``shared.notify_browsers``.
 No audio bytes ever flow through the server — the browser's <audio> element
@@ -22,16 +21,13 @@ from typing import Any
 
 import shared
 
-# Python/requests normally uses its bundled CA file, which can reject HTTPS on
-# Windows machines whose trusted enterprise/local CA exists only in the OS
-# certificate store.  Inject the native store before yt-dlp/ytmusicapi import.
-try:
-    import truststore  # type: ignore
-
-    truststore.inject_into_ssl()
-    SYSTEM_TRUST_ENABLED = True
-except Exception:
-    SYSTEM_TRUST_ENABLED = False
+# yt-dlp normally prefers certifi.  ``no-certifi`` asks its own request layer to
+# load the operating-system trust store instead, including enterprise roots on
+# Windows, without replacing ``ssl.SSLContext`` process-wide.  The old global
+# truststore injection installed a client-only context in the stdlib module;
+# that made the companion's TLS *server* accept and then drop every connection.
+_SYSTEM_TRUST_COMPAT = {"no-certifi"}
+SYSTEM_TRUST_ENABLED = True
 
 # yt-dlp is an optional dependency; the player degrades gracefully without it.
 try:
@@ -69,6 +65,7 @@ _SEARCH_OPTS = {
     "extract_flat": True,   # metadata only, no per-result stream resolution
     "skip_download": True,
     "default_search": "ytsearch",
+    "compat_opts": _SYSTEM_TRUST_COMPAT,
 }
 
 _STREAM_OPTS = {
@@ -78,6 +75,7 @@ _STREAM_OPTS = {
     # Bias toward broadly HTML5-<audio>-compatible containers over a bare
     # bestaudio (which can hand back formats Chrome/Edge won't play).
     "format": "bestaudio[ext=m4a]/bestaudio/best",
+    "compat_opts": _SYSTEM_TRUST_COMPAT,
 }
 
 
@@ -573,6 +571,65 @@ def cmd_music_recent(msg):
         shared.notify_browsers({"type": "music_recent_result", "id": req_id, "ok": False, "msg": str(e), "tracks": []})
 
 
+def cmd_music_recent_delete(msg):
+    """Forget plays, then reply with the refreshed list so the tab re-renders.
+
+    ``scope`` is 'track' (needs track_id), 'artist' (needs artist_key, used by
+    the Insights top-artist rows), or 'all'. Recents is grouped by track, so a
+    single entry has no per-play id - removing one means forgetting that track's
+    plays, which is also why the same command backs Insights' remove actions.
+    """
+    req_id = msg.get("id")
+    try:
+        scope = str(msg.get("scope") or "track")
+        if scope == "all":
+            removed = shared.STATE.clear_play_history()
+        elif scope == "artist":
+            removed = shared.STATE.delete_artist_play_history(str(msg.get("artist_key") or ""))
+        else:
+            track_id = str(msg.get("track_id") or "").strip()
+            if not track_id:
+                raise ValueError("track_id is required")
+            removed = shared.STATE.delete_play_history(track_id)
+        shared.notify_browsers({
+            "type": "music_recent_deleted", "id": req_id, "ok": True,
+            "scope": scope, "removed": int(removed or 0),
+            "tracks": shared.STATE.list_recent_plays(limit=40),
+        })
+    except Exception as e:
+        shared.notify_browsers({
+            "type": "music_recent_deleted", "id": req_id, "ok": False, "msg": str(e),
+            "tracks": shared.STATE.list_recent_plays(limit=40),
+        })
+
+
+def cmd_music_clear_data(msg):
+    """Erase the selected categories of local user data (Settings -> Danger zone).
+
+    Irreversible by design: the picker in the UI is the confirmation step. The
+    reply carries refreshed lists so every open surface resets without a reload.
+    """
+    req_id = msg.get("id")
+    try:
+        categories = msg.get("categories")
+        if not isinstance(categories, list):
+            raise ValueError("categories must be a list")
+        result = shared.STATE.clear_user_data(categories)
+        for artwork_key in result.get("artwork_keys") or []:
+            _delete_managed_artwork(artwork_key)
+        shared.notify_browsers({
+            "type": "music_data_cleared", "id": req_id, "ok": True,
+            "cleared": result.get("cleared") or [],
+            "counts": result.get("counts") or {},
+            "tracks": shared.STATE.list_recent_plays(limit=40),
+            "playlists": shared.STATE.list_playlists(),
+            "folders": shared.STATE.list_playlist_folders(),
+            "followed_artists": shared.STATE.list_followed_artists(),
+        })
+    except Exception as e:
+        shared.notify_browsers({"type": "music_data_cleared", "id": req_id, "ok": False, "msg": str(e), "cleared": []})
+
+
 def cmd_music_top_artists(msg):
     req_id = msg.get("id")
     try:
@@ -652,6 +709,24 @@ def cmd_music_queue_session_delete(msg):
         shared.notify_browsers({"type": "music_queue_session_deleted", "id": req_id, "ok": False, "sessions": [], "msg": str(e)})
 
 
+REPEAT_MODES = ("off", "all", "one")
+
+
+def _repeat_fields(msg) -> dict:
+    """Normalise the repeat/loop pair of a playback message.
+
+    Mirrors web/repeat_mode.mjs. Returns an empty dict when the producer said
+    nothing about repeat, so the fan-out cannot silently reset a receiver that
+    does have a setting.
+    """
+    mode = msg.get("repeat")
+    if mode not in REPEAT_MODES:
+        if not isinstance(msg.get("loop"), bool):
+            return {}
+        mode = "all" if msg["loop"] else "off"
+    return {"repeat": mode, "loop": mode != "off"}
+
+
 def cmd_music_now_playing_set(msg):
     """Broadcast the current track to every open tab so the mini-player and
     full page stay in sync. Pure fan-out — no persistence beyond play history
@@ -664,9 +739,19 @@ def cmd_music_now_playing_set(msg):
         "track": track,
         "state": playback_state,
         "playing": bool(msg.get("playing")),
-        "loop": bool(msg.get("loop")),
+        # Repeat is a three-state string ('off' | 'all' | 'one') with `loop` kept
+        # as a derived boolean for older consumers. Never coerce `repeat` through
+        # bool(): bool("off") is True. A producer that sends neither (the phone,
+        # which has no repeat control of its own) must leave the receiver's own
+        # setting alone rather than have an absent field mean "off".
+        **_repeat_fields(msg),
         "current_time": msg.get("current_time") or 0,
         "duration": msg.get("duration") or 0,
+        # Older desktop engines do not send an output id. They are the only
+        # legacy producer, so treating an omitted value as desktop keeps the
+        # companion's transport controls routed to the device that owns audio.
+        # Phone-originated state always supplies ``phone`` explicitly.
+        "output_device_id": str(msg.get("output_device_id") or "desktop"),
     }
     if isinstance(msg.get("queue"), list):
         payload.update({
@@ -783,6 +868,31 @@ def cmd_music_output_transfer(msg):
         "playing": bool(msg.get("playing")),
         "loop": bool(msg.get("loop")),
     })
+
+
+def cmd_music_output_transfer_result(msg):
+    """Relay a target device's load acknowledgement to the waiting source.
+
+    Transfer requests deliberately wait for this message before pausing the
+    old output.  Keeping the acknowledgement in the normal bridge fan-out
+    means both an authenticated phone and the loopback desktop can act as the
+    target without introducing a second response channel.
+    """
+    payload = {
+        "type": "music_output_transfer_result",
+        "id": msg.get("id"),
+        "ok": bool(msg.get("ok")),
+        "target_device_id": str(msg.get("target_device_id") or ""),
+        "source_device_id": str(msg.get("source_device_id") or ""),
+    }
+    if "current_time" in msg:
+        try:
+            payload["current_time"] = max(0, float(msg.get("current_time") or 0))
+        except (TypeError, ValueError):
+            payload["current_time"] = 0
+    if msg.get("msg"):
+        payload["msg"] = str(msg.get("msg"))[:500]
+    shared.notify_browsers(payload)
 
 
 def cmd_music_request_state(msg):
@@ -1242,6 +1352,8 @@ DISPATCH = {
     "music_playlist_remove_track":  cmd_music_playlist_remove_track,
     "music_playlist_tracks":        cmd_music_playlist_tracks,
     "music_recent":                 cmd_music_recent,
+    "music_recent_delete":          cmd_music_recent_delete,
+    "music_clear_data":             cmd_music_clear_data,
     "music_top_artists":            cmd_music_top_artists,
     "music_queue_session_save":     cmd_music_queue_session_save,
     "music_queue_session_list":     cmd_music_queue_session_list,
@@ -1252,8 +1364,9 @@ DISPATCH = {
     "music_remote_play":            cmd_music_remote_play,
     "music_remote_control":         cmd_music_remote_control,
     "music_output_transfer":        cmd_music_output_transfer,
+    "music_output_transfer_result": cmd_music_output_transfer_result,
     "music_request_state":          cmd_music_request_state,
-    "music_open_artist":           cmd_music_open_artist,
+    "music_open_artist":            cmd_music_open_artist,
     "music_theme_set":              cmd_music_theme_set,
     "music_accent_set":             cmd_music_accent_set,
     "music_eq_state":               cmd_music_eq_state,

@@ -70,7 +70,21 @@ class FrontendReleaseContractTests(unittest.TestCase):
         self.assertIn("mp-artist-link", self.miniplayer)
         self.assertIn("case 'music_open_artist'", self.music)
 
-    def test_shell_uses_raindrop_asset_instead_of_letter_mark(self):
+    def test_desktop_output_transfer_ack_waits_for_media_load(self):
+        transfer = self.miniplayer[
+            self.miniplayer.index("function beginOutputTransfer"):
+            self.miniplayer.index("function streamFresh")
+        ]
+        self.assertIn("pendingOutputTransfer", transfer)
+        self.assertIn("Desktop could not load the transfer in time", transfer)
+        playing = self.miniplayer[self.miniplayer.index("on('playing'"):
+                                  self.miniplayer.index("on('pause'")]
+        self.assertIn("finishOutputTransfer(true)", playing)
+        terminal = self.miniplayer[self.miniplayer.index("function _terminalLoadFailure"):
+                                   self.miniplayer.index("function _currentMediaEvent")]
+        self.assertIn("finishOutputTransfer(false", terminal)
+
+    def test_shell_uses_branded_asset_instead_of_letter_mark(self):
         self.assertIn("rainette-icon-256.png", self.music)
         self.assertNotIn('class="rw-music-mark" aria-hidden="true">R<', self.music)
         logo = ROOT / "web" / "assets" / "rainette-icon-256.png"
@@ -84,7 +98,9 @@ class FrontendReleaseContractTests(unittest.TestCase):
 
     def test_music_body_is_the_single_page_scroll_owner(self):
         self.assertRegex(self.css, r"#rwMusicBody\s*\{[^}]*overflow-y:\s*auto")
-        self.assertIn("--rw-docked-clearance", self.css)
+        self.assertRegex(self.css, r"\.rw-music-shell\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto")
+        self.assertRegex(self.css, r"\.rw-now-bar\s*\{[^}]*grid-area:\s*player[^}]*position:\s*relative")
+        self.assertNotIn("--rw-docked-clearance", self.css)
         self.assertRegex(self.css, r"\.rw-insights-scroll\s*\{[^}]*overflow:\s*visible")
         self.assertRegex(self.css, r"\.rw-playlist-groups\s*\{[^}]*overflow:\s*visible")
 

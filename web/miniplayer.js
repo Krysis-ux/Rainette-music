@@ -15,12 +15,16 @@
 
 import { sendHelper, helperRequest } from './music_shell.js';
 import { iconMarkup } from './rainette_icons.js';
-import { PlaybackLoadGuard, MediaEventGate } from './playback_load_guard.mjs';
+import { PlaybackLoadGuard, MediaEventGate, settleWithin } from './playback_load_guard.mjs';
+import { REPEAT_MODES, REPEAT_LABEL, normalizeRepeat, nextRepeat, loopFlagFor, repeatFromMessage } from './repeat_mode.js';
 
 // ── Persistence keys ─────────────────────────────────────────────────────────
-const LS = { vol: 'rw.mp.volume', eq: 'rw.mp.eqGains', eqOn: 'rw.mp.eqOn', loop: 'rw.mp.loop' };
+// `loop` is the superseded boolean key, still read once by loadRepeat() so an
+// existing user's loop-on setting survives the upgrade to three-state repeat.
+const LS = { vol: 'rw.mp.volume', eq: 'rw.mp.eqGains', eqOn: 'rw.mp.eqOn', loop: 'rw.mp.loop', repeat: 'rw.mp.repeat' };
 const LOCAL_STREAM_TTL_MS = 50 * 60 * 1000;
 const PREFETCH_AHEAD = 3;
+const PLAY_START_TIMEOUT_MS = 12_000;
 
 function lsGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { /* best effort */ } }
@@ -41,12 +45,19 @@ const PRESETS = {
 	Treble:      [0, 0, 0, 4, 8],
 };
 
+// ── Repeat ───────────────────────────────────────────────────────────────────
+function loadRepeat() {
+	// Migrate the old boolean: loop-on only ever meant "loop the queue".
+	return normalizeRepeat(lsGet(LS.repeat), lsGet(LS.loop) === '1' ? 'all' : 'off');
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
 const state = {
 	queue: [],
 	index: -1,
-	loop: lsGet(LS.loop) === '1',
+	repeat: loadRepeat(),
 	playing: false,
+	status: 'idle',
 	resolvingId: null,
 	eqOn: lsGet(LS.eqOn) === '1',
 	eqGains: loadEqGains(),
@@ -70,6 +81,7 @@ function loadVolume() {
 }
 
 let audio = null;
+let pendingOutputTransfer = null;
 let audioCtx = null, srcNode = null, gainNode = null, bands = [];
 let graphBuilt = false;       // once true, playback stays on the same-origin proxy
 let els = {};
@@ -108,6 +120,94 @@ function queueDuration() {
 
 function trackKey(track) {
 	return `${track?.source || 'youtube'}:${track?.source_id || ''}`;
+}
+
+function finishOutputTransfer(ok, message = '') {
+	const transfer = pendingOutputTransfer;
+	if (!transfer) return;
+	pendingOutputTransfer = null;
+	clearTimeout(transfer.timer);
+	sendHelper({
+		type: 'music_output_transfer_result',
+		id: transfer.id,
+		ok: !!ok,
+		target_device_id: 'desktop',
+		source_device_id: transfer.sourceDeviceId,
+		current_time: audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+		...(message ? { msg: message } : {}),
+	});
+}
+
+function beginOutputTransfer(message) {
+	const tracks = validTracks(Array.isArray(message.queue) ? message.queue : []);
+	const index = clamp(Number(message.index) || 0, 0, Math.max(0, tracks.length - 1));
+	const target = tracks[index];
+	if (!target) {
+		sendHelper({ type: 'music_output_transfer_result', id: message.id, ok: false, target_device_id: 'desktop', msg: 'Transfer queue is empty' });
+		return;
+	}
+	if (pendingOutputTransfer) finishOutputTransfer(false, 'Transfer was replaced by a newer request');
+	pendingOutputTransfer = {
+		id: message.id,
+		sourceDeviceId: String(message.source_device_id || ''),
+		trackKey: trackKey(target),
+		playing: !!message.playing,
+		timer: setTimeout(() => finishOutputTransfer(false, 'Desktop could not load the transfer in time'), 25000),
+	};
+	// Only adopt a repeat mode the source actually sent. A handoff used to
+	// hard-clear loop because the phone always sent loop:false, silently wiping
+	// the desktop's own setting mid-session - so default to what we already have.
+	const transferred = repeatFromMessage(message, state.repeat);
+	if (transferred !== state.repeat) _setRepeat(transferred);
+	state.pendingSeek = Math.max(0, Number(message.current_time) || 0);
+
+	// A normal playQueue() deliberately avoids reloading an already-current
+	// track. During an output handoff, though, that shortcut used to leave the
+	// transfer waiting forever because no new `playing`/`loadedmetadata` event
+	// was produced. If the existing media element is genuinely ready, adopt the
+	// transferred queue and positively confirm readiness. If it is not ready,
+	// force the normal guarded load path so failure still rolls back cleanly on
+	// the phone instead of producing a false acknowledgement.
+	const current = state.queue[state.index];
+	if (current && trackKey(current) === trackKey(target)) {
+		state.queue = tracks;
+		state.index = index;
+		const requiredReadyState = message.playing ? 2 : 1;
+		if (audio && !audio.error && audio.readyState >= requiredReadyState && _currentMediaEvent()) {
+			const requestedTime = state.pendingSeek;
+			state.pendingSeek = null;
+			try { audio.currentTime = requestedTime; } catch { /* an existing stream may not be seekable yet */ }
+			state.resolvingId = null;
+			if (!message.playing) {
+				audio.pause();
+				state.playing = false;
+				_renderPlay();
+				_renderMeta(target, 'paused');
+				_broadcast('paused', false);
+				finishOutputTransfer(true);
+				return;
+			}
+			Promise.resolve(audioCtx?.state === 'suspended' ? audioCtx.resume() : null)
+				.then(() => audio.play())
+				.then(() => {
+					if (!pendingOutputTransfer || trackKey(state.queue[state.index]) !== trackKey(target)) return;
+					if (audio.error || audio.paused || audio.readyState < 2) {
+						finishOutputTransfer(false, 'Desktop media was not ready for playback');
+						return;
+					}
+					state.playing = true;
+					_renderPlay();
+					_renderMeta(target, 'playing');
+					_broadcast('playing', true);
+					finishOutputTransfer(true);
+				})
+				.catch(() => finishOutputTransfer(false, 'Desktop could not resume this track'));
+			return;
+		}
+		_loadCurrent({ preservePaused: !message.playing });
+		return;
+	}
+	playQueue(tracks, index);
 }
 
 function streamFresh(track) {
@@ -255,19 +355,22 @@ async function _loadCurrent({ preservePaused = false } = {}) {
 	activeMediaToken = null;
 	activeMediaSrc = '';
 	activeMediaBinding = null;
+	state.playing = false;
+	state.status = 'loading';
+	_renderPlay();
 	await _drainPreviousMedia();
 	if (!loadGuard.isCurrent(loadToken, trackKey(state.queue[state.index]))) return;
 	_freshAudioElement();
 	_renderMeta(track, 'loading');
 	_setSeek(0);
 	state.resolvingId = track.source_id;
+	_broadcast('loading', false);
 	// Reuse a still-fresh resolved URL (e.g. after an EQ toggle reload) so we
 	// don't hit yt-dlp again just to switch the audio path.
 	if (streamFresh(track)) {
 		_applyAndPlay(track, track._url, loadToken);
 		return;
 	}
-	_broadcast('loading', false);
 	try {
 		const res = await requestStream(track, { loadToken });
 		if (!loadGuard.isCurrent(loadToken, trackKey(state.queue[state.index]))) return;
@@ -304,10 +407,28 @@ function _applyAndPlay(track, url, loadToken) {
 	const resume = () => {
 		if (state.pendingSeek != null) { try { audio.currentTime = state.pendingSeek; } catch { /* ignore */ } state.pendingSeek = null; }
 	};
+	const transfer = pendingOutputTransfer;
+	if (transfer && transfer.trackKey === trackKey(track) && !transfer.playing) {
+		const loaded = () => {
+			if (!loadGuard.isCurrent(mediaToken, trackKey(state.queue[state.index]))) return;
+			resume();
+			state.resolvingId = null;
+			state.playing = false;
+			_renderPlay();
+			_renderMeta(track, 'paused');
+			_broadcast('paused', false);
+			finishOutputTransfer(true);
+		};
+		audio.addEventListener('loadedmetadata', loaded, { once: true });
+		mediaLifecycle.push(['loadedmetadata', loaded]);
+		audio.load();
+		return;
+	}
 	if (pauseAfterReload === mediaToken.generation) {
 		pauseAfterReload = null;
 		const loaded = () => {
 			if (!loadGuard.isCurrent(mediaToken, trackKey(state.queue[state.index]))) return;
+			state.resolvingId = null;
 			resume();
 			state.playing = false;
 			_renderPlay();
@@ -319,20 +440,33 @@ function _applyAndPlay(track, url, loadToken) {
 		audio.load();
 		return;
 	}
-	audio.play().then(() => {
-		if (loadGuard.isCurrent(mediaToken, trackKey(state.queue[state.index]))) resume();
-	}).catch(() => {
-		// autoplay-policy block, decode error, etc. — surface it instead of
-		// leaving "now playing" showing with no sound.
+	let playAttempt;
+	try {
+		playAttempt = audio.play();
+	} catch {
 		_retryOrFail(mediaToken);
+		return;
+	}
+	settleWithin(playAttempt, PLAY_START_TIMEOUT_MS).then(result => {
+		if (!loadGuard.isCurrent(mediaToken, trackKey(state.queue[state.index]))) return;
+		if (result.status === 'fulfilled') resume();
+		else {
+			// Rejections and promises that never settle share the same single,
+			// token-scoped refresh attempt before becoming a visible error.
+			_retryOrFail(mediaToken);
+		}
 	});
 }
 
 function _terminalLoadFailure(loadToken) {
 	const track = state.queue[state.index];
 	if (!track || !loadGuard.isCurrent(loadToken, trackKey(track))) return false;
+	state.resolvingId = null;
+	state.playing = false;
+	_renderPlay();
 	_renderMeta(track, 'error');
 	_broadcast('error', false);
+	if (pendingOutputTransfer?.trackKey === trackKey(track)) finishOutputTransfer(false, 'Desktop could not load this track');
 	return false;
 }
 
@@ -389,10 +523,18 @@ function _bindMediaLifecycle(binding, owner) {
 		mediaLifecycle.push([type, handler]);
 	};
 	on('playing', () => {
+		if (pauseAfterReload === binding.token.generation) {
+			pauseAfterReload = null;
+			state.resolvingId = null;
+			owner.pause();
+			return;
+		}
+		state.resolvingId = null;
 		state.playing = true; _renderPlay();
 		const track = state.queue[state.index];
 		if (track) _renderMeta(track, 'playing');
 		_broadcast('playing', true);
+		if (track && pendingOutputTransfer?.trackKey === trackKey(track)) finishOutputTransfer(true);
 		preResolveUpcoming();
 	});
 	on('pause', () => { state.playing = false; _renderPlay(); _broadcast('paused', false); });
@@ -403,7 +545,7 @@ function _bindMediaLifecycle(binding, owner) {
 	});
 	on('seeked', () => _broadcastProgress(true));
 	on('durationchange', () => { if (els.dur) els.dur.textContent = fmt(audio.duration); });
-	on('ended', () => _next());
+	on('ended', () => _next(true));
 	on('error', () => _retryOrFail(binding.token));
 }
 
@@ -491,6 +633,16 @@ function _rampVolume(from, to, ms, done) {
 
 function _togglePlay() {
 	if (!audio || !state.queue.length) return;
+	if (state.resolvingId && activeLoad) {
+		const cancelPending = pauseAfterReload !== activeLoad.generation;
+		pauseAfterReload = cancelPending ? activeLoad.generation : null;
+		state.playing = false;
+		_renderPlay();
+		const track = state.queue[state.index];
+		if (track) _renderMeta(track, cancelPending ? 'paused' : 'loading');
+		_broadcast(cancelPending ? 'paused' : 'loading', false);
+		return;
+	}
 	if (!_currentMediaEvent()) return;
 	if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
 	if (audio.paused) {
@@ -527,19 +679,24 @@ async function _autoplaySimilar() {
 			state.index++;
 			_loadCurrent();
 		} else {
+			_renderPlay();
 			_broadcast('paused', false);
 		}
 	} catch {
+		_renderPlay();
 		_broadcast('paused', false);
 	} finally {
 		_autoplayBusy = false;
 	}
 }
 
-function _next() {
+// `auto` distinguishes a track ending on its own from the user pressing Next.
+// Repeat-one must not trap the Next button on the same song.
+function _next(auto = false) {
 	if (!state.queue.length) return;
+	if (auto && state.repeat === 'one') { _replayCurrent(); return; }
 	if (state.index < state.queue.length - 1) { state.index++; _loadCurrent(); }
-	else if (state.loop) { state.index = 0; _loadCurrent(); }
+	else if (state.repeat === 'all') { state.index = 0; _loadCurrent(); }
 	else if (autoplaySimilarEnabled()) _autoplaySimilar();
 	else _broadcast(undefined, state.playing);
 }
@@ -547,24 +704,53 @@ function _prev() {
 	if (!state.queue.length) return;
 	if (audio && audio.currentTime > 3) { audio.currentTime = 0; _broadcast(undefined, state.playing); return; }
 	if (state.index > 0) { state.index--; _loadCurrent(); }
-	else if (state.loop) { state.index = state.queue.length - 1; _loadCurrent(); }
+	else if (state.repeat !== 'off') { state.index = state.queue.length - 1; _loadCurrent(); }
 	else _broadcast(undefined, state.playing);
 }
-function _toggleLoop() {
-	state.loop = !state.loop;
-	lsSet(LS.loop, state.loop ? '1' : '0');
-	els.loop?.classList.toggle('on', state.loop);
+
+// The media is still loaded at this point, so rewinding beats re-resolving the
+// stream URL. Fall back to a full load if the element refuses to restart.
+function _replayCurrent() {
+	if (!audio) { _loadCurrent(); return; }
+	try {
+		audio.currentTime = 0;
+		const started = audio.play();
+		if (started?.catch) started.catch(() => _loadCurrent());
+	} catch {
+		_loadCurrent();
+		return;
+	}
+	_broadcast('playing', true);
+}
+
+function _cycleRepeat() {
+	_setRepeat(nextRepeat(state.repeat));
+}
+function _setRepeat(mode) {
+	state.repeat = normalizeRepeat(mode);
+	lsSet(LS.repeat, state.repeat);
+	_syncRepeatButton();
 	_broadcast(undefined, state.playing);
+}
+function _syncRepeatButton() {
+	if (!els.loop) return;
+	els.loop.classList.toggle('on', state.repeat !== 'off');
+	els.loop.innerHTML = state.repeat === 'one' ? ICON.loopOne : ICON.loop;
+	els.loop.title = REPEAT_LABEL[state.repeat];
+	els.loop.setAttribute('aria-label', REPEAT_LABEL[state.repeat]);
 }
 
 // Public queue entry points (also used by the remote-play listener).
-function playQueue(tracks, startIndex = 0) {
+function playQueue(tracks, startIndex = 0, { restoreState = '' } = {}) {
 	const filtered = validTracks(tracks);
 	const nextId = filtered[startIndex]?.source_id;
 	const curId = state.queue[state.index]?.source_id;
+	const restoring = ['playing', 'paused', 'loading'].includes(restoreState);
 	// If we're already on this exact track (e.g. a duplicate remote_play from the
 	// connect-time state handshake), just adopt the queue without restarting it.
-	if (nextId && nextId === curId && (state.playing || state.resolvingId)) {
+	// The local player remains authoritative when it survived a socket reconnect:
+	// a cached "paused" response must never resume or reload its current media.
+	if (nextId && nextId === curId && (restoring || state.playing || state.resolvingId)) {
 		state.queue = filtered;
 		state.index = clamp(startIndex, 0, Math.max(0, filtered.length - 1));
 		_broadcast(undefined, state.playing);
@@ -572,7 +758,7 @@ function playQueue(tracks, startIndex = 0) {
 	}
 	state.queue = filtered;
 	state.index = clamp(startIndex, 0, Math.max(0, state.queue.length - 1));
-	if (state.queue.length) _loadCurrent();
+	if (state.queue.length) _loadCurrent({ preservePaused: restoreState === 'paused' });
 	else _stopEmptyQueue();
 }
 
@@ -724,12 +910,18 @@ function _broadcast(mode, playing) {
 	const track = state.queue[state.index] || null;
 	const cleanTrack = publicTrack(track);
 	const cleanQueue = state.queue.map(publicTrack).filter(Boolean);
+	const resolvedMode = mode || state.status || (state.playing ? 'playing' : 'paused');
+	state.status = resolvedMode;
+	state.playing = !!playing;
 	sendHelper({
 		type: 'music_now_playing_set',
 		track: cleanTrack,
-		state: mode || (state.playing ? 'playing' : 'paused'),
+		state: resolvedMode,
 		playing: !!playing,
-		loop: state.loop,
+		repeat: state.repeat,
+		// Derived compatibility field: every consumer that predates three-state
+		// repeat (and the Python relay's bool coercion) still reads `loop`.
+		loop: loopFlagFor(state.repeat),
 		current_time: audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
 		duration: audio && Number.isFinite(audio.duration) ? audio.duration : (track?.duration_s || 0),
 		queue: cleanQueue,
@@ -897,7 +1089,8 @@ function buildUI() {
 	// Transport
 	root.querySelector('.mp-controls').addEventListener('click', e => {
 		const b = e.target.closest('[data-act]'); if (!b) return;
-		({ toggle: _togglePlay, next: _next, prev: _prev, loop: _toggleLoop }[b.dataset.act] || (() => {}))();
+		// Next from the button is an explicit skip, never a repeat-one replay.
+		({ toggle: _togglePlay, next: () => _next(false), prev: _prev, loop: _cycleRepeat }[b.dataset.act] || (() => {}))();
 	});
 	els.playPill.addEventListener('click', _togglePlay);
 	els.artist.addEventListener('click', openCurrentArtist);
@@ -947,7 +1140,7 @@ function buildUI() {
 	pillClose.addEventListener('click', () => nativeApi()?.player_hide?.());
 
 	// Restore persisted UI state
-	els.loop.classList.toggle('on', state.loop);
+	_syncRepeatButton();
 	applyVolume(state.volume);
 	setCollapsed(true);
 }
@@ -964,10 +1157,9 @@ function wireRemote() {
 	document.addEventListener('rainette:helper-message', e => {
 		const msg = e.detail; if (!msg) return;
 		if (msg.type === 'music_remote_play' && Array.isArray(msg.tracks)) {
-			playQueue(msg.tracks, msg.index || 0);
-			if (window.RW_MINIPLAYER_ENABLED) {
-				try { nativeApi()?.reveal_player?.(); } catch { /* not in pywebview */ }
-			}
+			playQueue(msg.tracks, msg.index || 0, { restoreState: msg.restore_state });
+		} else if (msg.type === 'music_output_transfer' && msg.target_device_id === 'desktop') {
+			beginOutputTransfer(msg);
 		} else if (msg.type === 'music_theme_set') {
 			// Keep in sync with rainette_settings.js's THEME_CLASS map.
 			const THEME_CLASS = { light: 'rw-theme-light', dark: 'rw-theme-dark', mono: 'rw-theme-mono', midnight: 'rw-theme-midnight' };
@@ -982,7 +1174,7 @@ function wireRemote() {
 			else if (a === 'queue_add_end') queueAddEnd(msg.track);
 			else if (a === 'queue_move') queueMove(msg.from, msg.to);
 			else if (a === 'queue_remove') queueRemove(msg.index);
-			else if (a === 'queue_play_index') { queuePlayIndex(msg.index); if (window.RW_MINIPLAYER_ENABLED) { try { nativeApi()?.reveal_player?.(); } catch { /* not in pywebview */ } } }
+			else if (a === 'queue_play_index') queuePlayIndex(msg.index);
 			else if (a === 'queue_shuffle') queueShuffle();
 			else if (a === 'queue_dedupe') queueDedupe();
 			else if (a === 'queue_clear_up_next') queueClearUpNext();
@@ -992,11 +1184,16 @@ function wireRemote() {
 			else if (a === 'eq_apply_preset') applyPreset(msg.preset);
 			else if (a === 'eq_request_state') _broadcastEq();
 			else if (a === 'set_volume') applyVolume(Number(msg.value));
+			// Repeat is a standing preference, not a transport action, so it sits
+			// above the empty-queue guard: arming it before pressing play used to
+			// be silently dropped, which read as "loop doesn't stick".
+			else if (a === 'loop') _cycleRepeat();
+			else if (a === 'set_repeat') _setRepeat(msg.mode);
 			else if (!state.queue.length) return;
+			else if (a === 'pause') { if (audio && !audio.paused) _togglePlay(); }
 			else if (a === 'toggle') _togglePlay();
-			else if (a === 'next') _next();
+			else if (a === 'next') _next(false);
 			else if (a === 'prev') _prev();
-			else if (a === 'loop') _toggleLoop();
 			else if (a === 'seek' && audio && audio.duration) { audio.currentTime = clamp(Number(msg.ratio || 0), 0, 1) * audio.duration; _broadcastProgress(true); }
 		}
 	});
@@ -1007,6 +1204,9 @@ function boot() {
 	initAudio();
 	buildUI();
 	wireRemote();
+	document.addEventListener('rainette:helper-open', () => {
+		sendHelper({ type: 'music_request_state' });
+	});
 	// If the player window was hidden while a play was issued, ask the main
 	// window for the current queue once we're connected (sendHelper queues until
 	// the socket opens). Harmless when nothing has played yet.

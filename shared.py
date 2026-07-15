@@ -2,7 +2,7 @@
 
 ``server.py`` calls :func:`configure` once at boot, before any handler runs.
 Handlers read these via module attributes at call time (late binding), which
-mirrors the Rainette helper so ``music_bridge`` ports across unchanged.
+provides stable module-level configuration for ``music_bridge``.
 """
 
 from __future__ import annotations

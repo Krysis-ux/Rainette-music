@@ -1,11 +1,11 @@
 # Rainette Music — standalone desktop app
 
-A self-contained clone of the Rainette (Rainette) music player, extracted so it runs
+A self-contained Rainette Music player that runs
 on its own as a native desktop app launched by `Rainette Music.exe`.
 
 ## What it is
 
-The full Rainette music experience with feature parity:
+The full Rainette Music experience:
 
 - Search songs, artists, and albums (YouTube Music catalog via `ytmusicapi`, streams via `yt-dlp`)
 - Browse artist catalogs (songs / videos / albums / singles) and album track lists
@@ -28,7 +28,7 @@ Rainette Music.exe        PyInstaller launcher (built from main.py)
 start.bat                 zero-build fallback (pythonw main.py)
 main.py                   opens the native window, starts the local server
 server.py                 aiohttp: serves web/ + a /ws WebSocket on one port
-music_bridge.py           command handlers (ported from Rainette, overlay removed)
+music_bridge.py           command handlers
 state.py                  trimmed SQLite layer (music tables only)
 shared.py                 runtime-context module (STATE + notify_browsers)
 music.db                  created on first run
@@ -38,15 +38,15 @@ web/                      the frontend (see below)
 ### Frontend (`web/`)
 
 - `index.html` — minimal shell that mounts the page host + mini-player mount point
-- `music_shell.js` — the standalone replacement for Rainette's `rainette_home.js`:
+- `music_shell.js` — the standalone page shell:
   WebSocket plumbing (`sendHelper`, `helperRequest`), DOM utils (`el`, `btn`),
   the `app` state object, a `RainetteRouter` stub that auto-mounts the page, and
   (in detached mode) a `RainetteMusic` shim that forwards play/transport over the socket
-- `rainette_music.js` — copied from Rainette; only the two import paths are retargeted
-- `rainette_music_player.js` — copied from Rainette; the docked bubble engine (browser fallback)
+- `rainette_music.js` — the music-page module with Rainette import paths
+- `rainette_music_player.js` — the docked bubble engine (browser fallback)
 - `miniplayer.html` / `miniplayer.js` — the detached player window: `<audio>` + queue +
   transport + the Web Audio graph (volume gain + 5-band EQ) + native window chrome
-- `rainette_tokens.css`, `rainette_pages.css` — copied verbatim from Rainette
+- `rainette_tokens.css`, `rainette_pages.css` — shared theme and page styles
 - `app.css` — standalone shell overrides (fills the window, no nav gutter)
 
 ### Two-window model (native / pywebview path)
@@ -75,7 +75,7 @@ and the volume gain node take effect. WebView2 autoplay is unlocked via
 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--autoplay-policy=no-user-gesture-required` (set in
 `main.py`) since the player window is driven remotely and never receives a direct click.
 
-### Data flow (unchanged from Rainette)
+### Data flow
 
 ```
 window  ⇄  ws://127.0.0.1:<port>/ws  ⇄  server.py dispatch
@@ -84,8 +84,8 @@ window  ⇄  ws://127.0.0.1:<port>/ws  ⇄  server.py dispatch
                                               → state.py (playlists, tracks, history)
 ```
 
-The WebSocket message contract is identical to Rainette, so the copied frontend
-modules work with only their import paths changed.
+The WebSocket message contract keeps the frontend modules in sync with the
+native application.
 
 ## The window ("actual app")
 
@@ -98,8 +98,8 @@ then to the default browser. Closing the pywebview window stops the app cleanly.
 Python 3.10+ with: `aiohttp`, `yt-dlp`, `ytmusicapi`, `pywebview` (window),
 plus `pyinstaller` only to (re)build the exe. See `requirements.txt`.
 
-## Differences from the Rainette version
+## Standalone design
 
 - The native desktop tkinter overlay is removed — the in-window mini-player covers it,
   and it avoided the known tkinter teardown crash.
-- State is a small music-only SQLite DB (`music.db`), independent of `Rainette_state.db`.
+- State is a small music-only SQLite DB (`music.db`).

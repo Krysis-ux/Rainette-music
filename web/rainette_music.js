@@ -11,8 +11,10 @@ import { RainetteRouter } from './music_shell.js';
 import { iconMarkup } from './rainette_icons.js';
 import { confirmDialog, textPrompt, pickerDialog, infoDialog, actionSheet, customDialog } from './rainette_modal.js';
 import { createSelect } from './rainette_select.js';
-import { renderSettings, defaultLandingTab, shouldAutoOpenQueue } from './rainette_settings.js';
+import { renderSettings, syncUpdateSettings, defaultLandingTab, shouldAutoOpenQueue } from './rainette_settings.js';
 import { renderMobile, unmountMobile } from './rainette_mobile.js';
+import { createRainetteLoader } from './rainette_loading.js';
+import { REPEAT_LABEL, repeatFromMessage, loopFlagFor } from './repeat_mode.js';
 
 const LAYOUT_KEY = 'rainette.musicLayout';
 const QUEUE_SUPPORTED = typeof window !== 'undefined' && !!window.RW_REMOTE;
@@ -38,6 +40,9 @@ const pageState = {
 	tab: defaultLandingTab(),
 	query: '',
 	searchFilter: 'all',
+	searchRequestId: '',
+	searchLoading: false,
+	searchStatus: '',
 	results: [],
 	resultArtists: [],
 	resultAlbums: [],
@@ -48,7 +53,7 @@ const pageState = {
 	topArtists: [],
 	library: { tracks: [], artists: [], albums: [], followed_artists: [] },
 	recentMode: 'songs',
-	queue: { tracks: [], index: -1, playing: false, loop: false, duration: 0 },
+	queue: { tracks: [], index: -1, playing: false, state: 'idle', loop: false, duration: 0 },
 	queueDrawerOpen: false,
 	queueSaveBusy: false,
 	queueSaveStatus: '',
@@ -76,6 +81,7 @@ const pageState = {
 	insights: { days: 7, data: null, loading: false },
 	progress: { current_time: 0, duration: 0, playing: false, source_id: '' },
 	playbackStarted: false,
+	output: { device: 'desktop', transferPending: false, status: '' },
 	lyrics: { source_id: '', reqId: '', loading: false, text: '', notFound: false, instrumental: false, error: '', open: false, synced: false, lines: [], activeIndex: -1, userScrollUntil: 0 },
 	_autoplayOnLoad: false,
 };
@@ -103,9 +109,15 @@ function navItems() {
 let _host = null;
 let _mounted = false;
 let _listenerBound = false;
+let _updateBound = false;
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let _updateCheckPromise = null;
+let _updateInstallPromise = null;
+let _updateState = { phase: 'idle', result: null, candidateId: '', message: '' };
 let _paletteKeysBound = false;
 let _nowPlayingKeysBound = false;
 let _searchDebounce = null;
+let _searchTimeout = null;
 let _lastAutoOpenTrackKey = null;
 let _lastOptimisticQueueSignature = null;
 let _lastAnimatedTab = null;
@@ -280,10 +292,77 @@ function inlineLink(text, onClick) {
 	return b;
 }
 
+// The identity convention used for the queue and every "is this row playing"
+// check - matches miniplayer.js's own trackKey() and the inline pattern
+// _queueSignature() already used for the current track.
+function trackKey(track) {
+	return `${track?.source || 'youtube'}:${track?.source_id || ''}`;
+}
+
+function currentTrackKey() {
+	const q = pageState.queue;
+	const current = q.tracks?.[q.index];
+	return current ? trackKey(current) : '';
+}
+
+function isCurrentTrack(track) {
+	const key = currentTrackKey();
+	return !!key && key === trackKey(track);
+}
+
+function currentTrackState() {
+	const q = pageState.queue;
+	if (!currentTrackKey()) return 'idle';
+	return q.state || (q.playing ? 'playing' : 'paused');
+}
+
+function currentTrackBadgeLabel() {
+	const state = currentTrackState();
+	if (state === 'loading') return 'Loading';
+	if (state === 'error') return 'Playback failed';
+	return pageState.queue?.playing ? 'Now playing' : 'Paused';
+}
+
+function currentTrackUsesPauseIcon() {
+	return !!currentTrackKey() && (pageState.queue?.playing || currentTrackState() === 'loading');
+}
+
+// Track rows are built once per list render and don't otherwise hear about
+// playback state changing elsewhere (a different tab's play button, the
+// docked bar's next/prev, repeat auto-advance, pause/resume). Called after
+// every music_now_playing broadcast to keep every currently-rendered row's
+// play/pause icon and highlight in sync without re-rendering whichever list
+// is on screen.
+function syncNowPlayingIndicators() {
+	const activeKey = currentTrackKey();
+	const pauseIcon = currentTrackUsesPauseIcon();
+	const badgeLabel = currentTrackBadgeLabel();
+	document.querySelectorAll('.rw-track-card[data-track-key]').forEach(card => {
+		const active = !!activeKey && card.dataset.trackKey === activeKey;
+		card.classList.toggle('now-playing', active);
+		const badge = card.querySelector('.rw-track-now-badge');
+		if (badge && active) badge.textContent = badgeLabel;
+		const button = card.querySelector('.rw-play-action');
+		if (!button) return;
+		button.innerHTML = iconMarkup(active && pauseIcon ? 'pause' : 'play');
+		const label = active
+			? (currentTrackState() === 'loading' ? 'Cancel loading' : (pageState.queue?.playing ? 'Pause' : 'Resume'))
+			: 'Play';
+		button.title = label;
+		button.setAttribute('aria-label', label);
+	});
+}
+
 function trackCard(track, actions) {
-	const card = el('div', 'rw-bubble rw-track-card');
+	const card = el('div', 'rw-bubble rw-track-card' + (isCurrentTrack(track) ? ' now-playing' : ''));
+	card.dataset.trackKey = trackKey(track);
 	const metaWrap = el('div', 'rw-track-meta');
+	const titleRow = el('div', 'rw-track-title-row');
 	const title = el('div', 'rw-track-title', track.title || '(untitled)');
+	// Visibility is driven entirely by the parent .now-playing class in CSS, so
+	// syncNowPlayingIndicators() only has to toggle that one class per card.
+	const nowPlayingBadge = el('span', 'rw-track-now-badge', isCurrentTrack(track) ? currentTrackBadgeLabel() : 'Now playing');
+	titleRow.append(title, nowPlayingBadge);
 	const sub = el('div', 'rw-track-sub');
 	const artist = artistName(track);
 	const album = albumInfo(track);
@@ -299,14 +378,16 @@ function trackCard(track, actions) {
 		if (sub.childNodes.length) sub.appendChild(document.createTextNode(' · '));
 		sub.appendChild(document.createTextNode(duration));
 	}
-	metaWrap.append(title, sub);
+	metaWrap.append(titleRow, sub);
 	const actWrap = el('div', 'rw-track-actions');
 	for (const a of actions) actWrap.appendChild(a);
 	card.append(thumbBox(track.thumbnail_url), metaWrap, actWrap);
 	return card;
 }
 
-function artistCard(artist) {
+// `extras` are trailing action nodes for callers that need more than open/follow
+// (Insights adds a remove); every other surface keeps the plain two-button card.
+function artistCard(artist, extras = []) {
 	const card = el('div', 'rw-bubble rw-track-card rw-artist-card');
 	const metaWrap = el('div', 'rw-track-meta');
 	metaWrap.append(
@@ -320,7 +401,7 @@ function artistCard(artist) {
 	const follow = btn(following ? 'Following' : 'Follow', 'rw-btn rw-btn-ghost rw-follow-btn' + (following ? ' on' : ''), () => toggleArtistFollow(artist));
 	follow.setAttribute('aria-label', (following ? 'Unfollow ' : 'Follow ') + (artist.name || 'artist'));
 	const actWrap = el('div', 'rw-track-actions');
-	actWrap.append(open, follow);
+	actWrap.append(open, follow, ...extras);
 	card.append(thumbBox(artist.thumbnail_url, 'A'), metaWrap, actWrap);
 	return card;
 }
@@ -342,10 +423,21 @@ function albumCard(album) {
 }
 
 function playAction(track, queue) {
-	return iconBtn('play', 'rw-icon-btn', () => {
+	const active = isCurrentTrack(track);
+	const pauseIcon = active && currentTrackUsesPauseIcon();
+	// rw-play-action is the hook syncNowPlayingIndicators() uses to update this
+	// icon in place when playback state changes elsewhere, without re-rendering
+	// the row it lives in.
+	return iconBtn(pauseIcon ? 'pause' : 'play', 'rw-icon-btn rw-play-action', () => {
+		// Re-check live state rather than closing over `active`: playback can
+		// start after this button was built (e.g. this row rendered before
+		// anything was playing, then became the active track), and the button's
+		// own icon/label already get updated in place by syncNowPlayingIndicators
+		// without this closure ever re-running.
+		if (isCurrentTrack(track) && currentTrackState() !== 'error') { window.RainetteMusic?.toggle?.(); return; }
 		if (queue) window.RainetteMusic?.playQueue(queue, queue.indexOf(track));
 		else window.RainetteMusic?.playTrack(track);
-	}, 'Play');
+	}, active ? (currentTrackState() === 'loading' ? 'Cancel loading' : (pageState.queue?.playing ? 'Pause' : 'Resume')) : 'Play');
 }
 
 function trackActions(track, queue, extras = []) {
@@ -353,6 +445,45 @@ function trackActions(track, queue, extras = []) {
 		playAction(track, queue),
 		iconBtn('more', 'rw-icon-btn', () => openTrackMenu(track, queue, extras), 'More actions'),
 	];
+}
+
+// Recents is grouped by track, so there is no single play to delete - forgetting
+// a track's plays is the only thing "remove this" can mean. That is also why the
+// same action is offered on Insights: both read the one play-history table, so a
+// removal has to drop out of both or they visibly disagree.
+function forgetPlaysAction(track, { label = 'Remove from Recents' } = {}) {
+	return {
+		label,
+		danger: true,
+		run: async () => {
+			const ok = await confirmDialog({
+				title: label,
+				message: `Forget every play of "${track.title || 'this track'}"? It disappears from Recents and Insights. This can't be undone.`,
+				confirmLabel: 'Remove',
+				danger: true,
+			});
+			if (ok) sendHelper({ type: 'music_recent_delete', scope: 'track', track_id: track.id });
+		},
+	};
+}
+
+// Top-artist rows aggregate plays, so removing one means forgetting every play by
+// that artist. artist_key is resolved server-side the same way the tally groups
+// them, so the row that disappears is exactly the row you clicked.
+function forgetArtistPlaysAction(artist) {
+	return {
+		label: 'Remove from Insights',
+		danger: true,
+		run: async () => {
+			const ok = await confirmDialog({
+				title: 'Remove from Insights',
+				message: `Forget every play by "${artist.name || 'this artist'}"? Their tracks disappear from Recents and Insights too. This can't be undone.`,
+				confirmLabel: 'Remove',
+				danger: true,
+			});
+			if (ok) sendHelper({ type: 'music_recent_delete', scope: 'artist', artist_key: artist.artist_key });
+		},
+	};
 }
 
 async function openTrackMenu(track, queue, extras = []) {
@@ -392,17 +523,43 @@ function updateShellChrome() {
 
 function runSearch() {
 	const q = pageState.query.trim();
-	const status = _host?.querySelector('#rwMusicSearchStatus');
+	clearTimeout(_searchTimeout);
 	if (!q) {
+		pageState.searchRequestId = '';
+		pageState.searchLoading = false;
+		pageState.searchStatus = '';
 		pageState.results = [];
 		pageState.resultArtists = [];
 		pageState.resultAlbums = [];
 		renderResults();
-		if (status) status.textContent = '';
+		renderSearchActivity();
 		return;
 	}
-	if (status) status.textContent = 'Searching...';
-	sendHelper({ type: 'music_catalog_search', id: 'mcat_' + Math.random().toString(36).slice(2), query: q });
+	const id = 'mcat_' + Math.random().toString(36).slice(2);
+	pageState.searchRequestId = id;
+	pageState.searchLoading = true;
+	pageState.searchStatus = '';
+	renderSearchActivity();
+	sendHelper({ type: 'music_catalog_search', id, query: q });
+	_searchTimeout = setTimeout(() => {
+		if (pageState.searchRequestId !== id) return;
+		pageState.searchRequestId = '';
+		pageState.searchLoading = false;
+		pageState.searchStatus = 'Search is taking longer than expected. Check the connection and try again.';
+		renderSearchActivity();
+	}, 30000);
+}
+
+function renderSearchActivity() {
+	const status = _host?.querySelector('#rwMusicSearchStatus');
+	const list = _host?.querySelector('#rwMusicResults');
+	if (!status) return;
+	status.replaceChildren();
+	status.hidden = !pageState.searchLoading && !pageState.searchStatus;
+	status.setAttribute('aria-busy', pageState.searchLoading ? 'true' : 'false');
+	list?.setAttribute('aria-busy', pageState.searchLoading ? 'true' : 'false');
+	if (pageState.searchLoading) status.appendChild(createRainetteLoader('Searching Rainette', { compact: true }));
+	else status.textContent = pageState.searchStatus;
 }
 
 function renderSearch() {
@@ -439,6 +596,7 @@ function renderSearch() {
 	body.appendChild(status);
 	const list = trackList('rwMusicResults');
 	body.appendChild(list);
+	renderSearchActivity();
 	renderResults();
 }
 
@@ -632,7 +790,7 @@ function renderArtistDetail() {
 	);
 	body.appendChild(head);
 	if (view.loading) {
-		body.appendChild(el('div', 'rw-status-line', 'Loading artist catalog...'));
+		body.appendChild(createRainetteLoader('Loading artist catalog'));
 		return;
 	}
 	if (view.msg) body.appendChild(el('div', 'rw-status-line', view.msg));
@@ -672,7 +830,7 @@ function renderAlbumDetail() {
 	);
 	body.appendChild(head);
 	if (view.loading) {
-		body.appendChild(el('div', 'rw-status-line', 'Loading album...'));
+		body.appendChild(createRainetteLoader('Loading album'));
 		return;
 	}
 	const tracks = view.tracks || [];
@@ -1468,11 +1626,25 @@ function renderRecent() {
 		button.addEventListener('click', () => { pageState.recentMode = id; renderRecent(); });
 		mode.appendChild(button);
 	}
+	// Only offer the clear-all once there is something to clear, so the toolbar
+	// stays quiet on an empty history.
+	const toolbarExtras = [mode];
+	if (pageState.recent.length) {
+		toolbarExtras.push(btn('Clear all', 'rw-btn rw-btn-ghost rw-clear-recents', async () => {
+			const ok = await confirmDialog({
+				title: 'Clear all recents',
+				message: 'Forget your entire play history? Recents and Insights both start over. This can\'t be undone.',
+				confirmLabel: 'Clear all',
+				danger: true,
+			});
+			if (ok) sendHelper({ type: 'music_recent_delete', scope: 'all' });
+		}));
+	}
 	body.appendChild(compactFilterToolbar('recent', 'Filter recent tracks', [
 		['recent', 'Recently played'],
 		['title', 'Title'],
 		['artist', 'Artist'],
-	], [mode]));
+	], toolbarExtras));
 	const list = trackList('rwMusicRecent');
 	const f = filterState('recent');
 	if (pageState.recentMode === 'artists') {
@@ -1503,7 +1675,7 @@ function renderRecent() {
 			lastGroup = group;
 			list.appendChild(section(group));
 		}
-		list.appendChild(trackCard(track, trackActions(track, tracks)));
+		list.appendChild(trackCard(track, trackActions(track, tracks, [forgetPlaysAction(track)])));
 	}
 	body.appendChild(list);
 }
@@ -1644,15 +1816,23 @@ function renderInsights() {
 		const list = el('div', 'rw-insights-ranked');
 		data.top_tracks.forEach((track, i) => {
 			const plays = insightCount(track.play_count);
-			const row = el('div', 'rw-bubble rw-track-card rw-insights-rank-row');
+			const row = el('div', 'rw-bubble rw-track-card rw-insights-rank-row' + (isCurrentTrack(track) ? ' now-playing' : ''));
+			row.dataset.trackKey = trackKey(track);
 			const rank = el('span', 'rw-insights-rank', String(i + 1));
 			const metaWrap = el('div', 'rw-track-meta');
-			metaWrap.append(
+			const titleRow = el('div', 'rw-track-title-row');
+			titleRow.append(
 				el('div', 'rw-track-title', track.title || '(untitled)'),
+				el('span', 'rw-track-now-badge', isCurrentTrack(track) ? currentTrackBadgeLabel() : 'Now playing'),
+			);
+			metaWrap.append(
+				titleRow,
 				el('div', 'rw-track-sub', [artistName(track), `${plays} play${plays === 1 ? '' : 's'}`].filter(Boolean).join(' · ')),
 			);
 			const actions = el('div', 'rw-track-actions');
-			actions.append(playAction(track, data.top_tracks), iconBtn('more', 'rw-icon-btn', () => openTrackMenu(track, data.top_tracks), 'More actions'));
+			actions.append(playAction(track, data.top_tracks), iconBtn('more', 'rw-icon-btn',
+				() => openTrackMenu(track, data.top_tracks, [forgetPlaysAction(track, { label: 'Remove from Insights' })]),
+				'More actions'));
 			row.append(rank, thumbBox(track.thumbnail_url), metaWrap, actions);
 			list.appendChild(row);
 		});
@@ -1664,7 +1844,10 @@ function renderInsights() {
 		const list = el('div', 'rw-track-list rw-insights-artists');
 		for (const artist of data.top_artists) {
 			const plays = insightCount(artist.play_count);
-			list.appendChild(artistCard({ ...artist, subscribers: `${plays} play${plays === 1 ? '' : 's'}` }));
+			const extras = artist.artist_key ? [iconBtn('trash', 'rw-icon-btn danger',
+				() => actionSheet({ title: artist.name || 'Artist', items: [forgetArtistPlaysAction(artist)] }),
+				'Remove from Insights')] : [];
+			list.appendChild(artistCard({ ...artist, subscribers: `${plays} play${plays === 1 ? '' : 's'}` }, extras));
 		}
 		scroll.appendChild(list);
 	}
@@ -1685,19 +1868,32 @@ function renderInsightsChart(daily) {
 	chart.setAttribute('aria-label', `Plays per day, ${total} total over ${series.length} days`);
 	const peakCount = Math.max(0, ...series.map(d => d.count));
 	const peakIndex = peakCount > 0 ? series.findIndex(d => d.count === peakCount) : -1;
+	// At a week's width every bar can carry its number without the labels
+	// colliding; longer ranges keep the peak-plus-hover reveal. Same density
+	// threshold the day ticks below use.
+	if (series.length && series.length <= 7) chart.classList.add('rw-insights-labelled');
 	series.forEach((d, i) => {
 		const col = el('div', 'rw-insights-col');
 		const count = d.count;
+		const plot = el('div', 'rw-insights-plot');
 		const bar = el('div', 'rw-insights-bar' + (count ? '' : ' zero'));
-		bar.style.height = count ? Math.max(6, Math.round(count / max * 100)) + '%' : '0%';
+		const heightPct = count ? Math.max(6, Math.round(count / max * 100)) : 0;
+		bar.style.height = heightPct + '%';
 		bar.style.setProperty('--rw-bar-i', String(i));
+		// The label has to stay a sibling of the bar so the bar's scaleY grow
+		// animation never transforms it, so it can't be positioned against the
+		// bar's own box. Both resolve this percentage against .rw-insights-plot,
+		// which is what keeps the label pinned just above the bar's top edge at
+		// every height instead of at a fixed offset that tall bars grow into.
+		plot.style.setProperty('--rw-bar-h', heightPct + '%');
 		const date = new Date(d.date + 'T00:00:00');
 		const validDate = Number.isFinite(date.getTime());
 		const nice = validDate ? date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : (d.date || 'Unknown day');
 		col.title = `${nice} — ${count} play${count === 1 ? '' : 's'}`;
 		col.setAttribute('aria-label', col.title);
-		col.appendChild(el('span', 'rw-insights-bar-label' + (i === peakIndex ? ' peak' : '') + (!count ? ' zero' : ''), String(count)));
-		col.appendChild(bar);
+		plot.appendChild(el('span', 'rw-insights-bar-label' + (i === peakIndex ? ' peak' : '') + (!count ? ' zero' : ''), String(count)));
+		plot.appendChild(bar);
+		col.appendChild(plot);
 		col.appendChild(el('span', 'rw-insights-day', validDate ? (series.length <= 7
 			? date.toLocaleDateString(undefined, { weekday: 'narrow' })
 			: (date.getDate() === 1 || date.getDay() === 1 ? String(date.getDate()) : '')) : ''));
@@ -2059,7 +2255,9 @@ function renderNowPlayingView() {
 	const prevBtn = iconBtn('prev', 'rw-now-view-btn', () => window.RainetteMusic?.prev?.(), 'Previous');
 	const playBtn = iconBtn(q.playing ? 'pause' : 'play', 'rw-now-view-btn rw-now-view-play', () => window.RainetteMusic?.toggle?.(), 'Play or pause');
 	const nextBtn = iconBtn('next', 'rw-now-view-btn', () => window.RainetteMusic?.next?.(), 'Next');
-	const loopBtn = iconBtn('loop', 'rw-now-view-btn' + (q.loop ? ' on' : ''), () => window.RainetteMusic?.toggleLoop?.(), 'Toggle loop');
+	const repeat = q.repeat || (q.loop ? 'all' : 'off');
+	const loopBtn = iconBtn(repeat === 'one' ? 'loopOne' : 'loop', 'rw-now-view-btn' + (repeat !== 'off' ? ' on' : ''),
+		() => window.RainetteMusic?.toggleLoop?.(), REPEAT_LABEL[repeat]);
 	transport.append(shuffleBtn, prevBtn, playBtn, nextBtn, loopBtn);
 	main.appendChild(transport);
 
@@ -2430,6 +2628,127 @@ function wireSeekBar(seekEl) {
 
 let _dockedBarBuilt = false;
 let _dockedBarShown = false;
+
+async function pairedPhoneState() {
+	const api = window.pywebview?.api;
+	if (!api?.companion_management_state) return { available: false, devices: [] };
+	try {
+		const result = await Promise.resolve(api.companion_management_state());
+		const devices = Array.isArray(result?.devices) ? result.devices.filter(device => !device?.revoked) : [];
+		return { available: true, devices };
+	} catch {
+		return { available: true, devices: [] };
+	}
+}
+
+function requestOutputTransfer(payload, timeoutMs = 35000) {
+	const id = payload.id || ('output_' + Math.random().toString(36).slice(2));
+	return new Promise(resolve => {
+		let settled = false;
+		const finish = result => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			document.removeEventListener('rainette:helper-message', onMessage);
+			resolve(result);
+		};
+		const onMessage = event => {
+			const message = event.detail || {};
+			// The bridge broadcasts the request itself with the same id. Only the
+			// target's explicit result is an acknowledgement that permits us to
+			// pause this desktop; everything else is deliberately ignored.
+			if (message.type !== 'music_output_transfer_result' || String(message.id || '') !== id) return;
+			if (message.target_device_id && message.target_device_id !== payload.target_device_id) return;
+			finish(message);
+		};
+		const timer = setTimeout(() => finish({ ok: false, msg: 'The phone did not accept playback in time.' }), timeoutMs);
+		document.addEventListener('rainette:helper-message', onMessage);
+		sendHelper({ type: 'music_output_transfer', ...payload, id });
+	});
+}
+
+function renderDockedOutputControl(bar = _host?.querySelector('#rwDockedBar')) {
+	const button = bar?.querySelector('.rw-now-output');
+	if (!button) return;
+	const output = pageState.output;
+	button.disabled = !!output.transferPending;
+	button.classList.toggle('on-phone', output.device === 'phone');
+	const current = output.device === 'phone' ? 'This phone' : 'This desktop';
+	button.setAttribute('aria-label', output.transferPending ? 'Play on, connecting to phone' : `Play on, currently ${current}`);
+	button.title = output.status || `Play on - currently ${current}`;
+	const label = button.querySelector('.rw-now-output-label');
+	if (label) label.textContent = output.transferPending ? 'Connecting' : 'Play on';
+	const live = bar?.querySelector('.rw-now-output-status');
+	if (live && live.textContent !== output.status) live.textContent = output.status;
+}
+
+async function transferPlaybackToPhone(phone) {
+	if (pageState.output.transferPending) return;
+	const queue = pageState.queue || {};
+	const tracks = Array.isArray(queue.tracks) ? queue.tracks : [];
+	const index = Math.max(0, Math.min(Number(queue.index) || 0, tracks.length - 1));
+	if (!tracks[index]) {
+		await infoDialog({ title: 'Nothing is playing', message: 'Start a song before moving playback to your phone.' });
+		return;
+	}
+	const phoneName = phone?.name || 'This phone';
+	const wasPlaying = !!queue.playing;
+	pageState.output.transferPending = true;
+	pageState.output.status = `Connecting to ${phoneName}...`;
+	renderDockedOutputControl();
+	try {
+		const result = await requestOutputTransfer({
+			source_device_id: 'desktop',
+			target_device_id: 'phone',
+			queue: tracks,
+			index,
+			current_time: Math.max(0, Number(pageState.progress.current_time) || 0),
+			playing: wasPlaying,
+			// The desktop does own a repeat setting, so a handoff carries it (unlike
+			// the phone->desktop direction, which has none to assert).
+			repeat: queue.repeat || (queue.loop ? 'all' : 'off'),
+			loop: loopFlagFor(queue.repeat || (queue.loop ? 'all' : 'off')),
+		});
+		if (!result?.ok) throw new Error(result?.msg || 'The phone could not load this track.');
+		// Single-output handoff: leave the desktop untouched until the phone's
+		// positive load acknowledgement above, then issue an idempotent pause.
+		if (wasPlaying) sendHelper({ type: 'music_remote_control', action: 'pause', reason: 'output_transfer' });
+		pageState.output.device = 'phone';
+		pageState.output.status = `Playing on ${phoneName}.`;
+	} catch (error) {
+		pageState.output.device = 'desktop';
+		pageState.output.status = 'Transfer failed. Playback stayed on this desktop.';
+		await infoDialog({ title: 'Could not play on phone', message: error?.message || 'The phone did not accept playback.' });
+	} finally {
+		pageState.output.transferPending = false;
+		renderDockedOutputControl();
+	}
+}
+
+async function openOutputPicker() {
+	if (pageState.output.transferPending) return;
+	const paired = await pairedPhoneState();
+	const phone = paired.devices[0] || null;
+	await actionSheet({
+		title: 'Play on',
+		items: [
+			{
+				id: 'desktop',
+				label: 'This desktop',
+				hint: pageState.output.device === 'desktop' ? 'Playing here' : 'Available from your phone',
+			},
+			{
+				id: 'phone',
+				label: 'This phone',
+				hint: phone ? (phone.name || 'Paired and available') : (paired.available ? 'No paired phone' : 'Pair from the Mobile page'),
+				run: phone
+					? () => { transferPlaybackToPhone(phone).catch(() => {}); }
+					: () => { pageState.tab = 'mobile'; pageState.view = null; applyTab(); },
+			},
+		],
+	});
+}
+
 function ensureDockedBar() {
 	const bar = _host?.querySelector('#rwDockedBar');
 	if (!bar || _dockedBarBuilt) return bar;
@@ -2455,9 +2774,16 @@ function ensureDockedBar() {
 				<button class="rw-now-btn" data-act="prev" title="Previous" aria-label="Previous">${iconMarkup('prev', 16)}</button>
 				<button class="rw-now-btn rw-now-play" data-act="toggle" title="Play/Pause" aria-label="Play or pause">${iconMarkup('play', 16)}</button>
 				<button class="rw-now-btn" data-act="next" title="Next" aria-label="Next">${iconMarkup('next', 16)}</button>
-				<button class="rw-now-btn rw-now-loop" data-act="loop" title="Loop" aria-label="Toggle loop">${iconMarkup('loop', 16)}</button>
+				<button class="rw-now-btn rw-now-loop" data-act="loop" title="${REPEAT_LABEL.off}" aria-label="${REPEAT_LABEL.off}">${iconMarkup('loop', 16)}</button>
 			</div>
-			<div class="rw-now-bar-extra">${popoutBtn}</div>
+			<div class="rw-now-bar-extra">
+				<button class="rw-now-output" data-act="output" type="button" aria-haspopup="dialog" aria-label="Play on, currently This desktop">
+					<span class="rw-now-output-dot" aria-hidden="true"></span>
+					<span class="rw-now-output-label">Play on</span>
+				</button>
+				<span class="rw-now-output-status" role="status" aria-live="polite"></span>
+				${popoutBtn}
+			</div>
 		</div>`;
 	// Delegated on the whole row so it catches both the transport controls and
 	// the (separately-grouped) pop-out button. The meta button has no data-act,
@@ -2470,6 +2796,7 @@ function ensureDockedBar() {
 		else if (act === 'next') window.RainetteMusic?.next?.();
 		else if (act === 'prev') window.RainetteMusic?.prev?.();
 		else if (act === 'loop') window.RainetteMusic?.toggleLoop?.();
+		else if (act === 'output') { openOutputPicker().catch(() => {}); }
 		else if (act === 'popout') { try { window.pywebview?.api?.reveal_player?.(); } catch { /* not in pywebview */ } }
 	});
 	const volume = document.createElement('input');
@@ -2488,6 +2815,7 @@ function ensureDockedBar() {
 	bar.querySelector('.rw-now-bar-extra')?.prepend(iconSpan('volume', 'rw-now-volume-icon'), volume);
 	bar.querySelector('.rw-now-bar-meta').addEventListener('click', openNowPlayingView);
 	wireSeekBar(bar.querySelector('.rw-now-seek'));
+	renderDockedOutputControl(bar);
 	return bar;
 }
 
@@ -2537,12 +2865,20 @@ function renderDockedBar() {
 	bar.querySelector('.rw-now-title').textContent = track.title || '(untitled)';
 	bar.querySelector('.rw-now-artist').textContent = artistName(track) || '';
 	bar.querySelector('.rw-now-play').innerHTML = iconMarkup(q.playing ? 'pause' : 'play', 16);
-	bar.querySelector('.rw-now-loop')?.classList.toggle('on', !!q.loop);
+	const loopBtn = bar.querySelector('.rw-now-loop');
+	if (loopBtn) {
+		const repeat = q.repeat || (q.loop ? 'all' : 'off');
+		loopBtn.classList.toggle('on', repeat !== 'off');
+		loopBtn.innerHTML = iconMarkup(repeat === 'one' ? 'loopOne' : 'loop', 16);
+		loopBtn.title = REPEAT_LABEL[repeat];
+		loopBtn.setAttribute('aria-label', REPEAT_LABEL[repeat]);
+	}
 	const volume = bar.querySelector('.rw-now-volume');
 	if (volume && document.activeElement !== volume) {
 		volume.value = String(Math.round((window.RainetteMusic?.getVolume?.() ?? 1) * 100));
 		volume.setAttribute('aria-valuetext', volume.value + '%');
 	}
+	renderDockedOutputControl(bar);
 	updateProgressUi();
 }
 
@@ -2627,7 +2963,7 @@ function applyTab() {
 	else if (pageState.tab === 'insights') { renderInsights(); fetchInsights(); }
 	else if (pageState.tab === 'queue') { window.RainetteMusic?.requestQueueState?.(); renderQueue(); }
 	else if (pageState.tab === 'mobile') renderMobile(_host?.querySelector('#rwMusicBody'));
-	else if (pageState.tab === 'settings') renderSettings(_host);
+	else if (pageState.tab === 'settings') renderSettings(_host, updateController);
 	animatePageEnter();
 }
 
@@ -2657,16 +2993,22 @@ function onHelperMessage(msg) {
 	if (!_mounted || !msg) return;
 	switch (msg.type) {
 		case 'music_catalog_search_result': {
+			if (!pageState.searchRequestId || msg.id !== pageState.searchRequestId) break;
+			clearTimeout(_searchTimeout);
+			pageState.searchRequestId = '';
+			pageState.searchLoading = false;
 			if (msg.ok) {
 				pageState.results = msg.songs || [];
 				pageState.resultArtists = msg.artists || [];
 				pageState.resultAlbums = msg.albums || [];
+			} else {
+				pageState.results = [];
+				pageState.resultArtists = [];
+				pageState.resultAlbums = [];
 			}
-			const status = _host?.querySelector('#rwMusicSearchStatus');
-			if (status) {
-				const total = pageState.results.length + pageState.resultArtists.length + pageState.resultAlbums.length;
-				status.textContent = msg.ok ? (total + ' results' + (msg.msg ? ' - ' + msg.msg : '')) : ('Search failed: ' + (msg.msg || ''));
-			}
+			const total = pageState.results.length + pageState.resultArtists.length + pageState.resultAlbums.length;
+			pageState.searchStatus = msg.ok ? (total + ' results' + (msg.msg ? ' - ' + msg.msg : '')) : ('Search failed: ' + (msg.msg || 'Please try again.'));
+			renderSearchActivity();
 			if (pageState.tab === 'search' && !pageState.view) renderResults();
 			break;
 		}
@@ -2712,6 +3054,29 @@ function onHelperMessage(msg) {
 			if (pageState.tab === 'home' && !pageState.view) renderHome();
 			if (pageState.tab === 'search' && !pageState.view && !pageState.query.trim()) renderResults();
 			break;
+		case 'music_recent_deleted':
+			// The reply carries the refreshed Recents; Insights is a separate
+			// server-side aggregation, so re-fetch it if that tab is open.
+			if (Array.isArray(msg.tracks)) pageState.recent = msg.tracks;
+			if (!msg.ok) infoDialog({ title: 'Could not remove', message: msg.msg || 'That change did not go through.' });
+			if (pageState.tab === 'recent' && !pageState.view) renderRecent();
+			if (pageState.tab === 'home' && !pageState.view) renderHome();
+			if (pageState.tab === 'insights' && !pageState.view) fetchInsights();
+			break;
+		case 'music_data_cleared':
+			if (msg.ok) {
+				if (Array.isArray(msg.tracks)) pageState.recent = msg.tracks;
+				if (Array.isArray(msg.playlists)) pageState.playlists = msg.playlists;
+				if (Array.isArray(msg.folders)) pageState.folders = msg.folders;
+				if (Array.isArray(msg.followed_artists)) pageState.library.followed_artists = msg.followed_artists;
+			} else {
+				infoDialog({ title: 'Could not clear data', message: msg.msg || 'Nothing was changed.' });
+			}
+			// A clear can touch every surface, so refresh Insights and re-render
+			// whatever tab is currently open.
+			fetchInsights();
+			applyTab();
+			break;
 		case 'music_top_artists_result':
 			if (msg.ok) pageState.topArtists = msg.artists || [];
 			if (pageState.tab === 'home' && !pageState.view) renderHome();
@@ -2742,11 +3107,16 @@ function onHelperMessage(msg) {
 				}
 			}
 			if (Array.isArray(msg.queue)) {
+				// An absent repeat field means "the producer has no opinion", not
+				// "off" - keep what we already show rather than resetting the button.
+				const repeat = repeatFromMessage(msg, pageState.queue?.repeat || 'off');
 				pageState.queue = {
 					tracks: msg.queue,
 					index: Number.isFinite(Number(msg.index)) ? Number(msg.index) : -1,
 					playing: !!msg.playing,
-					loop: !!msg.loop,
+					state: msg.state || (msg.playing ? 'playing' : 'paused'),
+					repeat,
+					loop: loopFlagFor(repeat),
 					duration: Number(msg.queue_duration || 0),
 					count: Number(msg.queue_count || msg.queue.length || 0),
 				};
@@ -2790,6 +3160,11 @@ function onHelperMessage(msg) {
 				else if (msg.playing || msg.state === 'playing' || msg.state === 'loading' || Number(msg.current_time) > 0) pageState.playbackStarted = true;
 			}
 			renderDockedBar();
+			// Keep every currently-rendered track row's play/pause icon and
+			// "now playing" highlight in sync - this fires on every track change,
+			// pause/resume, and repeat auto-advance, regardless of which tab sent
+			// the original play command.
+			syncNowPlayingIndicators();
 			if (pageState.nowPlayingOpen) {
 				// Track changed while the view is open + lyrics showing → refetch.
 				const cur = currentQueueTrack();
@@ -2810,11 +3185,26 @@ function onHelperMessage(msg) {
 				playing: !!msg.playing,
 				source_id: msg.source_id || pageState.progress.source_id,
 			};
+			// A progress tick may be the first transport state received after
+			// either window reconnects. Recover the queue and row presentation
+			// from it so a live track cannot still look idle and be restarted.
+			const recoveredPlaying = !!msg.playing;
+			const transportChanged = !!cur && pageState.queue.playing !== recoveredPlaying;
+			if (cur) {
+				pageState.queue.playing = recoveredPlaying;
+				if (recoveredPlaying) pageState.queue.state = 'playing';
+				else if (pageState.queue.state === 'playing') pageState.queue.state = 'paused';
+			}
 			// Safety net: if a progress tick shows real playback but the bar
 			// isn't up yet (e.g. a now_playing broadcast was missed), reveal it.
 			if ((msg.playing || Number(msg.current_time) > 0) && cur && !pageState.playbackStarted) {
 				pageState.playbackStarted = true;
 				renderDockedBar();
+			}
+			if (transportChanged) {
+				renderDockedBar();
+				syncNowPlayingIndicators();
+				if (pageState.nowPlayingOpen) renderNowPlayingView();
 			}
 			updateProgressUi();
 			break;
@@ -2925,6 +3315,10 @@ function buildPage(host) {
 						<div class="rw-music-brand-sub">Quiet listening</div>
 					</div>
 				</div>
+				<button id="rwUpdateBadge" class="rw-update-badge" type="button" hidden>
+					<span class="rw-update-dot" aria-hidden="true"></span>
+					<span class="rw-update-label">Update available</span>
+				</button>
 				<nav class="rw-music-nav" id="rwMusicTabs">${tabs}</nav>
 				<div class="rw-pinned-playlists" id="rwPinnedPlaylists"></div>
 				<div class="rw-music-sidebar-foot">
@@ -2985,11 +3379,167 @@ function buildPage(host) {
 	renderPinnedPlaylists();
 }
 
+// ── In-app updater badge ────────────────────────────────────────────────────
+// Desktop-only: the badge sits by the sidebar logo and only appears once GitHub
+// reports a newer release. There is no updater in browser/Edge-fallback mode
+// (no window.pywebview), so the badge simply never shows there.
+
+function updateBadgeEl() { return _host?.querySelector('#rwUpdateBadge'); }
+
+function updateSnapshot() {
+	return {
+		..._updateState,
+		nativeAvailable: !!window.pywebview?.api?.check_for_updates,
+	};
+}
+
+function setUpdateBadge(state = updateSnapshot()) {
+	const badge = updateBadgeEl();
+	if (!badge) return;
+	const status = state.result || {};
+	const eligible = status.status === 'update' && /^[0-9a-f]{64}$/i.test(state.candidateId || '');
+	if (eligible) {
+		badge.dataset.latest = status.latest || '';
+		badge.querySelector('.rw-update-label').textContent = state.phase === 'installing'
+			? 'Installing...'
+			: (status.latest ? `Update to ${status.latest}` : 'Update available');
+		badge.hidden = false;
+		badge.classList.toggle('busy', state.phase === 'installing');
+		badge.disabled = state.phase === 'installing';
+	} else {
+		badge.hidden = true;
+		badge.classList.remove('busy');
+		badge.disabled = false;
+		delete badge.dataset.latest;
+	}
+}
+
+function publishUpdateState(next) {
+	_updateState = { ..._updateState, ...next };
+	const state = updateSnapshot();
+	setUpdateBadge(state);
+	syncUpdateSettings(_host, state);
+}
+
+async function checkForAppUpdate({ manual = false } = {}) {
+	if (_updateInstallPromise || _updateState.phase === 'installing') return { status: 'busy' };
+	if (_updateCheckPromise) return _updateCheckPromise;
+	const api = window.pywebview?.api;
+	if (!api?.check_for_updates) {
+		if (manual) publishUpdateState({ phase: 'unsupported', result: null, candidateId: '', message: 'Update checks are available in the installed Windows app.' });
+		return { status: 'unavailable' };
+	}
+	_updateCheckPromise = (async () => {
+		publishUpdateState({ phase: 'checking', result: null, candidateId: '', message: '' });
+		let result;
+		try { result = await api.check_for_updates(); }
+		catch { result = { status: 'check_failed' }; }
+		if (result?.status === 'update') {
+			const candidateId = String(result.candidate_id || '');
+			if (/^[0-9a-f]{64}$/i.test(candidateId)) {
+				publishUpdateState({ phase: 'ready', result, candidateId, message: '' });
+				return result;
+			}
+			result = { status: 'check_failed' };
+		}
+		const phase = result?.status === 'current'
+			? 'current'
+			: (result?.status === 'unavailable' ? 'unsupported' : 'error');
+		publishUpdateState({
+			phase,
+			result: result || { status: 'check_failed' },
+			candidateId: '',
+			message: result?.msg || '',
+		});
+		return result;
+	})().finally(() => { _updateCheckPromise = null; });
+	return _updateCheckPromise;
+}
+
+async function installAppUpdate() {
+	if (_updateInstallPromise) return _updateInstallPromise;
+	const api = window.pywebview?.api;
+	if (!api?.apply_update) {
+		publishUpdateState({ phase: 'unsupported', candidateId: '', message: 'Updates can only be installed from the Windows desktop app.' });
+		return { status: 'unsupported' };
+	}
+	let state = updateSnapshot();
+	if (!(state.result?.status === 'update' && /^[0-9a-f]{64}$/i.test(state.candidateId || ''))) {
+		await checkForAppUpdate({ manual: true });
+		state = updateSnapshot();
+		if (!(state.result?.status === 'update' && state.candidateId)) return state.result || { status: 'no_update' };
+	}
+	_updateInstallPromise = performInstallAppUpdate(api, state).finally(() => { _updateInstallPromise = null; });
+	return _updateInstallPromise;
+}
+
+async function performInstallAppUpdate(api, state) {
+	const latest = state.result.latest || '';
+	const ok = await confirmDialog({
+		title: 'Update Rainette Music',
+		message: `Download and install ${latest ? 'version ' + latest : 'the latest release'}? Rainette will restart to finish.`,
+		confirmLabel: 'Update now',
+	});
+	if (!ok) return { status: 'cancelled' };
+	const candidateId = state.candidateId;
+	publishUpdateState({ phase: 'installing', message: '' });
+	let result;
+	try { result = await api.apply_update(candidateId); }
+	catch { result = { status: 'failed', msg: 'Rainette could not verify or start the update. Please try again.' }; }
+	if (result?.status === 'installing') {
+		publishUpdateState({ phase: 'installing', message: '' });
+		return result;
+	}
+	const stale = result?.status === 'stale' || result?.status === 'no_update';
+	if (stale) {
+		publishUpdateState({ phase: 'stale', result, candidateId: '', message: result?.msg || 'Check again before installing.' });
+	} else if (result?.status === 'unsupported') {
+		publishUpdateState({ phase: 'unsupported', result, candidateId: '', message: result?.msg || 'Updates apply to the installed app.' });
+	} else {
+		publishUpdateState({ phase: 'error', candidateId, message: result?.msg || 'Could not install the update. Please try again.' });
+	}
+	await infoDialog({
+		title: stale ? 'Update changed' : 'Update failed',
+		message: result?.msg || (stale ? 'Check for updates again before installing.' : 'Could not install the update. Please try again later.'),
+	});
+	return result;
+}
+
+const updateController = {
+	snapshot: updateSnapshot,
+	check: checkForAppUpdate,
+	install: installAppUpdate,
+};
+
+function onUpdateBadgeClick() { return installAppUpdate(); }
+
+function bindUpdater(host) {
+	if (_updateBound || typeof window === 'undefined') return;
+	_updateBound = true;
+	// Bind unconditionally, matching the pattern used everywhere else pywebview
+	// readiness is uncertain (see miniplayer.js's nativeApi()): the click handler
+	// and checkForAppUpdate() each check window.pywebview?.api lazily at call
+	// time, so this is inert in browser/Edge-fallback mode. Gating the bind
+	// itself on window.pywebview being truthy at mount time meant the listener
+	// was silently never attached whenever pywebview injected even slightly
+	// late - "clicking Update does nothing" with no error, since there was
+	// nothing listening.
+	host.querySelector('#rwUpdateBadge')?.addEventListener('click', onUpdateBadgeClick);
+	// window.pywebview.api is injected asynchronously; check now in case it's
+	// already ready, and also listen for the ready event in case it isn't yet -
+	// covers both orderings. Then poll on a slow cadence so a long-running app
+	// still notices a release.
+	const start = () => { checkForAppUpdate(); setInterval(checkForAppUpdate, UPDATE_CHECK_INTERVAL_MS); };
+	if (window.pywebview?.api) start();
+	else window.addEventListener('pywebviewready', start, { once: true });
+}
+
 export const MusicPage = {
 	mount(host) {
 		_host = host;
 		if (!host.dataset.built) { buildPage(host); host.dataset.built = '1'; }
 		_mounted = true;
+		bindUpdater(host);
 		if (!_listenerBound) {
 			_listenerBound = true;
 			document.addEventListener('rainette:helper-message', e => onHelperMessage(e.detail));
@@ -3004,6 +3554,7 @@ export const MusicPage = {
 		if (QUEUE_SUPPORTED) {
 			pageState.queue = app.musicQueue || pageState.queue;
 			renderDockedBar();   // reflect any already-playing track immediately
+			syncNowPlayingIndicators();   // …and any track rows already in the DOM from a prior mount
 			window.RainetteMusic?.requestQueueState?.();
 		}
 		applyTab();

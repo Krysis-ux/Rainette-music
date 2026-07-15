@@ -1,14 +1,14 @@
 /**
  * Standalone shell for the Rainette Music app.
  *
- * Replaces the pieces of Rainette's rainette_home.js + rainette_router_shell.js
- * that the two copied music modules import: the helper WebSocket transport
+ * Provides the page-shell features that the music modules import: the helper WebSocket transport
  * (sendHelper / helperRequest), the DOM utilities (el / btn), the shared `app`
  * state bag, and a minimal RainetteRouter that mounts the music page.
  *
- * The WebSocket contract is identical to the Rainette helper, so the copied
- * modules work unchanged apart from their import paths.
+ * The WebSocket contract keeps the music modules connected to the native app.
  */
+
+import { loopFlagFor, repeatFromMessage } from './repeat_mode.js';
 
 // ── App state (only what the music modules touch) ────────────────────────────
 
@@ -18,7 +18,7 @@ export const app = {
 	helperPending: new Map(),   // reserved for parity; unused by music modules
 	memPending: new Map(),      // id → resolve() for helperRequest round-trips
 	musicNowPlaying: null,
-	musicQueue: { tracks: [], index: -1, playing: false, loop: false, duration: 0 },
+	musicQueue: { tracks: [], index: -1, playing: false, state: 'idle', loop: false, duration: 0 },
 };
 
 const RAINETTE_TOKEN = new URLSearchParams(location.search).get('token') || '';
@@ -51,6 +51,11 @@ export function ensureHelperWS() {
 	ws.addEventListener('open', () => {
 		const queue = app.helperQueue.splice(0);
 		for (const json of queue) ws.send(json);
+		// Both WebViews use this as their reconnect handshake.  The server is a
+		// live fan-out relay (not a durable command queue), so anything broadcast
+		// while one window was offline must be recovered from the other window's
+		// authoritative state after every successful socket open.
+		document.dispatchEvent(new CustomEvent('rainette:helper-open'));
 	});
 	ws.addEventListener('close', () => {
 		app.helperWS = null;
@@ -153,14 +158,28 @@ function _mountWhenReady(page) {
 
 if (typeof window !== 'undefined' && window.RW_REMOTE) {
 	let _lastPlay = null;
-	const _showPlayer = () => { try { window.pywebview && window.pywebview.api && window.pywebview.api.reveal_player(); } catch { /* not in pywebview */ } };
+	const _restoreState = (state, playing = false) => {
+		if (state === 'playing' || state === 'paused' || state === 'loading') return state;
+		return playing ? 'playing' : 'paused';
+	};
+	// Automatic pop-out is deliberately opt-in. Read the preference at action
+	// time so changing Settings takes effect immediately without reloading either
+	// native window. The docked player remains the normal playback surface.
+	const _miniPlayerAutoOpenEnabled = () => {
+		try { return localStorage.getItem('rainette.miniplayerEnabled') === '1'; }
+		catch { return false; }
+	};
+	const _showPlayerIfEnabled = () => {
+		if (!_miniPlayerAutoOpenEnabled()) return;
+		try { window.pywebview?.api?.reveal_player?.(); } catch { /* not in pywebview */ }
+	};
 	const _queueControl = payload => sendHelper({ type: 'music_remote_control', ...payload });
 
 	window.RainetteMusic = {
 		playQueue(tracks, startIndex = 0) {
-			_lastPlay = { tracks: tracks || [], index: startIndex };
+			_lastPlay = { tracks: tracks || [], index: startIndex, restoreState: 'loading' };
 			sendHelper({ type: 'music_remote_play', tracks: _lastPlay.tracks, index: startIndex });
-			_showPlayer();   // reveal the (hidden-until-play) player window
+			_showPlayerIfEnabled();
 		},
 		playTrack(track) { this.playQueue([track], 0); },
 		toggle() { sendHelper({ type: 'music_remote_control', action: 'toggle' }); },
@@ -168,6 +187,8 @@ if (typeof window !== 'undefined' && window.RW_REMOTE) {
 		prev() { sendHelper({ type: 'music_remote_control', action: 'prev' }); },
 		toggleLoop() { sendHelper({ type: 'music_remote_control', action: 'loop' }); },
 		isLooping() { return !!app.musicQueue?.loop; },
+		repeatMode() { return app.musicQueue?.repeat || 'off'; },
+		setRepeat(mode) { sendHelper({ type: 'music_remote_control', action: 'set_repeat', mode }); },
 		seek(ratio) { _queueControl({ action: 'seek', ratio }); },
 		// Volume lives in the floating player window; the shared localStorage
 		// key (same origin) keeps the two windows' idea of it in sync, and the
@@ -189,7 +210,7 @@ if (typeof window !== 'undefined' && window.RW_REMOTE) {
 		queueAddEnd(track) { _queueControl({ action: 'queue_add_end', track }); },
 		queueMove(from, to) { _queueControl({ action: 'queue_move', from, to }); },
 		queueRemove(index) { _queueControl({ action: 'queue_remove', index }); },
-		queuePlayIndex(index) { _queueControl({ action: 'queue_play_index', index }); },
+		queuePlayIndex(index) { _queueControl({ action: 'queue_play_index', index }); _showPlayerIfEnabled(); },
 		queueShuffle() { _queueControl({ action: 'queue_shuffle' }); },
 		queueDedupe() { _queueControl({ action: 'queue_dedupe' }); },
 		queueClearUpNext() { _queueControl({ action: 'queue_clear_up_next' }); },
@@ -202,37 +223,60 @@ if (typeof window !== 'undefined' && window.RW_REMOTE) {
 		if (msg.type === 'music_now_playing') {
 			if (msg.track) app.musicNowPlaying = msg.track;
 			if (Array.isArray(msg.queue)) {
+				const incomingState = msg.state || (msg.playing ? 'playing' : 'paused');
+				// On a cold player reload, the main window's reconnect probe can
+				// arrive before the player's own music_request_state. The empty
+				// player then answers `idle`; that is not an authoritative queue
+				// clear and must not erase the cached paused/loading intent that the
+				// player is about to request. Real queue clears broadcast `paused`.
+				if (!msg.queue.length && incomingState === 'idle' && _lastPlay?.tracks?.length) return;
+				// Keep the current repeat mode when a producer says nothing about it
+				// (the phone has no repeat control); an absent field must not read
+				// as "off" and silently reset the button mid-session.
+				const repeat = repeatFromMessage(msg, app.musicQueue?.repeat || 'off');
 				app.musicQueue = {
 					tracks: msg.queue,
 					index: Number.isFinite(Number(msg.index)) ? Number(msg.index) : -1,
 					playing: !!msg.playing,
-					loop: !!msg.loop,
+					state: incomingState,
+					repeat,
+					loop: loopFlagFor(repeat),
 					duration: Number(msg.queue_duration || 0),
 					count: Number(msg.queue_count || msg.queue.length || 0),
 				};
-				if (app.musicQueue.tracks.length) _lastPlay = { tracks: app.musicQueue.tracks, index: app.musicQueue.index };
+				if (app.musicQueue.tracks.length) {
+					_lastPlay = {
+						tracks: app.musicQueue.tracks,
+						index: app.musicQueue.index,
+						restoreState: _restoreState(incomingState, msg.playing),
+					};
+				} else {
+					_lastPlay = null;
+					app.musicNowPlaying = null;
+				}
 				document.dispatchEvent(new CustomEvent('rainette:music-queue', { detail: app.musicQueue }));
 			}
 		}
 		// The player window (re)connected and asked for the current queue.
 		else if (msg.type === 'music_request_state' && _lastPlay) {
-			sendHelper({ type: 'music_remote_play', tracks: _lastPlay.tracks, index: _lastPlay.index });
-		}
-		else if (msg.type === 'music_output_transfer' && msg.target_device_id === 'desktop') {
-			const tracks = Array.isArray(msg.queue) ? msg.queue : [];
-			if (!tracks.length) {
-				sendHelper({ type: 'music_output_transfer_result', id: msg.id, ok: false, msg: 'Transfer queue is empty' });
-				return;
-			}
-			// playQueue hands the queue to the desktop-owned player. The source
-			// phone receives the success response only after this target accepted
-			// it, so it can then pause without a playback gap on failed transfers.
-			window.RainetteMusic?.playQueue(tracks, Math.max(0, Number(msg.index) || 0));
+			// Mark this as a state restore so the player can distinguish it from a
+			// fresh user play. In particular, `playing:false` alone cannot tell a
+			// paused transport from one that was actively resolving a stream.
+			const restoreState = _lastPlay.restoreState || 'paused';
 			sendHelper({
-				type: 'music_output_transfer_result', id: msg.id, ok: true,
-				target_device_id: 'desktop', current_time: Number(msg.current_time || 0),
+				type: 'music_remote_play',
+				tracks: _lastPlay.tracks,
+				index: _lastPlay.index,
+				restore_state: restoreState,
+				playing: restoreState === 'playing',
 			});
 		}
+	});
+
+	// If the main WebView itself reconnects, ask the player for the transport
+	// state it may have continued advancing while this socket was unavailable.
+	document.addEventListener('rainette:helper-open', () => {
+		_queueControl({ action: 'queue_request_state' });
 	});
 }
 

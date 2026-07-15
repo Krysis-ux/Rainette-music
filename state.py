@@ -1,8 +1,7 @@
 """SQLite-backed music state: playlists, tracks, and play history.
 
-A trimmed, standalone extraction of the music slice of Rainette's ``RainetteState``.
-The method signatures and SQL are identical to Rainette so ``music_bridge`` works
-against it unchanged.
+A compact standalone SQLite state layer for Rainette Music. Its methods and SQL
+support the music bridge directly.
 """
 
 from __future__ import annotations
@@ -181,6 +180,22 @@ class MusicState:
         item["metadata"] = loads_object(item.pop("metadata_json", "{}"))
         item.pop("_last", None)   # internal ordering column, never exposed
         return item
+
+    @staticmethod
+    def _track_artist_key(track: dict[str, Any]) -> str:
+        """Artist identity of a track: artist_id when present, else lowercased name.
+
+        Matches music_library_index so the Artists tab, top artists, and
+        artist-scoped deletes all agree on what counts as one artist. artist_id
+        lives inside metadata_json, so this cannot be expressed in SQL.
+
+        Distinct from _artist_key(), which builds the "id:"/"name:" primary key of
+        the followed-artists table - a different key space, not interchangeable.
+        """
+        metadata = track.get("metadata") if isinstance(track.get("metadata"), dict) else {}
+        name = str(track.get("artist") or "").strip() or "Unknown artist"
+        artist_id = str(metadata.get("artist_id") or "").strip()
+        return (artist_id or name).lower()
 
     # ── Playlists ────────────────────────────────────────────────────────────
 
@@ -656,6 +671,97 @@ class MusicState:
             ).fetchall()
         return [self._track_row(row) for row in rows]
 
+    #: Categories the "Clear local data" panel can erase. Playlists cascade to
+    #: their tracks and folders, so those are not separately selectable.
+    CLEARABLE_CATEGORIES = ("recents", "following", "playlists", "queues")
+
+    def clear_user_data(self, categories: Any) -> dict[str, Any]:
+        """Erase whole categories of user data in one transaction.
+
+        Returns the row counts removed plus the playlist artwork keys left
+        orphaned; deleting those files is the caller's job, since artwork path
+        policy lives in music_bridge alongside the other artwork handling.
+        """
+        wanted = [c for c in dict.fromkeys(str(c or "").strip() for c in (categories or []))
+                  if c in self.CLEARABLE_CATEGORIES]
+        if not wanted:
+            return {"cleared": [], "counts": {}, "artwork_keys": []}
+        counts: dict[str, int] = {}
+        artwork_keys: list[str] = []
+        with self.connect() as conn:
+            if "playlists" in wanted:
+                artwork_keys = [
+                    str(row["artwork_key"])
+                    for row in conn.execute(
+                        "SELECT artwork_key FROM music_playlists WHERE artwork_key != ''"
+                    ).fetchall()
+                ]
+            for category in wanted:
+                if category == "recents":
+                    counts[category] = conn.execute("DELETE FROM music_play_history").rowcount
+                elif category == "following":
+                    counts[category] = conn.execute("DELETE FROM music_followed_artists").rowcount
+                elif category == "queues":
+                    counts[category] = conn.execute("DELETE FROM music_queue_sessions").rowcount
+                elif category == "playlists":
+                    conn.execute("DELETE FROM music_playlist_tracks")
+                    conn.execute("DELETE FROM music_playlist_folders")
+                    counts[category] = conn.execute("DELETE FROM music_playlists").rowcount
+            # music_tracks is a cache reachable only via playlists or history. Once
+            # those references are gone the rows are invisible in the UI but still
+            # record what was listened to, so prune them rather than leave a
+            # "cleared" library quietly holding the user's listening behind it.
+            counts["tracks_pruned"] = conn.execute(
+                """
+                DELETE FROM music_tracks
+                WHERE id NOT IN (SELECT track_id FROM music_playlist_tracks)
+                  AND id NOT IN (SELECT track_id FROM music_play_history)
+                """
+            ).rowcount
+        return {"cleared": wanted, "counts": counts, "artwork_keys": artwork_keys}
+
+    def delete_play_history(self, track_id: str) -> int:
+        """Forget every play of one track.
+
+        list_recent_plays groups history by track and returns the track row, so a
+        Recents entry has no per-play id to delete - "remove this from Recents"
+        can only mean forgetting that track's plays. That also drops it out of
+        Insights and the top-artist tallies, which is what makes the surfaces agree.
+        """
+        track_id = str(track_id or "").strip()
+        if not track_id:
+            return 0
+        with self.connect() as conn:
+            return conn.execute("DELETE FROM music_play_history WHERE track_id = ?", (track_id,)).rowcount
+
+    def clear_play_history(self) -> int:
+        with self.connect() as conn:
+            return conn.execute("DELETE FROM music_play_history").rowcount
+
+    def delete_artist_play_history(self, artist_key: str) -> int:
+        """Forget every play by one artist, keyed the same way as list_top_artists."""
+        artist_key = str(artist_key or "").strip().lower()
+        if not artist_key:
+            return 0
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT t.* FROM music_play_history h
+                JOIN music_tracks t ON t.id = h.track_id
+                GROUP BY t.id
+                """
+            ).fetchall()
+            targets = [
+                track["id"] for track in (self._track_row(row) for row in rows)
+                if self._track_artist_key(track) == artist_key
+            ]
+            if not targets:
+                return 0
+            placeholders = ",".join("?" * len(targets))
+            return conn.execute(
+                f"DELETE FROM music_play_history WHERE track_id IN ({placeholders})", targets
+            ).rowcount
+
     def list_top_artists(self, *, limit: int = 8) -> list[dict[str, Any]]:
         """Aggregates total plays per artist from music_play_history, using the
         same artist-identity resolution as music_library_index (artist_id or
@@ -675,10 +781,11 @@ class MusicState:
             metadata = track.get("metadata") if isinstance(track.get("metadata"), dict) else {}
             artist_name = str(track.get("artist") or "").strip() or "Unknown artist"
             artist_id = str(metadata.get("artist_id") or "").strip()
-            artist_key = (artist_id or artist_name).lower()
+            artist_key = self._track_artist_key(track)
             artist = artists.setdefault(artist_key, {
                 "id": artist_id,
                 "name": artist_name,
+                "artist_key": artist_key,
                 "play_count": 0,
                 "thumbnail_url": track.get("thumbnail_url") or "",
             })
@@ -745,9 +852,11 @@ class MusicState:
             metadata = track.get("metadata") if isinstance(track.get("metadata"), dict) else {}
             artist_name = str(track.get("artist") or "").strip() or "Unknown artist"
             artist_id = str(metadata.get("artist_id") or "").strip()
-            artist = artist_plays.setdefault((artist_id or artist_name).lower(), {
+            artist_key = self._track_artist_key(track)
+            artist = artist_plays.setdefault(artist_key, {
                 "id": artist_id,
                 "name": artist_name,
+                "artist_key": artist_key,
                 "play_count": 0,
                 "thumbnail_url": track.get("thumbnail_url") or "",
             })

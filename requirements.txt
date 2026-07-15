@@ -4,7 +4,6 @@
 aiohttp>=3.9
 cryptography>=42.0
 zeroconf>=0.131
-truststore>=0.10
 qrcode[pil]>=8.0
 filelock>=3.13
 
@@ -17,9 +16,11 @@ yt-dlp>=2024.1
 # the app degrades to yt-dlp-only search without it).
 ytmusicapi>=1.12
 
-# Native desktop window (WebView2 on Windows). Optional — the app falls back
-# to Edge --app mode or the default browser if this is missing.
-pywebview>=5.0
+# Native desktop window (WebView2 on Windows). The autoplay policy patch is
+# deliberately bound to this audited pywebview implementation; changing the
+# version requires the native playback smoke test to prove the flag still lands.
+# The app still falls back to Edge --app mode if pywebview is unavailable.
+pywebview==6.2.1
 
 # Only needed to (re)build "Rainette Music.exe" — see build_exe.bat.
 pyinstaller>=6.0
