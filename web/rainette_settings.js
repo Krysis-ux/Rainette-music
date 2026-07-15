@@ -11,6 +11,7 @@
 
 import { sendHelper, el } from './music_shell.js';
 import { createSelect } from './rainette_select.js';
+import { customDialog, confirmDialog } from './rainette_modal.js';
 
 const QUEUE_SUPPORTED = typeof window !== 'undefined' && !!window.RW_REMOTE;
 
@@ -271,6 +272,7 @@ function renderBehavior() {
 	if (window.RW_REMOTE) {
 		card.appendChild(settingsRow('Auto-open mini player', switchControl(lsGet(MINIPLAYER_ENABLED_KEY) === '1', on => {
 			lsSet(MINIPLAYER_ENABLED_KEY, on ? '1' : '0');
+			window.RW_MINIPLAYER_ENABLED = on;
 		}), 'Off by default. The bottom player bar always controls playback. Use Open mini player there whenever you want the separate window.'));
 	}
 
@@ -297,6 +299,123 @@ function renderBehavior() {
 	return card;
 }
 
+// ── Danger zone ───────────────────────────────────────────────────────────
+
+// Each entry is a checkbox in the clear-data picker. `client: true` means it is
+// cleared here in the browser (localStorage); the rest are erased server-side by
+// the music_clear_data command, keyed by these ids (see state.clear_user_data).
+const CLEAR_CATEGORIES = [
+	{ id: 'recents', label: 'Recently played & history', hint: 'Your play history, Recents, and Insights.' },
+	{ id: 'following', label: 'Followed artists', hint: 'Every artist you follow.' },
+	{ id: 'playlists', label: 'Playlists & folders', hint: 'Playlists you made, their folders, and saved artwork.' },
+	{ id: 'queues', label: 'Saved queues', hint: 'Saved queues and the restored last session.' },
+	{ id: 'preferences', label: 'Appearance & preferences', hint: 'Theme, accent, equalizer, and other local settings.', client: true },
+];
+
+function dangerButton(label, onClick) {
+	const button = document.createElement('button');
+	button.type = 'button';
+	button.className = 'rw-btn rw-btn-danger';
+	button.textContent = label;
+	if (onClick) button.addEventListener('click', onClick);
+	return button;
+}
+
+// Both app namespaces cover every current and future preference key, including
+// the rainette.musicFilters.* / rainette.folderClosed.* prefix families, so
+// clearing by namespace is more robust than enumerating individual keys.
+function clearLocalPreferences() {
+	try {
+		for (const key of Object.keys(localStorage)) {
+			if (key.startsWith('rainette.') || key.startsWith('rw.mp.')) localStorage.removeItem(key);
+		}
+	} catch { /* best effort */ }
+}
+
+async function performClear(selected) {
+	if (selected.length === CLEAR_CATEGORIES.length) {
+		const ok = await confirmDialog({
+			title: 'Erase everything?',
+			message: 'This removes your entire Rainette library on this computer — recents, follows, playlists, saved queues, and preferences. It cannot be undone.',
+			confirmLabel: 'Erase everything',
+			danger: true,
+		});
+		if (!ok) return;
+	}
+	const serverCategories = selected.filter(id => id !== 'preferences');
+	if (serverCategories.length) sendHelper({ type: 'music_clear_data', categories: serverCategories });
+	if (selected.includes('preferences')) {
+		clearLocalPreferences();
+		// Reload so appearance and defaults fall back cleanly, after a short beat
+		// that lets the clear command flush over the socket first.
+		setTimeout(() => location.reload(), 250);
+	}
+}
+
+function openClearDataDialog() {
+	const body = el('div', 'rw-clear-data');
+	body.appendChild(el('p', 'rw-modal-message', 'Choose what to remove from this computer. This cannot be undone.'));
+
+	const boxes = [];
+	const syncFromMaster = master => boxes.forEach(box => { box.checked = master.checked; });
+	const list = el('div', 'rw-clear-list');
+
+	const allRow = el('label', 'rw-clear-row rw-clear-row-all');
+	const allBox = document.createElement('input');
+	allBox.type = 'checkbox';
+	allRow.append(allBox, el('span', 'rw-clear-row-label', 'Select everything'));
+	list.appendChild(allRow);
+
+	for (const category of CLEAR_CATEGORIES) {
+		const row = el('label', 'rw-clear-row');
+		const box = document.createElement('input');
+		box.type = 'checkbox';
+		box.value = category.id;
+		const text = el('div', 'rw-clear-row-text');
+		text.append(el('span', 'rw-clear-row-label', category.label), el('span', 'rw-clear-row-hint', category.hint));
+		row.append(box, text);
+		list.appendChild(row);
+		boxes.push(box);
+	}
+	body.appendChild(list);
+
+	return customDialog({
+		title: 'Clear local data',
+		bodyNode: body,
+		className: 'rw-clear-data-modal',
+		wire: close => {
+			const clearBtn = dangerButton('Clear selected', async () => {
+				const selected = boxes.filter(box => box.checked).map(box => box.value);
+				if (!selected.length) return;
+				close(true);
+				await performClear(selected);
+			});
+			const refresh = () => {
+				allBox.checked = boxes.every(box => box.checked);
+				clearBtn.disabled = !boxes.some(box => box.checked);
+			};
+			allBox.addEventListener('change', () => { syncFromMaster(allBox); refresh(); });
+			boxes.forEach(box => box.addEventListener('change', refresh));
+			refresh();
+			const cancel = document.createElement('button');
+			cancel.type = 'button';
+			cancel.className = 'rw-btn rw-btn-ghost';
+			cancel.textContent = 'Cancel';
+			cancel.addEventListener('click', () => close(null));
+			return [cancel, clearBtn];
+		},
+	});
+}
+
+function renderDangerZone() {
+	const card = settingsCard('Danger zone', 'Permanently erase data stored on this computer.');
+	card.classList.add('rw-danger-zone');
+	const control = dangerButton('Clear local data…', openClearDataDialog);
+	card.appendChild(settingsRow('Clear local data', control,
+		'Pick exactly what to remove — recents, follows, playlists, queues, or preferences.'));
+	return card;
+}
+
 // ── Mount ─────────────────────────────────────────────────────────────────
 
 function bindEqListener() {
@@ -316,7 +435,7 @@ export function renderSettings(host) {
 	if (!body) return;
 	body.innerHTML = '';
 	const wrap = el('div', 'rw-settings-wrap');
-	wrap.append(renderAppearance(), renderEqualizer(), renderPlaybackDefaults(), renderBehavior());
+	wrap.append(renderAppearance(), renderEqualizer(), renderPlaybackDefaults(), renderBehavior(), renderDangerZone());
 	body.appendChild(wrap);
 	bindEqListener();
 	if (QUEUE_SUPPORTED) eqControl({ action: 'eq_request_state' });

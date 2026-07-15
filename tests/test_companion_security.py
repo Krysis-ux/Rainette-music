@@ -24,7 +24,7 @@ def phone_keypair():
 def decrypt_token(private, encrypted):
     return private.decrypt(
         base64.b64decode(encrypted),
-        padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
+        padding.OAEP(mgf=padding.MGF1(hashes.SHA1()), algorithm=hashes.SHA256(), label=None),
     ).decode("utf-8")
 
 
@@ -283,3 +283,21 @@ class CompanionPairingHttpSecurityTests(unittest.IsolatedAsyncioTestCase):
 
 def test_server_registry_uses_app_data_persistence():
     assert server.companion_registry.storage_path == server.APP_DATA_DIR / "companion-devices.json"
+
+
+def test_destructive_local_data_commands_are_not_reachable_from_the_lan():
+    """Erasing the user's library is a desktop-only action.
+
+    The desktop WebSocket is token-gated and dispatches anything registered in
+    music_bridge.DISPATCH, so a new command is reachable from the LAN the moment
+    it is added to COMPANION_COMMAND_TYPES. These must never be: a paired phone
+    should not be able to wipe recents, playlists, or follows over the network.
+    """
+    import music_bridge
+
+    for command in ("music_recent_delete", "music_clear_data"):
+        assert command in music_bridge.DISPATCH, f"{command} should be dispatchable on the desktop"
+        assert command not in server.COMPANION_COMMAND_TYPES, (
+            f"{command} is destructive and must not be invocable by a paired phone"
+        )
+        assert command not in server.COMPANION_ONE_WAY_COMMAND_TYPES

@@ -1,13 +1,3 @@
-add settings page with themes and add the eq in the settings page rather than mini player
+we need to add lyrics
 
-add pause button on the mini player pill
-
-make default not loading images be the theme color r just be blank rather than image place holder in top left
-
-mini player has cutout corners when rainnete music is in full screen and the mini player is on the rainnette music window.
-
-add icon s and make icond better for a lot of the que buttons and buttons on songs rianette music window.
-
-check for main artist some artist have duplicate songs from other people
-
-add more settings t make it more customizable
+need now playing in the main window and mini player they need to be synced and also we should add music controls in the main window as well when a new song starts playing that should be the default and then when sokmeone clicks on the player button then the mini player comes out and the buttons on the main window are still there aswell and they are still synced.

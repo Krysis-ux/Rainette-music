@@ -15,6 +15,7 @@ WEB_DIR = ROOT / "web"
 FAKE_WEBSOCKET_SCRIPT = """
 (() => {
     window.__rainetteFakeWebSockets = [];
+    window.__rainetteSentMessages = [];
     class FakeWebSocket extends EventTarget {
         constructor(url) {
             super();
@@ -32,7 +33,10 @@ FAKE_WEBSOCKET_SCRIPT = """
                 this.dispatchEvent(new Event('open'));
             });
         }
-        send(_data) {}
+        send(data) {
+            try { window.__rainetteSentMessages.push(JSON.parse(String(data))); }
+            catch (_error) { window.__rainetteSentMessages.push(String(data)); }
+        }
         close() {
             if (this.readyState === FakeWebSocket.CLOSED) return;
             this.readyState = FakeWebSocket.CLOSED;
@@ -176,16 +180,25 @@ def test_core_release_browser_flow():
             assert page.get_by_text("Artist 0", exact=True).count() >= 1
 
             page.locator('#rwMusicBody input[type="search"]').fill("rain")
+            page.wait_for_function(
+                "() => window.__rainetteSentMessages.some(message => message.type === 'music_catalog_search')"
+            )
+            search_id = page.evaluate(
+                "() => window.__rainetteSentMessages.filter(message => message.type === 'music_catalog_search').at(-1).id"
+            )
+            assert page.locator("#rwMusicSearchStatus .rw-kage-loader").is_visible()
             emit(
                 page,
                 {
                     "type": "music_catalog_search_result",
+                    "id": search_id,
                     "ok": True,
                     "songs": [tracks[0]],
                     "artists": [{"id": "artist-result", "name": "Rain Artist"}],
                     "albums": [{"id": "album-result", "title": "Rain Album", "artist": "Rain Artist"}],
                 },
             )
+            assert page.locator("#rwMusicSearchStatus .rw-kage-loader").count() == 0
             assert page.locator("#rwMusicResults .rw-section-title h3").all_inner_texts() == [
                 "SONGS",
                 "ARTISTS",
@@ -193,6 +206,26 @@ def test_core_release_browser_flow():
             ]
             page.locator(".rw-search-filters").get_by_text("Artists", exact=True).click()
             assert page.locator("#rwMusicResults .rw-section-title h3").all_inner_texts() == ["ARTISTS"]
+
+            page.evaluate("document.documentElement.classList.add('rw-reduced-motion')")
+            page.evaluate(
+                """() => {
+                    localStorage.removeItem('rainette.miniplayerEnabled');
+                    window.__miniPlayerRevealCalls = 0;
+                    window.pywebview = {api: {reveal_player: () => { window.__miniPlayerRevealCalls += 1; }}};
+                    window.RainetteMusic.playTrack({source_id: 'default-off', title: 'Default off'});
+                }"""
+            )
+            assert page.evaluate("window.__miniPlayerRevealCalls") == 0
+            page.evaluate(
+                """() => {
+                    localStorage.setItem('rainette.miniplayerEnabled', '1');
+                    window.RainetteMusic.playTrack({source_id: 'opt-in', title: 'Opt in'});
+                    localStorage.setItem('rainette.miniplayerEnabled', '0');
+                    window.RainetteMusic.playTrack({source_id: 'live-off', title: 'Live off'});
+                }"""
+            )
+            assert page.evaluate("window.__miniPlayerRevealCalls") == 1
 
             emit(
                 page,
@@ -267,7 +300,58 @@ def test_core_release_browser_flow():
             )
             assert page.evaluate("() => localStorage.getItem('rw.mp.volume')") == "0.37"
 
+            # Three-state loop: one click loops the queue, a second repeats the one
+            # song, a third turns it off. The repeat-one glyph is the loop arrows
+            # plus a stroked "1" (see rainette_icons.js), so its path identifies it.
+            def loop_state():
+                button = page.locator("#rwDockedBar .rw-now-loop")
+                return (
+                    "on" in (button.get_attribute("class") or ""),
+                    "M11 10h1v4" in (button.inner_html() or ""),
+                )
+
+            def now_playing(**overrides):
+                emit(page, {
+                    "type": "music_now_playing", "state": "playing", "playing": True,
+                    "queue": tracks[:2], "index": 0, "current_time": 12, "duration": 180,
+                    **overrides,
+                })
+
+            now_playing(repeat="all")
+            assert loop_state() == (True, False), "queue-loop should light up without the repeat-one glyph"
+            now_playing(repeat="one")
+            assert loop_state() == (True, True), "repeat-one should light up and swap to the '1' glyph"
+            now_playing(repeat="off")
+            assert loop_state() == (False, False), "loop off should clear the button"
+
+            # Regression: loop used to vanish as soon as the track changed. A
+            # producer that says nothing about repeat (the phone has no repeat
+            # control) must leave the current mode alone rather than read as "off".
+            now_playing(repeat="all")
+            now_playing(index=1)
+            assert loop_state() == (True, False), "loop must survive a track change that omits repeat"
+            now_playing(repeat="off")
+
             command_button = page.locator("#rwCommandOpen")
+            command_box = command_button.bounding_box()
+            dock_box = page.locator("#rwDockedBar").bounding_box()
+            assert command_box and dock_box and command_box["y"] + command_box["height"] <= dock_box["y"], (
+                command_box,
+                dock_box,
+            )
+            hit_target = command_button.evaluate(
+                """button => {
+                    const rect = button.getBoundingClientRect();
+                    return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest('#rwCommandOpen') === button;
+                }"""
+            )
+            assert hit_target
+            command_button.click()
+            page.locator("#rwCommandPalette").wait_for(state="visible")
+            page.keyboard.press("Escape")
+
+            page.set_viewport_size({"width": 940, "height": 560})
+            command_button.scroll_into_view_if_needed()
             command_box = command_button.bounding_box()
             dock_box = page.locator("#rwDockedBar").bounding_box()
             assert command_box and dock_box and command_box["y"] + command_box["height"] <= dock_box["y"], (
@@ -277,6 +361,10 @@ def test_core_release_browser_flow():
             command_button.click()
             page.locator("#rwCommandPalette").wait_for(state="visible")
             page.keyboard.press("Escape")
+            page.set_viewport_size({"width": 1060, "height": 730})
+
+            page.locator("#rwDockedBar .rw-now-popout").click()
+            assert page.evaluate("window.__miniPlayerRevealCalls") == 2
 
             page.locator('#rwMusicTabs button[data-tab="settings"]').click()
             default_tab = page.locator('[aria-label="Default tab on launch"] .rh-selectx-button')
@@ -311,6 +399,22 @@ def test_core_release_browser_flow():
             assert page.locator(".rw-insights-bar.zero").get_attribute("style").find("height: 0%") >= 0
             assert page.locator(".rw-insights-bar-label.peak").inner_text() == "3"
 
+            # Every value label has to clear the top of its own bar. The label used
+            # to be pinned to the full-height column at a fixed `top: -4px`, so it
+            # never tracked the bar - and the peak bar (always height:100%) grew
+            # straight into its own always-visible label, printing the number on top
+            # of the accent fill. Assert the geometry, not just the text.
+            page.wait_for_timeout(600)  # let the bar grow animation settle
+            peak_col = page.locator(".rw-insights-col").nth(1)
+            label_box = peak_col.locator(".rw-insights-bar-label").bounding_box()
+            bar_box = peak_col.locator(".rw-insights-bar").bounding_box()
+            assert label_box["y"] + label_box["height"] <= bar_box["y"] + 0.5, (
+                f"insights label overlaps its bar: {label_box} vs {bar_box}"
+            )
+            # ...and must not be clipped out of the top of the card either.
+            card_box = page.locator(".rw-insights-chart-card").bounding_box()
+            assert label_box["y"] >= card_box["y"], (label_box, card_box)
+
             emit(
                 page,
                 {
@@ -322,6 +426,7 @@ def test_core_release_browser_flow():
             page.get_by_text("Player Artist", exact=True).wait_for()
 
             page.set_viewport_size({"width": 390, "height": 844})
+            page.evaluate("delete window.pywebview")
             page.locator('#rwMusicTabs button[data-tab="mobile"]').click()
             steps = page.locator("#rwMusicBody .rw-mobile-step-title").all_inner_texts()
             assert steps == ["1. Download", "2. Install", "3. Pair"]

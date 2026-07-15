@@ -32,7 +32,7 @@ def _approve(registry: CompanionRegistry):
     result = registry.pairing_result(request["request_id"], invitation["token"])
     token = private.decrypt(
         base64.b64decode(result["encrypted_device_token"]),
-        padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
+        padding.OAEP(mgf=padding.MGF1(hashes.SHA1()), algorithm=hashes.SHA256(), label=None),
     ).decode("utf-8")
     return invitation, request, approved, token
 

@@ -1,6 +1,6 @@
 {
-    "sha256":  "a9e918fe30eeb571a4efc2600fb5da858c8f0c2896881fc04dd0909d2d45f318",
-    "version":  "0.2.1-local",
+    "sha256":  "8a8d4c98ad807486a63adc8da780ccc14d49252626670196a16d1810173c3f38",
+    "version":  "0.2.2-local",
     "channel":  "local-test",
     "signed":  false,
     "signatureVerified":  false,

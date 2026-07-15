@@ -1,4 +1,4 @@
-name: Publish signed Android APK
+name: Publish Rainette release
 
 on:
   push:
@@ -63,7 +63,11 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease
+        run: |
+          export RAINETTE_VERSION_NAME="${GITHUB_REF_NAME#v}"
+          export RAINETTE_VERSION_CODE="${GITHUB_RUN_NUMBER}"
+          chmod +x ./gradlew
+          ./gradlew assembleRelease
 
       - name: Add Android signing tools to PATH
         shell: bash
@@ -72,13 +76,40 @@ jobs:
           test -n "${APKSIGNER_PATH}" || { echo "apksigner was not found" >&2; exit 1; }
           echo "$(dirname "${APKSIGNER_PATH}")" >> "${GITHUB_PATH}"
 
-      - name: Verify and prepare signed APK
+      - name: Verify and prepare release assets
         shell: bash
         run: |
           apksigner verify --print-certs mobile/android/app/build/outputs/apk/release/app-release.apk
           cp mobile/android/app/build/outputs/apk/release/app-release.apk rainette-music-android.apk
+          cp release/out/RainetteMusicSetup.exe RainetteMusicSetup.exe
+          sha256sum rainette-music-android.apk > rainette-music-android.apk.sha256
+          sha256sum RainetteMusicSetup.exe > RainetteMusicSetup.exe.sha256
+          node <<'NODE'
+          const fs = require('node:fs');
+          const version = process.env.GITHUB_REF_NAME.replace(/^v/, '');
+          const versionCode = Number(process.env.GITHUB_RUN_NUMBER);
+          const hash = filename => fs.readFileSync(`${filename}.sha256`, 'utf8').trim().split(/\s+/)[0];
+          fs.writeFileSync('android-release.json', JSON.stringify({
+            artifact: 'rainette-music-android.apk', version, versionCode,
+            channel: 'stable', signed: true, signatureVerified: true,
+            sha256: hash('rainette-music-android.apk'),
+          }, null, 2) + '\n');
+          fs.writeFileSync('windows-release.json', JSON.stringify({
+            artifact: 'RainetteMusicSetup.exe', version,
+            channel: 'stable', signed: false, signatureVerified: false,
+            sha256: hash('RainetteMusicSetup.exe'),
+          }, null, 2) + '\n');
+          NODE
 
-      - name: Publish GitHub Release asset
+      - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: rainette-music-android.apk
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            rainette-music-android.apk
+            rainette-music-android.apk.sha256
+            android-release.json
+            RainetteMusicSetup.exe
+            RainetteMusicSetup.exe.sha256
+            windows-release.json

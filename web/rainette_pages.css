@@ -599,6 +599,116 @@
 .rainette-page ::-webkit-scrollbar-thumb { background: var(--rw-border-strong); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
 .rainette-page ::-webkit-scrollbar-track { background: transparent; }
 
+/* ── Kagebana activity indicator ─────────────────────────────────────────
+   Seven cut-paper petals open around a still heart while a broken ink orbit
+   breathes once. It is used only for genuine network/device work. */
+.rw-kage-loader {
+	--rw-loader-size: 54px;
+	display: grid;
+	justify-items: center;
+	align-content: center;
+	gap: 10px;
+	min-height: 118px;
+	color: var(--rw-text-soft);
+}
+.rw-kage-loader.is-compact {
+	--rw-loader-size: 32px;
+	min-height: 0;
+	grid-template-columns: var(--rw-loader-size) auto;
+	justify-content: start;
+	gap: 9px;
+}
+.rw-kage-loader-seal {
+	position: relative;
+	display: block;
+	width: var(--rw-loader-size);
+	height: var(--rw-loader-size);
+	border-radius: 50%;
+	background: #0b0f0d;
+	box-shadow: inset 0 0 0 1px oklch(100% 0 0 / .12), 0 6px 18px oklch(18% .02 155 / .16);
+	isolation: isolate;
+}
+.rw-kage-loader-petal {
+	--rw-petal-angle: calc(var(--rw-petal) * 51.428deg);
+	position: absolute;
+	z-index: 2;
+	left: 50%;
+	top: 50%;
+	width: calc(var(--rw-loader-size) * .18);
+	height: calc(var(--rw-loader-size) * .34);
+	border-radius: 72% 72% 52% 52% / 88% 88% 38% 38%;
+	background: #f7f7f2;
+	box-shadow: inset 0 0 0 1px oklch(22% .02 155 / .14);
+	transform-origin: 50% 100%;
+	transform: translate(-50%, -100%) rotate(var(--rw-petal-angle)) translateY(calc(var(--rw-loader-size) * -.10)) scale(.72);
+	animation: rwKagePetalOpen 1.35s var(--rw-ease) infinite;
+	animation-delay: calc(var(--rw-petal) * 45ms);
+}
+.rw-kage-loader-heart {
+	position: absolute;
+	z-index: 4;
+	left: 50%;
+	top: 50%;
+	width: calc(var(--rw-loader-size) * .23);
+	height: calc(var(--rw-loader-size) * .23);
+	border: 1px solid #f7f7f2;
+	border-radius: 50%;
+	background: #0b0f0d;
+	transform: translate(-50%, -50%);
+}
+.rw-kage-loader-heart::after {
+	content: "";
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	width: 3px;
+	height: 3px;
+	border-radius: 50%;
+	background: oklch(58% .18 32);
+	transform: translate(-50%, -50%);
+}
+.rw-kage-loader-orbit {
+	position: absolute;
+	z-index: 1;
+	inset: 1px;
+	border: 1px solid oklch(94% .02 155 / .46);
+	border-left-color: transparent;
+	border-bottom-color: transparent;
+	border-radius: 50%;
+	animation: rwKageOrbit 2.4s var(--rw-ease) infinite;
+}
+.rw-kage-loader-label {
+	font-size: 12px;
+	font-weight: 650;
+	letter-spacing: .01em;
+}
+@keyframes rwKagePetalOpen {
+	0%, 100% { opacity: .56; transform: translate(-50%, -100%) rotate(var(--rw-petal-angle)) translateY(calc(var(--rw-loader-size) * -.045)) scale(.68); }
+	42%, 64% { opacity: 1; transform: translate(-50%, -100%) rotate(var(--rw-petal-angle)) translateY(calc(var(--rw-loader-size) * -.12)) scale(1); }
+}
+@keyframes rwKageOrbit {
+	0%, 100% { opacity: .28; transform: rotate(-16deg) scale(.94); }
+	50% { opacity: .72; transform: rotate(20deg) scale(1); }
+}
+.rw-kage-loader[data-state="complete"] .rw-kage-loader-petal {
+	opacity: 1;
+	animation: none;
+	transform: translate(-50%, -100%) rotate(var(--rw-petal-angle)) translateY(calc(var(--rw-loader-size) * -.12)) scale(1);
+}
+.rw-kage-loader[data-state="complete"] .rw-kage-loader-orbit { animation: none; opacity: .7; }
+@media (prefers-reduced-motion: reduce) {
+	.rw-kage-loader-petal, .rw-kage-loader-orbit { animation: none; }
+	.rw-kage-loader-petal { opacity: 1; transform: translate(-50%, -100%) rotate(var(--rw-petal-angle)) translateY(calc(var(--rw-loader-size) * -.12)) scale(1); }
+	.rw-kage-loader-orbit { opacity: .7; }
+}
+html.rw-reduced-motion .rw-kage-loader-petal,
+html.rw-reduced-motion .rw-kage-loader-orbit { animation: none; }
+html.rw-reduced-motion .rw-kage-loader-petal {
+	opacity: 1;
+	transform: translate(-50%, -100%) rotate(var(--rw-petal-angle)) translateY(calc(var(--rw-loader-size) * -.12)) scale(1);
+}
+html.rw-reduced-motion .rw-kage-loader-orbit { opacity: .7; }
+
 /* ── PC Agent timeline ──────────────────────────────────────────────────── */
 .rw-pa-event {
 	display: flex; align-items: baseline; gap: 10px;
@@ -732,7 +842,6 @@ body.rw-page-open #infoPanel {
 /* #rwMusicBody is the single page scroll boundary. Lists expand naturally so
    cards are never clipped by a second, shorter scrolling viewport. */
 #rwMusicPage {
-	--rw-docked-clearance: 0px;
 	background:
 		linear-gradient(135deg, color-mix(in oklab, var(--rw-accent-soft) 28%, transparent), transparent 34%),
 		var(--rw-bg);
@@ -744,15 +853,22 @@ body.rw-page-open #infoPanel {
 	min-height: 0;
 	display: grid;
 	grid-template-columns: 216px minmax(0, 1fr);
+	grid-template-rows: minmax(0, 1fr) auto;
+	grid-template-areas:
+		"sidebar main"
+		"player player";
 }
 .rw-music-sidebar {
+	grid-area: sidebar;
 	min-width: 0;
+	min-height: 0;
 	display: flex;
 	flex-direction: column;
 	gap: 16px;
 	padding: 18px 14px;
 	background: var(--rw-surface);
 	border-right: 1px solid var(--rw-border);
+	overflow: hidden;
 }
 .rw-music-brand {
 	display: flex;
@@ -776,10 +892,39 @@ body.rw-page-open #infoPanel {
 .rw-music-brand-text { min-width: 0; }
 .rw-music-brand-name { font-size: 15px; font-weight: 720; letter-spacing: -0.1px; }
 .rw-music-brand-sub { margin-top: 2px; font-size: 11.5px; color: var(--rw-text-muted); }
+
+/* Update badge: quiet accent pill under the logo, appears only when a newer
+   release is available. A gentle pulse draws the eye once without nagging. */
+.rw-update-badge {
+	display: inline-flex; align-items: center; gap: 7px;
+	margin: 0 4px 10px; padding: 5px 11px 5px 9px;
+	border: 1px solid var(--rw-accent); border-radius: 999px;
+	background: var(--rw-accent-soft); color: var(--rw-accent-strong);
+	font: 600 12px/1 var(--rw-font); cursor: pointer;
+	transition: transform var(--rw-fast) var(--rw-ease), background var(--rw-fast) var(--rw-ease), opacity var(--rw-fast) var(--rw-ease);
+}
+.rw-update-badge:hover { transform: translateY(-1px); background: var(--rw-accent); color: oklch(100% 0 0); }
+.rw-update-badge:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
+.rw-update-badge[disabled], .rw-update-badge.busy { cursor: progress; opacity: 0.75; transform: none; }
+.rw-update-dot {
+	width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+	background: currentColor; box-shadow: 0 0 0 0 currentColor;
+	animation: rwUpdatePulse 2.2s var(--rw-ease) infinite;
+}
+.rw-update-badge.busy .rw-update-dot { animation: none; }
+@keyframes rwUpdatePulse {
+	0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--rw-accent) 55%, transparent); }
+	70% { box-shadow: 0 0 0 6px transparent; }
+	100% { box-shadow: 0 0 0 0 transparent; }
+}
+html.rw-reduced-motion .rw-update-dot { animation: none; }
+@media (prefers-reduced-motion: reduce) { .rw-update-dot { animation: none; } }
 .rw-music-nav {
 	display: flex;
 	flex-direction: column;
 	gap: 5px;
+	min-height: 0;
+	overflow-y: auto;
 }
 .rw-music-nav button {
 	appearance: none;
@@ -812,6 +957,7 @@ body.rw-page-open #infoPanel {
 }
 .rw-music-sidebar-foot {
 	margin-top: auto;
+	flex: 0 0 auto;
 	display: flex;
 	flex-direction: column;
 	gap: 9px;
@@ -832,6 +978,7 @@ body.rw-page-open #infoPanel {
 .rw-layout-segment { width: 100%; box-sizing: border-box; }
 .rw-layout-segment button { flex: 1; }
 .rw-music-main {
+	grid-area: main;
 	min-width: 0;
 	min-height: 0;
 	display: flex;
@@ -866,7 +1013,7 @@ body.rw-page-open #infoPanel {
 #rwMusicBody {
 	flex: 1; min-height: 0; display: flex; flex-direction: column;
 	overflow-y: auto; overflow-x: hidden;
-	padding: 1px 3px calc(28px + var(--rw-docked-clearance)) 0;
+	padding: 1px 3px 28px 0;
 	box-sizing: border-box;
 	overscroll-behavior: contain;
 }
@@ -1348,7 +1495,11 @@ html.rw-reduced-motion .rw-now-art.rw-art-swap { animation: none; }
 .rw-queue-drawer .rw-track-card.is-current { background: var(--rw-accent-soft); }
 
 @media (max-width: 900px) {
-	.rw-music-shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+	.rw-music-shell {
+		grid-template-columns: 1fr;
+		grid-template-rows: auto minmax(0, 1fr) auto;
+		grid-template-areas: "sidebar" "main" "player";
+	}
 	.rw-music-sidebar {
 		flex-direction: row;
 		align-items: center;
@@ -1443,6 +1594,29 @@ html.rw-reduced-motion .rw-now-art.rw-art-swap { animation: none; }
 .rw-settings-row-text { min-width: 0; }
 .rw-settings-row-label { font-size: 13.5px; font-weight: 600; }
 .rw-settings-row-hint { font-size: 12px; color: var(--rw-text-muted); margin-top: 2px; }
+
+/* Danger zone: a quiet card whose only accent is the red action, so it reads as
+   set-apart from the everyday settings above it without shouting. */
+.rw-settings-card.rw-danger-zone { border-color: color-mix(in oklab, var(--rw-danger) 35%, var(--rw-border)); }
+.rw-danger-zone .rw-settings-card-title { color: var(--rw-danger); }
+.rw-btn-danger:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+/* Clear-data picker: a checklist of what to erase, inside the shared modal. */
+.rw-clear-list { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; }
+.rw-clear-row {
+	display: flex; align-items: flex-start; gap: 11px;
+	padding: 10px 8px; border-radius: 10px; cursor: pointer;
+	transition: background var(--rw-fast) var(--rw-ease);
+}
+.rw-clear-row:hover { background: var(--rw-bg-sunken); }
+.rw-clear-row input { margin-top: 2px; width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--rw-danger); cursor: pointer; }
+.rw-clear-row-text { display: flex; flex-direction: column; min-width: 0; }
+.rw-clear-row-label { font-size: 13.5px; font-weight: 600; }
+.rw-clear-row-hint { font-size: 12px; color: var(--rw-text-muted); margin-top: 1px; }
+.rw-clear-row-all {
+	font-weight: 650; align-items: center;
+	border-bottom: 1px solid var(--rw-border); border-radius: 10px 10px 0 0; margin-bottom: 4px;
+}
 
 .rw-accent-picker { display: flex; gap: 8px; flex-shrink: 0; }
 .rw-accent-swatch {
@@ -1647,7 +1821,11 @@ html.rw-reduced-motion .rw-now-art.rw-art-swap { animation: none; }
    .rw-music-player: full-width and always shows transport, no collapse step.
    Clicking the art/title opens the full Now Playing view. */
 .rw-now-bar {
-	position: fixed; left: 0; right: 0; bottom: 0; z-index: 1200;
+	grid-area: player;
+	position: relative;
+	z-index: 12;
+	width: 100%;
+	min-width: 0;
 	display: flex; flex-direction: column;
 	background: color-mix(in oklab, var(--rw-surface-raised) 92%, transparent);
 	-webkit-backdrop-filter: blur(20px) saturate(1.3);
@@ -1723,6 +1901,53 @@ html.rw-reduced-motion .rw-now-seek-fill, html.rw-reduced-motion .rw-now-view-se
 	cursor: pointer;
 }
 .rw-now-volume:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 3px; border-radius: 999px; }
+.rw-now-output {
+	appearance: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	min-height: 34px;
+	padding: 0 11px;
+	border: 1px solid var(--rw-border);
+	border-radius: 999px;
+	background: var(--rw-surface);
+	color: var(--rw-text-soft);
+	cursor: pointer;
+	font: 650 11px/1 var(--rw-font);
+	white-space: nowrap;
+	transition: background var(--rw-fast), border-color var(--rw-fast), color var(--rw-fast), transform var(--rw-fast);
+}
+.rw-now-output:hover { border-color: var(--rw-border-strong); background: var(--rw-bg-sunken); color: var(--rw-text); transform: translateY(-1px); }
+.rw-now-output:active { transform: none; }
+.rw-now-output:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
+.rw-now-output:disabled { cursor: wait; opacity: 0.65; transform: none; }
+.rw-now-output-dot {
+	position: relative;
+	display: block;
+	width: 10px;
+	height: 10px;
+	border: 1.5px solid currentColor;
+	border-radius: 50%;
+}
+.rw-now-output-dot::after {
+	content: "";
+	position: absolute;
+	inset: 2px;
+	border-radius: inherit;
+	background: currentColor;
+}
+.rw-now-output.on-phone { color: var(--rw-accent-strong); border-color: var(--rw-accent); background: var(--rw-accent-soft); }
+.rw-now-output-status {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
 .rw-now-btn {
 	appearance: none; border: 1px solid var(--rw-border); background: var(--rw-surface);
 	color: var(--rw-text-soft); border-radius: 50%; width: 34px; height: 34px;
@@ -1747,19 +1972,13 @@ html.rw-reduced-motion .rw-now-seek-fill, html.rw-reduced-motion .rw-now-view-se
 .rw-docked-bar .rw-now-seek::after { width: 12px; height: 12px; }
 .rw-now-loop.on { color: var(--rw-accent-strong); border-color: var(--rw-accent); background: var(--rw-accent-soft); }
 .rw-now-popout { transform: none; }
-/* Reserve space so the fixed docked bar never covers content or the sidebar
-   foot (View toggle / command palette / queue buttons). NOTE: .rw-has-docked-bar
-   is toggled on #rwMusicPage ITSELF, so the page-body rule must chain the class
-   onto the ID (#rwMusicPage.rw-has-docked-bar) - a descendant combinator
-   (.rw-has-docked-bar #rwMusicPage) never matches, and a plain
-   .rw-has-docked-bar .rw-page-body loses on specificity to the base
-   #rwMusicPage .rw-page-body padding. */
-@media (min-width: 901px) {
-	#rwMusicPage.rw-has-docked-bar .rw-music-sidebar { padding-bottom: calc(18px + var(--rw-docked-clearance)); }
+@media (max-width: 760px) {
+	.rw-now-volume, .rw-now-volume-icon { display: none; }
+	.rw-now-output { width: 34px; padding: 0; justify-content: center; }
+	.rw-now-output-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
 }
-/* Lift the queue drawer (absolute, bottom:26px by default) above the ~70px bar
-   so its bottom rows aren't hidden behind it when a full queue is open. */
-.rw-has-docked-bar #rwMusicQueueDrawer { bottom: calc(26px + var(--rw-docked-clearance)); }
+/* The transport owns a real grid row. Sidebar controls, scrolling content, and
+   the absolute queue drawer therefore end above it by construction. */
 
 /* ── Now Playing view: seek bar + time labels ─────────────────────────── */
 .rw-now-view-main { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; }
@@ -1890,16 +2109,23 @@ html.rw-reduced-motion .rw-shortcuts-panel { animation: none; }
 .rw-insights-chart {
 	display: flex; align-items: flex-end; gap: 4px;
 	height: 134px;
-	/* Headroom so the peak bar's direct label sits inside the card, never
-	   clipped against its top edge. */
-	padding-top: 16px;
+	/* Headroom for the value label riding above a full-height (100%) bar. */
+	padding-top: 20px;
 	box-sizing: border-box;
 }
 .rw-insights-col {
-	position: relative;
 	flex: 1; min-width: 0; height: 100%;
 	display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px;
 	cursor: default;
+}
+/* The plotting area, excluding the day tick. Both the bar's height and the
+   label's offset resolve their percentage against this box, which is what keeps
+   the two locked together - the label used to be positioned against the whole
+   column at a fixed `top`, so tall bars simply grew over it. */
+.rw-insights-plot {
+	position: relative;
+	flex: 1; min-height: 0; width: 100%;
+	display: flex; align-items: flex-end; justify-content: center;
 }
 .rw-insights-bar {
 	width: 100%; max-width: 26px;
@@ -1914,15 +2140,20 @@ html.rw-reduced-motion .rw-shortcuts-panel { animation: none; }
 .rw-insights-bar.zero { background: var(--rw-border); }
 .rw-insights-col:hover .rw-insights-bar { background: var(--rw-accent-strong); }
 .rw-insights-bar-label {
-	position: absolute; top: -4px; left: 50%; transform: translateX(-50%);
+	position: absolute; left: 50%;
+	bottom: calc(var(--rw-bar-h, 0%) + 4px);
+	transform: translateX(-50%);
 	font: 650 11px/1 var(--rw-font); color: var(--rw-text-soft);
 	font-variant-numeric: tabular-nums;
+	white-space: nowrap; pointer-events: none;
 	opacity: 0;
 }
-.rw-insights-bar-label.peak, .rw-insights-col:hover .rw-insights-bar-label { opacity: 1; }
+.rw-insights-bar-label.peak,
+.rw-insights-col:hover .rw-insights-bar-label,
+.rw-insights-labelled .rw-insights-bar-label { opacity: 1; }
 .rw-insights-bar-label.zero { color: var(--rw-text-muted); }
 .rw-insights-day {
-	height: 12px;
+	flex: 0 0 auto; height: 12px;
 	font: 600 10px/1 var(--rw-font); color: var(--rw-text-muted);
 	white-space: nowrap;
 }
@@ -2091,14 +2322,14 @@ html.rw-reduced-motion .rw-insights-bar { animation: none; }
 	.rainette-page.active { animation: none; }
 	.rw-btn, .rw-switch .rw-track, .rw-switch .rw-track::after, .rw-chip, .rw-mem-item,
 	.rw-music-player, .rw-mp-toast, .rw-track-card, .rw-queue-row.flip-move,
-	.rw-now-btn, .rw-now-bar-meta, .rw-now-seek::after, .rw-now-view-btn { transition: none; }
+	.rw-now-btn, .rw-now-output, .rw-now-bar-meta, .rw-now-seek::after, .rw-now-view-btn { transition: none; }
 	#rwOrb .orb-halo, #rwOrb .orb-field, #rwOrb .orb-core, #rwOrb .orb-lobe, #rwOrb .orb-ringset, #rwOrb .orb-ring, #rwOrb .orb-ring.pinging { animation: none; }
 	.rw-trace-row, .rw-thinking span, .rw-msg-enter .rw-msg-body { animation: none; }
 	.rw-modal-backdrop, .rw-modal { animation: none; }
 	.rw-queue-drawer, .rw-empty { animation: none; }
 	.rw-now-view-btn.pulse, #rwMusicBody.rw-page-enter, .rw-docked-bar.rw-docked-enter { animation: none; }
 	.rw-track-card:hover, .rw-btn:hover, .rw-btn-ghost:hover, .rw-icon-btn:hover,
-	.rw-now-btn:hover, .rw-now-play:hover, .rw-now-view-btn:hover { transform: none; }
+	.rw-now-btn:hover, .rw-now-output:hover, .rw-now-play:hover, .rw-now-view-btn:hover { transform: none; }
 }
 
 /* Same rules as above, opt-in via Settings → Behavior → Reduce motion,
@@ -2108,7 +2339,7 @@ html.rw-reduced-motion .rw-btn, html.rw-reduced-motion .rw-switch .rw-track, htm
 html.rw-reduced-motion .rw-chip, html.rw-reduced-motion .rw-mem-item,
 html.rw-reduced-motion .rw-music-player, html.rw-reduced-motion .rw-mp-toast, html.rw-reduced-motion .rw-track-card,
 html.rw-reduced-motion .rw-queue-row.flip-move,
-html.rw-reduced-motion .rw-now-btn, html.rw-reduced-motion .rw-now-bar-meta, html.rw-reduced-motion .rw-now-seek::after,
+html.rw-reduced-motion .rw-now-btn, html.rw-reduced-motion .rw-now-output, html.rw-reduced-motion .rw-now-bar-meta, html.rw-reduced-motion .rw-now-seek::after,
 html.rw-reduced-motion .rw-now-view-btn { transition: none; }
 html.rw-reduced-motion .rw-trace-row, html.rw-reduced-motion .rw-thinking span, html.rw-reduced-motion .rw-msg-enter .rw-msg-body { animation: none; }
 html.rw-reduced-motion .rw-modal-backdrop, html.rw-reduced-motion .rw-modal { animation: none; }
@@ -2117,7 +2348,7 @@ html.rw-reduced-motion .rw-now-view-btn.pulse, html.rw-reduced-motion #rwMusicBo
 html.rw-reduced-motion .rw-docked-bar.rw-docked-enter { animation: none; }
 html.rw-reduced-motion .rw-track-card:hover, html.rw-reduced-motion .rw-btn:hover,
 html.rw-reduced-motion .rw-btn-ghost:hover, html.rw-reduced-motion .rw-icon-btn:hover,
-html.rw-reduced-motion .rw-now-btn:hover, html.rw-reduced-motion .rw-now-view-btn:hover { transform: none; }
+html.rw-reduced-motion .rw-now-btn:hover, html.rw-reduced-motion .rw-now-output:hover, html.rw-reduced-motion .rw-now-view-btn:hover { transform: none; }
 
 /* ── Android download and desktop pairing ─────────────────────────────── */
 .rw-mobile-grid {

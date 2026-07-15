@@ -22,7 +22,7 @@ def claim_token(registry, request_id, invitation_token):
     result = registry.pairing_result(request_id, invitation_token)
     return PHONE_PRIVATE_KEY.decrypt(
         base64.b64decode(result["encrypted_device_token"]),
-        padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
+        padding.OAEP(mgf=padding.MGF1(hashes.SHA1()), algorithm=hashes.SHA256(), label=None),
     ).decode("utf-8")
 
 

@@ -425,7 +425,12 @@ class CompanionRegistry:
             encrypted = public_key.encrypt(
                 device_token.encode("utf-8"),
                 padding.OAEP(
-                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    # Android Keystore uses SHA-1 for OAEP's MGF1 digest on
+                    # API levels below 35.  The OAEP message digest remains
+                    # SHA-256; using SHA-1 only for the mask-generation
+                    # function keeps the ciphertext interoperable with every
+                    # Android version Rainette supports (API 23+).
+                    mgf=padding.MGF1(algorithm=hashes.SHA1()),
                     algorithm=hashes.SHA256(),
                     label=None,
                 ),

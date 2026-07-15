@@ -13,6 +13,9 @@ const PATHS = {
 	play: '<path d="M8 5v14l11-7-11-7z" fill="currentColor" stroke="none"/>',
 	pause: '<path d="M7 5h4v14H7z" fill="currentColor" stroke="none"/><path d="M13 5h4v14h-4z" fill="currentColor" stroke="none"/>',
 	loop: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>',
+	// Same arrows as `loop` with a stroked "1" in the middle, so the queue-loop
+	// and repeat-one states of the same button read as one family.
+	loopOne: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/><path d="M11 10h1v4"/>',
 	chevronDown: '<path d="m6 9 6 6 6-6"/>',
 	chevronUp: '<path d="m18 15-6-6-6 6"/>',
 	chevronRight: '<path d="m9 18 6-6-6-6"/>',

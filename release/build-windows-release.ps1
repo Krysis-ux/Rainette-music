@@ -36,6 +36,15 @@ function Write-Checksum([string]$Path) {
 }
 
 Require-Command 'python'
+# The updater compares the running app's version.APP_VERSION against the latest
+# release tag, so the packaged constant must match the version being built or an
+# installed app would never see (or would falsely see) an update. Compare the
+# numeric cores, ignoring any -local / prerelease suffix on either side.
+$appVersion = (python -c "import version; print(version.normalize(version.APP_VERSION))").Trim()
+$buildVersion = (python -c "import version, sys; print(version.normalize(sys.argv[1]))" $Version).Trim()
+if ($appVersion -ne $buildVersion) {
+    throw "version.APP_VERSION ($appVersion) does not match -Version ($buildVersion). Update version.py before building."
+}
 if ($RequireSigning) {
     foreach ($name in 'RAINETTE_CODESIGN_CERT_PATH', 'RAINETTE_CODESIGN_CERT_PASSWORD') {
         if (-not (Get-Item -Path "env:$name" -ErrorAction SilentlyContinue).Value) { throw "$name is required for a publish-ready Windows release." }
@@ -45,8 +54,14 @@ if ($RequireSigning) {
 $iscc = Find-InnoCompiler
 
 Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $output -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage, $output | Out-Null
+foreach ($path in @(
+    $installer,
+    "$installer.sha256",
+    (Join-Path $output 'windows-release.json')
+)) {
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+}
 
 Push-Location $root
 try {

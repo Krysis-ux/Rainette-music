@@ -14,9 +14,13 @@
 
 import { sendHelper, helperRequest, app } from './music_shell.js';
 import { iconMarkup } from './rainette_icons.js';
+import { REPEAT_LABEL, normalizeRepeat, nextRepeat, loopFlagFor } from './repeat_mode.js';
 
 const POS_KEY = 'rainette.musicPlayerPos';
+// LOOP_KEY is the superseded boolean, read once by _loadRepeat() so an existing
+// setting survives the upgrade to three-state repeat.
 const LOOP_KEY = 'rainette.musicLoop';
+const REPEAT_KEY = 'rainette.musicRepeat';
 // Same key miniplayer.js uses (LS.vol) - Settings -> Playback -> "Default
 // volume" already wrote to this key but nothing here ever read it back.
 const VOLUME_KEY = 'rw.mp.volume';
@@ -42,10 +46,15 @@ function _loadVolume() {
 	return Number.isFinite(v) && v >= 0 ? Math.max(0, Math.min(1.5, v)) : 1;
 }
 
+// Migrate the old boolean: loop-on only ever meant "loop the queue".
+function _loadRepeat() {
+	return normalizeRepeat(_lsGet(REPEAT_KEY), _lsGet(LOOP_KEY) === '1' ? 'all' : 'off');
+}
+
 const state = {
 	queue: [],          // [{ source_id, title, artist, thumbnail_url, ... }]
 	index: -1,
-	loop: _lsGet(LOOP_KEY) === '1',
+	repeat: _loadRepeat(),
 	volume: _loadVolume(),
 	playing: false,
 	resolvingId: null,  // source_id currently being resolved (stream fetch in flight)
@@ -96,7 +105,8 @@ function _broadcast(mode, playing) {
 		track: _publicTrack(track),
 		state: mode || (state.playing ? 'playing' : 'paused'),
 		playing: !!playing,
-		loop: state.loop,
+		repeat: state.repeat,
+		loop: loopFlagFor(state.repeat),
 		current_time: audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
 		duration: audio && Number.isFinite(audio.duration) ? audio.duration : (track?.duration_s || 0),
 		queue: cleanQueue,
@@ -290,7 +300,9 @@ export const RainetteMusic = {
 	isPlaying() { return state.playing; },
 	requestQueueState() { _broadcast(undefined, state.playing); },
 	toggleLoop() { _toggleLoop(); },
-	isLooping() { return state.loop; },
+	isLooping() { return state.repeat !== 'off'; },
+	repeatMode() { return state.repeat; },
+	setRepeat(mode) { _setRepeat(mode); },
 	setVolume(v) { applyVolume(v); },
 	getVolume() { return state.volume; },
 	seek(ratio) { _seekRatio(ratio); },
@@ -382,10 +394,27 @@ function _togglePlay() {
 	} else audio.pause();
 }
 
-function _next() {
+// `auto` distinguishes a track ending on its own from the user pressing Next, so
+// repeat-one never traps the Next button on the same song.
+function _next(auto = false) {
 	if (!state.queue.length) return;
+	if (auto && state.repeat === 'one') { _replayCurrent(); return; }
 	if (state.index < state.queue.length - 1) { state.index++; _loadCurrent(); }
-	else if (state.loop) { state.index = 0; _loadCurrent(); }
+	else if (state.repeat === 'all') { state.index = 0; _loadCurrent(); }
+}
+
+function _replayCurrent() {
+	if (!audio) { _loadCurrent(); return; }
+	try {
+		audio.currentTime = 0;
+		const started = audio.play();
+		if (started?.catch) started.catch(() => _loadCurrent());
+	} catch {
+		_loadCurrent();
+		return;
+	}
+	_syncDesktopOverlay('playing', true);
+	_broadcast('playing', true);
 }
 
 function _prev() {
@@ -393,7 +422,7 @@ function _prev() {
 	// Restart the track if we're past the first few seconds, else go back.
 	if (audio && audio.currentTime > 3) { audio.currentTime = 0; _syncDesktopOverlay(undefined, true); return; }
 	if (state.index > 0) { state.index--; _loadCurrent(); }
-	else if (state.loop) { state.index = state.queue.length - 1; _loadCurrent(); }
+	else if (state.repeat !== 'off') { state.index = state.queue.length - 1; _loadCurrent(); }
 }
 
 function _overlayPayload(mode) {
@@ -406,7 +435,8 @@ function _overlayPayload(mode) {
 		track,
 		state: mode || (state.playing ? 'playing' : 'paused'),
 		playing: !!state.playing,
-		loop: !!state.loop,
+		repeat: state.repeat,
+		loop: loopFlagFor(state.repeat),
 		current_time: current,
 		duration,
 		// NOTE: intentionally does NOT send `expanded`. The native desktop
@@ -502,7 +532,7 @@ function _buildLegacyBubbleUI(bubbleRoot) {
 			<button class="rw-mp-btn" data-act="prev" title="Previous" aria-label="Previous">${_icon('prev')}</button>
 			<button class="rw-mp-btn rw-mp-play" data-act="toggle" title="Play/Pause" aria-label="Play or pause">${_icon('play')}</button>
 			<button class="rw-mp-btn" data-act="next" title="Next" aria-label="Next">${_icon('next')}</button>
-			<button class="rw-mp-btn" data-act="loop" title="Loop" aria-label="Toggle loop">${_icon('loop')}</button>
+			<button class="rw-mp-btn" data-act="loop" title="${REPEAT_LABEL.off}" aria-label="${REPEAT_LABEL.off}">${_icon('loop')}</button>
 			<div class="rw-mp-seek"><div class="rw-mp-seek-fill"></div></div>
 		</div>`;
 
@@ -533,7 +563,7 @@ function _buildLegacyBubbleUI(bubbleRoot) {
 	els.expand.addEventListener('click', () => _setExpanded(!state.expanded));
 	_wireSeek(els.seek);
 
-	els.loop.classList.toggle('on', state.loop);
+	_syncRepeatButton();
 	_setExpanded(false);
 	_restorePos();
 	_wireDrag();
@@ -560,11 +590,23 @@ function _renderPlayState() {
 }
 
 function _toggleLoop() {
-	state.loop = !state.loop;
-	_lsSet(LOOP_KEY, state.loop ? '1' : '0');
-	els.loop?.classList.toggle('on', state.loop);
+	_setRepeat(nextRepeat(state.repeat));
+}
+
+function _setRepeat(mode) {
+	state.repeat = normalizeRepeat(mode);
+	_lsSet(REPEAT_KEY, state.repeat);
+	_syncRepeatButton();
 	_syncDesktopOverlay(undefined, true);
 	_broadcast(undefined, state.playing);
+}
+
+function _syncRepeatButton() {
+	if (!els?.loop) return;
+	els.loop.classList.toggle('on', state.repeat !== 'off');
+	els.loop.innerHTML = _icon(state.repeat === 'one' ? 'loopOne' : 'loop');
+	els.loop.title = REPEAT_LABEL[state.repeat];
+	els.loop.setAttribute('aria-label', REPEAT_LABEL[state.repeat]);
 }
 
 function applyVolume(v) {
@@ -665,7 +707,7 @@ function _ensureAudio() {
 	});
 	audio.addEventListener('seeked', () => _broadcastProgress(true));
 	audio.addEventListener('durationchange', () => _syncDesktopOverlay(undefined, true));
-	audio.addEventListener('ended', () => _next());
+	audio.addEventListener('ended', () => _next(true));
 	audio.addEventListener('error', () => {
 		// One re-resolve attempt for an expired stream URL, then surface failure.
 		if (!erroredOnce && state.queue[state.index]) { erroredOnce = true; _reResolveAndResume(); }

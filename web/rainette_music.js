@@ -13,6 +13,8 @@ import { confirmDialog, textPrompt, pickerDialog, infoDialog, actionSheet, custo
 import { createSelect } from './rainette_select.js';
 import { renderSettings, defaultLandingTab, shouldAutoOpenQueue } from './rainette_settings.js';
 import { renderMobile, unmountMobile } from './rainette_mobile.js';
+import { createRainetteLoader } from './rainette_loading.js';
+import { REPEAT_LABEL, repeatFromMessage, loopFlagFor } from './repeat_mode.js';
 
 const LAYOUT_KEY = 'rainette.musicLayout';
 const QUEUE_SUPPORTED = typeof window !== 'undefined' && !!window.RW_REMOTE;
@@ -38,6 +40,9 @@ const pageState = {
 	tab: defaultLandingTab(),
 	query: '',
 	searchFilter: 'all',
+	searchRequestId: '',
+	searchLoading: false,
+	searchStatus: '',
 	results: [],
 	resultArtists: [],
 	resultAlbums: [],
@@ -76,6 +81,7 @@ const pageState = {
 	insights: { days: 7, data: null, loading: false },
 	progress: { current_time: 0, duration: 0, playing: false, source_id: '' },
 	playbackStarted: false,
+	output: { device: 'desktop', transferPending: false, status: '' },
 	lyrics: { source_id: '', reqId: '', loading: false, text: '', notFound: false, instrumental: false, error: '', open: false, synced: false, lines: [], activeIndex: -1, userScrollUntil: 0 },
 	_autoplayOnLoad: false,
 };
@@ -103,9 +109,12 @@ function navItems() {
 let _host = null;
 let _mounted = false;
 let _listenerBound = false;
+let _updateBound = false;
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 let _paletteKeysBound = false;
 let _nowPlayingKeysBound = false;
 let _searchDebounce = null;
+let _searchTimeout = null;
 let _lastAutoOpenTrackKey = null;
 let _lastOptimisticQueueSignature = null;
 let _lastAnimatedTab = null;
@@ -306,7 +315,9 @@ function trackCard(track, actions) {
 	return card;
 }
 
-function artistCard(artist) {
+// `extras` are trailing action nodes for callers that need more than open/follow
+// (Insights adds a remove); every other surface keeps the plain two-button card.
+function artistCard(artist, extras = []) {
 	const card = el('div', 'rw-bubble rw-track-card rw-artist-card');
 	const metaWrap = el('div', 'rw-track-meta');
 	metaWrap.append(
@@ -320,7 +331,7 @@ function artistCard(artist) {
 	const follow = btn(following ? 'Following' : 'Follow', 'rw-btn rw-btn-ghost rw-follow-btn' + (following ? ' on' : ''), () => toggleArtistFollow(artist));
 	follow.setAttribute('aria-label', (following ? 'Unfollow ' : 'Follow ') + (artist.name || 'artist'));
 	const actWrap = el('div', 'rw-track-actions');
-	actWrap.append(open, follow);
+	actWrap.append(open, follow, ...extras);
 	card.append(thumbBox(artist.thumbnail_url, 'A'), metaWrap, actWrap);
 	return card;
 }
@@ -353,6 +364,45 @@ function trackActions(track, queue, extras = []) {
 		playAction(track, queue),
 		iconBtn('more', 'rw-icon-btn', () => openTrackMenu(track, queue, extras), 'More actions'),
 	];
+}
+
+// Recents is grouped by track, so there is no single play to delete - forgetting
+// a track's plays is the only thing "remove this" can mean. That is also why the
+// same action is offered on Insights: both read the one play-history table, so a
+// removal has to drop out of both or they visibly disagree.
+function forgetPlaysAction(track, { label = 'Remove from Recents' } = {}) {
+	return {
+		label,
+		danger: true,
+		run: async () => {
+			const ok = await confirmDialog({
+				title: label,
+				message: `Forget every play of "${track.title || 'this track'}"? It disappears from Recents and Insights. This can't be undone.`,
+				confirmLabel: 'Remove',
+				danger: true,
+			});
+			if (ok) sendHelper({ type: 'music_recent_delete', scope: 'track', track_id: track.id });
+		},
+	};
+}
+
+// Top-artist rows aggregate plays, so removing one means forgetting every play by
+// that artist. artist_key is resolved server-side the same way the tally groups
+// them, so the row that disappears is exactly the row you clicked.
+function forgetArtistPlaysAction(artist) {
+	return {
+		label: 'Remove from Insights',
+		danger: true,
+		run: async () => {
+			const ok = await confirmDialog({
+				title: 'Remove from Insights',
+				message: `Forget every play by "${artist.name || 'this artist'}"? Their tracks disappear from Recents and Insights too. This can't be undone.`,
+				confirmLabel: 'Remove',
+				danger: true,
+			});
+			if (ok) sendHelper({ type: 'music_recent_delete', scope: 'artist', artist_key: artist.artist_key });
+		},
+	};
 }
 
 async function openTrackMenu(track, queue, extras = []) {
@@ -392,17 +442,43 @@ function updateShellChrome() {
 
 function runSearch() {
 	const q = pageState.query.trim();
-	const status = _host?.querySelector('#rwMusicSearchStatus');
+	clearTimeout(_searchTimeout);
 	if (!q) {
+		pageState.searchRequestId = '';
+		pageState.searchLoading = false;
+		pageState.searchStatus = '';
 		pageState.results = [];
 		pageState.resultArtists = [];
 		pageState.resultAlbums = [];
 		renderResults();
-		if (status) status.textContent = '';
+		renderSearchActivity();
 		return;
 	}
-	if (status) status.textContent = 'Searching...';
-	sendHelper({ type: 'music_catalog_search', id: 'mcat_' + Math.random().toString(36).slice(2), query: q });
+	const id = 'mcat_' + Math.random().toString(36).slice(2);
+	pageState.searchRequestId = id;
+	pageState.searchLoading = true;
+	pageState.searchStatus = '';
+	renderSearchActivity();
+	sendHelper({ type: 'music_catalog_search', id, query: q });
+	_searchTimeout = setTimeout(() => {
+		if (pageState.searchRequestId !== id) return;
+		pageState.searchRequestId = '';
+		pageState.searchLoading = false;
+		pageState.searchStatus = 'Search is taking longer than expected. Check the connection and try again.';
+		renderSearchActivity();
+	}, 30000);
+}
+
+function renderSearchActivity() {
+	const status = _host?.querySelector('#rwMusicSearchStatus');
+	const list = _host?.querySelector('#rwMusicResults');
+	if (!status) return;
+	status.replaceChildren();
+	status.hidden = !pageState.searchLoading && !pageState.searchStatus;
+	status.setAttribute('aria-busy', pageState.searchLoading ? 'true' : 'false');
+	list?.setAttribute('aria-busy', pageState.searchLoading ? 'true' : 'false');
+	if (pageState.searchLoading) status.appendChild(createRainetteLoader('Searching Rainette', { compact: true }));
+	else status.textContent = pageState.searchStatus;
 }
 
 function renderSearch() {
@@ -439,6 +515,7 @@ function renderSearch() {
 	body.appendChild(status);
 	const list = trackList('rwMusicResults');
 	body.appendChild(list);
+	renderSearchActivity();
 	renderResults();
 }
 
@@ -632,7 +709,7 @@ function renderArtistDetail() {
 	);
 	body.appendChild(head);
 	if (view.loading) {
-		body.appendChild(el('div', 'rw-status-line', 'Loading artist catalog...'));
+		body.appendChild(createRainetteLoader('Loading artist catalog'));
 		return;
 	}
 	if (view.msg) body.appendChild(el('div', 'rw-status-line', view.msg));
@@ -672,7 +749,7 @@ function renderAlbumDetail() {
 	);
 	body.appendChild(head);
 	if (view.loading) {
-		body.appendChild(el('div', 'rw-status-line', 'Loading album...'));
+		body.appendChild(createRainetteLoader('Loading album'));
 		return;
 	}
 	const tracks = view.tracks || [];
@@ -1468,11 +1545,25 @@ function renderRecent() {
 		button.addEventListener('click', () => { pageState.recentMode = id; renderRecent(); });
 		mode.appendChild(button);
 	}
+	// Only offer the clear-all once there is something to clear, so the toolbar
+	// stays quiet on an empty history.
+	const toolbarExtras = [mode];
+	if (pageState.recent.length) {
+		toolbarExtras.push(btn('Clear all', 'rw-btn rw-btn-ghost rw-clear-recents', async () => {
+			const ok = await confirmDialog({
+				title: 'Clear all recents',
+				message: 'Forget your entire play history? Recents and Insights both start over. This can\'t be undone.',
+				confirmLabel: 'Clear all',
+				danger: true,
+			});
+			if (ok) sendHelper({ type: 'music_recent_delete', scope: 'all' });
+		}));
+	}
 	body.appendChild(compactFilterToolbar('recent', 'Filter recent tracks', [
 		['recent', 'Recently played'],
 		['title', 'Title'],
 		['artist', 'Artist'],
-	], [mode]));
+	], toolbarExtras));
 	const list = trackList('rwMusicRecent');
 	const f = filterState('recent');
 	if (pageState.recentMode === 'artists') {
@@ -1503,7 +1594,7 @@ function renderRecent() {
 			lastGroup = group;
 			list.appendChild(section(group));
 		}
-		list.appendChild(trackCard(track, trackActions(track, tracks)));
+		list.appendChild(trackCard(track, trackActions(track, tracks, [forgetPlaysAction(track)])));
 	}
 	body.appendChild(list);
 }
@@ -1652,7 +1743,9 @@ function renderInsights() {
 				el('div', 'rw-track-sub', [artistName(track), `${plays} play${plays === 1 ? '' : 's'}`].filter(Boolean).join(' · ')),
 			);
 			const actions = el('div', 'rw-track-actions');
-			actions.append(playAction(track, data.top_tracks), iconBtn('more', 'rw-icon-btn', () => openTrackMenu(track, data.top_tracks), 'More actions'));
+			actions.append(playAction(track, data.top_tracks), iconBtn('more', 'rw-icon-btn',
+				() => openTrackMenu(track, data.top_tracks, [forgetPlaysAction(track, { label: 'Remove from Insights' })]),
+				'More actions'));
 			row.append(rank, thumbBox(track.thumbnail_url), metaWrap, actions);
 			list.appendChild(row);
 		});
@@ -1664,7 +1757,10 @@ function renderInsights() {
 		const list = el('div', 'rw-track-list rw-insights-artists');
 		for (const artist of data.top_artists) {
 			const plays = insightCount(artist.play_count);
-			list.appendChild(artistCard({ ...artist, subscribers: `${plays} play${plays === 1 ? '' : 's'}` }));
+			const extras = artist.artist_key ? [iconBtn('trash', 'rw-icon-btn danger',
+				() => actionSheet({ title: artist.name || 'Artist', items: [forgetArtistPlaysAction(artist)] }),
+				'Remove from Insights')] : [];
+			list.appendChild(artistCard({ ...artist, subscribers: `${plays} play${plays === 1 ? '' : 's'}` }, extras));
 		}
 		scroll.appendChild(list);
 	}
@@ -1685,19 +1781,32 @@ function renderInsightsChart(daily) {
 	chart.setAttribute('aria-label', `Plays per day, ${total} total over ${series.length} days`);
 	const peakCount = Math.max(0, ...series.map(d => d.count));
 	const peakIndex = peakCount > 0 ? series.findIndex(d => d.count === peakCount) : -1;
+	// At a week's width every bar can carry its number without the labels
+	// colliding; longer ranges keep the peak-plus-hover reveal. Same density
+	// threshold the day ticks below use.
+	if (series.length && series.length <= 7) chart.classList.add('rw-insights-labelled');
 	series.forEach((d, i) => {
 		const col = el('div', 'rw-insights-col');
 		const count = d.count;
+		const plot = el('div', 'rw-insights-plot');
 		const bar = el('div', 'rw-insights-bar' + (count ? '' : ' zero'));
-		bar.style.height = count ? Math.max(6, Math.round(count / max * 100)) + '%' : '0%';
+		const heightPct = count ? Math.max(6, Math.round(count / max * 100)) : 0;
+		bar.style.height = heightPct + '%';
 		bar.style.setProperty('--rw-bar-i', String(i));
+		// The label has to stay a sibling of the bar so the bar's scaleY grow
+		// animation never transforms it, so it can't be positioned against the
+		// bar's own box. Both resolve this percentage against .rw-insights-plot,
+		// which is what keeps the label pinned just above the bar's top edge at
+		// every height instead of at a fixed offset that tall bars grow into.
+		plot.style.setProperty('--rw-bar-h', heightPct + '%');
 		const date = new Date(d.date + 'T00:00:00');
 		const validDate = Number.isFinite(date.getTime());
 		const nice = validDate ? date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : (d.date || 'Unknown day');
 		col.title = `${nice} — ${count} play${count === 1 ? '' : 's'}`;
 		col.setAttribute('aria-label', col.title);
-		col.appendChild(el('span', 'rw-insights-bar-label' + (i === peakIndex ? ' peak' : '') + (!count ? ' zero' : ''), String(count)));
-		col.appendChild(bar);
+		plot.appendChild(el('span', 'rw-insights-bar-label' + (i === peakIndex ? ' peak' : '') + (!count ? ' zero' : ''), String(count)));
+		plot.appendChild(bar);
+		col.appendChild(plot);
 		col.appendChild(el('span', 'rw-insights-day', validDate ? (series.length <= 7
 			? date.toLocaleDateString(undefined, { weekday: 'narrow' })
 			: (date.getDate() === 1 || date.getDay() === 1 ? String(date.getDate()) : '')) : ''));
@@ -2059,7 +2168,9 @@ function renderNowPlayingView() {
 	const prevBtn = iconBtn('prev', 'rw-now-view-btn', () => window.RainetteMusic?.prev?.(), 'Previous');
 	const playBtn = iconBtn(q.playing ? 'pause' : 'play', 'rw-now-view-btn rw-now-view-play', () => window.RainetteMusic?.toggle?.(), 'Play or pause');
 	const nextBtn = iconBtn('next', 'rw-now-view-btn', () => window.RainetteMusic?.next?.(), 'Next');
-	const loopBtn = iconBtn('loop', 'rw-now-view-btn' + (q.loop ? ' on' : ''), () => window.RainetteMusic?.toggleLoop?.(), 'Toggle loop');
+	const repeat = q.repeat || (q.loop ? 'all' : 'off');
+	const loopBtn = iconBtn(repeat === 'one' ? 'loopOne' : 'loop', 'rw-now-view-btn' + (repeat !== 'off' ? ' on' : ''),
+		() => window.RainetteMusic?.toggleLoop?.(), REPEAT_LABEL[repeat]);
 	transport.append(shuffleBtn, prevBtn, playBtn, nextBtn, loopBtn);
 	main.appendChild(transport);
 
@@ -2430,16 +2541,127 @@ function wireSeekBar(seekEl) {
 
 let _dockedBarBuilt = false;
 let _dockedBarShown = false;
-let _dockedClearanceObserver = null;
-function syncDockedClearance(bar) {
-	if (!_host) return;
-	if (bar.hidden) {
-		_host.style.removeProperty('--rw-docked-clearance');
+
+async function pairedPhoneState() {
+	const api = window.pywebview?.api;
+	if (!api?.companion_management_state) return { available: false, devices: [] };
+	try {
+		const result = await Promise.resolve(api.companion_management_state());
+		const devices = Array.isArray(result?.devices) ? result.devices.filter(device => !device?.revoked) : [];
+		return { available: true, devices };
+	} catch {
+		return { available: true, devices: [] };
+	}
+}
+
+function requestOutputTransfer(payload, timeoutMs = 35000) {
+	const id = payload.id || ('output_' + Math.random().toString(36).slice(2));
+	return new Promise(resolve => {
+		let settled = false;
+		const finish = result => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			document.removeEventListener('rainette:helper-message', onMessage);
+			resolve(result);
+		};
+		const onMessage = event => {
+			const message = event.detail || {};
+			// The bridge broadcasts the request itself with the same id. Only the
+			// target's explicit result is an acknowledgement that permits us to
+			// pause this desktop; everything else is deliberately ignored.
+			if (message.type !== 'music_output_transfer_result' || String(message.id || '') !== id) return;
+			if (message.target_device_id && message.target_device_id !== payload.target_device_id) return;
+			finish(message);
+		};
+		const timer = setTimeout(() => finish({ ok: false, msg: 'The phone did not accept playback in time.' }), timeoutMs);
+		document.addEventListener('rainette:helper-message', onMessage);
+		sendHelper({ type: 'music_output_transfer', ...payload, id });
+	});
+}
+
+function renderDockedOutputControl(bar = _host?.querySelector('#rwDockedBar')) {
+	const button = bar?.querySelector('.rw-now-output');
+	if (!button) return;
+	const output = pageState.output;
+	button.disabled = !!output.transferPending;
+	button.classList.toggle('on-phone', output.device === 'phone');
+	const current = output.device === 'phone' ? 'This phone' : 'This desktop';
+	button.setAttribute('aria-label', output.transferPending ? 'Play on, connecting to phone' : `Play on, currently ${current}`);
+	button.title = output.status || `Play on - currently ${current}`;
+	const label = button.querySelector('.rw-now-output-label');
+	if (label) label.textContent = output.transferPending ? 'Connecting' : 'Play on';
+	const live = bar?.querySelector('.rw-now-output-status');
+	if (live && live.textContent !== output.status) live.textContent = output.status;
+}
+
+async function transferPlaybackToPhone(phone) {
+	if (pageState.output.transferPending) return;
+	const queue = pageState.queue || {};
+	const tracks = Array.isArray(queue.tracks) ? queue.tracks : [];
+	const index = Math.max(0, Math.min(Number(queue.index) || 0, tracks.length - 1));
+	if (!tracks[index]) {
+		await infoDialog({ title: 'Nothing is playing', message: 'Start a song before moving playback to your phone.' });
 		return;
 	}
-	const height = Math.ceil(bar.getBoundingClientRect().height);
-	_host.style.setProperty('--rw-docked-clearance', `${Math.max(0, height + 14)}px`);
+	const phoneName = phone?.name || 'This phone';
+	const wasPlaying = !!queue.playing;
+	pageState.output.transferPending = true;
+	pageState.output.status = `Connecting to ${phoneName}...`;
+	renderDockedOutputControl();
+	try {
+		const result = await requestOutputTransfer({
+			source_device_id: 'desktop',
+			target_device_id: 'phone',
+			queue: tracks,
+			index,
+			current_time: Math.max(0, Number(pageState.progress.current_time) || 0),
+			playing: wasPlaying,
+			// The desktop does own a repeat setting, so a handoff carries it (unlike
+			// the phone->desktop direction, which has none to assert).
+			repeat: queue.repeat || (queue.loop ? 'all' : 'off'),
+			loop: loopFlagFor(queue.repeat || (queue.loop ? 'all' : 'off')),
+		});
+		if (!result?.ok) throw new Error(result?.msg || 'The phone could not load this track.');
+		// Single-output handoff: leave the desktop untouched until the phone's
+		// positive load acknowledgement above, then issue an idempotent pause.
+		if (wasPlaying) sendHelper({ type: 'music_remote_control', action: 'pause', reason: 'output_transfer' });
+		pageState.output.device = 'phone';
+		pageState.output.status = `Playing on ${phoneName}.`;
+	} catch (error) {
+		pageState.output.device = 'desktop';
+		pageState.output.status = 'Transfer failed. Playback stayed on this desktop.';
+		await infoDialog({ title: 'Could not play on phone', message: error?.message || 'The phone did not accept playback.' });
+	} finally {
+		pageState.output.transferPending = false;
+		renderDockedOutputControl();
+	}
 }
+
+async function openOutputPicker() {
+	if (pageState.output.transferPending) return;
+	const paired = await pairedPhoneState();
+	const phone = paired.devices[0] || null;
+	await actionSheet({
+		title: 'Play on',
+		items: [
+			{
+				id: 'desktop',
+				label: 'This desktop',
+				hint: pageState.output.device === 'desktop' ? 'Playing here' : 'Available from your phone',
+			},
+			{
+				id: 'phone',
+				label: 'This phone',
+				hint: phone ? (phone.name || 'Paired and available') : (paired.available ? 'No paired phone' : 'Pair from the Mobile page'),
+				run: phone
+					? () => { transferPlaybackToPhone(phone).catch(() => {}); }
+					: () => { pageState.tab = 'mobile'; pageState.view = null; applyTab(); },
+			},
+		],
+	});
+}
+
 function ensureDockedBar() {
 	const bar = _host?.querySelector('#rwDockedBar');
 	if (!bar || _dockedBarBuilt) return bar;
@@ -2465,9 +2687,16 @@ function ensureDockedBar() {
 				<button class="rw-now-btn" data-act="prev" title="Previous" aria-label="Previous">${iconMarkup('prev', 16)}</button>
 				<button class="rw-now-btn rw-now-play" data-act="toggle" title="Play/Pause" aria-label="Play or pause">${iconMarkup('play', 16)}</button>
 				<button class="rw-now-btn" data-act="next" title="Next" aria-label="Next">${iconMarkup('next', 16)}</button>
-				<button class="rw-now-btn rw-now-loop" data-act="loop" title="Loop" aria-label="Toggle loop">${iconMarkup('loop', 16)}</button>
+				<button class="rw-now-btn rw-now-loop" data-act="loop" title="${REPEAT_LABEL.off}" aria-label="${REPEAT_LABEL.off}">${iconMarkup('loop', 16)}</button>
 			</div>
-			<div class="rw-now-bar-extra">${popoutBtn}</div>
+			<div class="rw-now-bar-extra">
+				<button class="rw-now-output" data-act="output" type="button" aria-haspopup="dialog" aria-label="Play on, currently This desktop">
+					<span class="rw-now-output-dot" aria-hidden="true"></span>
+					<span class="rw-now-output-label">Play on</span>
+				</button>
+				<span class="rw-now-output-status" role="status" aria-live="polite"></span>
+				${popoutBtn}
+			</div>
 		</div>`;
 	// Delegated on the whole row so it catches both the transport controls and
 	// the (separately-grouped) pop-out button. The meta button has no data-act,
@@ -2480,6 +2709,7 @@ function ensureDockedBar() {
 		else if (act === 'next') window.RainetteMusic?.next?.();
 		else if (act === 'prev') window.RainetteMusic?.prev?.();
 		else if (act === 'loop') window.RainetteMusic?.toggleLoop?.();
+		else if (act === 'output') { openOutputPicker().catch(() => {}); }
 		else if (act === 'popout') { try { window.pywebview?.api?.reveal_player?.(); } catch { /* not in pywebview */ } }
 	});
 	const volume = document.createElement('input');
@@ -2498,8 +2728,7 @@ function ensureDockedBar() {
 	bar.querySelector('.rw-now-bar-extra')?.prepend(iconSpan('volume', 'rw-now-volume-icon'), volume);
 	bar.querySelector('.rw-now-bar-meta').addEventListener('click', openNowPlayingView);
 	wireSeekBar(bar.querySelector('.rw-now-seek'));
-	_dockedClearanceObserver = new ResizeObserver(() => syncDockedClearance(bar));
-	_dockedClearanceObserver.observe(bar);
+	renderDockedOutputControl(bar);
 	return bar;
 }
 
@@ -2514,7 +2743,6 @@ function renderDockedBar() {
 	const show = !!track && pageState.playbackStarted;
 	bar.hidden = !show;
 	_host?.classList.toggle('rw-has-docked-bar', show);
-	requestAnimationFrame(() => syncDockedClearance(bar));
 	// Slide-up entrance only on the transition from hidden→shown, so it "pops
 	// up" when playback begins rather than re-animating on every render.
 	if (show && !_dockedBarShown && !motionDisabled()) {
@@ -2550,12 +2778,20 @@ function renderDockedBar() {
 	bar.querySelector('.rw-now-title').textContent = track.title || '(untitled)';
 	bar.querySelector('.rw-now-artist').textContent = artistName(track) || '';
 	bar.querySelector('.rw-now-play').innerHTML = iconMarkup(q.playing ? 'pause' : 'play', 16);
-	bar.querySelector('.rw-now-loop')?.classList.toggle('on', !!q.loop);
+	const loopBtn = bar.querySelector('.rw-now-loop');
+	if (loopBtn) {
+		const repeat = q.repeat || (q.loop ? 'all' : 'off');
+		loopBtn.classList.toggle('on', repeat !== 'off');
+		loopBtn.innerHTML = iconMarkup(repeat === 'one' ? 'loopOne' : 'loop', 16);
+		loopBtn.title = REPEAT_LABEL[repeat];
+		loopBtn.setAttribute('aria-label', REPEAT_LABEL[repeat]);
+	}
 	const volume = bar.querySelector('.rw-now-volume');
 	if (volume && document.activeElement !== volume) {
 		volume.value = String(Math.round((window.RainetteMusic?.getVolume?.() ?? 1) * 100));
 		volume.setAttribute('aria-valuetext', volume.value + '%');
 	}
+	renderDockedOutputControl(bar);
 	updateProgressUi();
 }
 
@@ -2670,16 +2906,22 @@ function onHelperMessage(msg) {
 	if (!_mounted || !msg) return;
 	switch (msg.type) {
 		case 'music_catalog_search_result': {
+			if (!pageState.searchRequestId || msg.id !== pageState.searchRequestId) break;
+			clearTimeout(_searchTimeout);
+			pageState.searchRequestId = '';
+			pageState.searchLoading = false;
 			if (msg.ok) {
 				pageState.results = msg.songs || [];
 				pageState.resultArtists = msg.artists || [];
 				pageState.resultAlbums = msg.albums || [];
+			} else {
+				pageState.results = [];
+				pageState.resultArtists = [];
+				pageState.resultAlbums = [];
 			}
-			const status = _host?.querySelector('#rwMusicSearchStatus');
-			if (status) {
-				const total = pageState.results.length + pageState.resultArtists.length + pageState.resultAlbums.length;
-				status.textContent = msg.ok ? (total + ' results' + (msg.msg ? ' - ' + msg.msg : '')) : ('Search failed: ' + (msg.msg || ''));
-			}
+			const total = pageState.results.length + pageState.resultArtists.length + pageState.resultAlbums.length;
+			pageState.searchStatus = msg.ok ? (total + ' results' + (msg.msg ? ' - ' + msg.msg : '')) : ('Search failed: ' + (msg.msg || 'Please try again.'));
+			renderSearchActivity();
 			if (pageState.tab === 'search' && !pageState.view) renderResults();
 			break;
 		}
@@ -2725,6 +2967,29 @@ function onHelperMessage(msg) {
 			if (pageState.tab === 'home' && !pageState.view) renderHome();
 			if (pageState.tab === 'search' && !pageState.view && !pageState.query.trim()) renderResults();
 			break;
+		case 'music_recent_deleted':
+			// The reply carries the refreshed Recents; Insights is a separate
+			// server-side aggregation, so re-fetch it if that tab is open.
+			if (Array.isArray(msg.tracks)) pageState.recent = msg.tracks;
+			if (!msg.ok) infoDialog({ title: 'Could not remove', message: msg.msg || 'That change did not go through.' });
+			if (pageState.tab === 'recent' && !pageState.view) renderRecent();
+			if (pageState.tab === 'home' && !pageState.view) renderHome();
+			if (pageState.tab === 'insights' && !pageState.view) fetchInsights();
+			break;
+		case 'music_data_cleared':
+			if (msg.ok) {
+				if (Array.isArray(msg.tracks)) pageState.recent = msg.tracks;
+				if (Array.isArray(msg.playlists)) pageState.playlists = msg.playlists;
+				if (Array.isArray(msg.folders)) pageState.folders = msg.folders;
+				if (Array.isArray(msg.followed_artists)) pageState.library.followed_artists = msg.followed_artists;
+			} else {
+				infoDialog({ title: 'Could not clear data', message: msg.msg || 'Nothing was changed.' });
+			}
+			// A clear can touch every surface, so refresh Insights and re-render
+			// whatever tab is currently open.
+			fetchInsights();
+			applyTab();
+			break;
 		case 'music_top_artists_result':
 			if (msg.ok) pageState.topArtists = msg.artists || [];
 			if (pageState.tab === 'home' && !pageState.view) renderHome();
@@ -2755,11 +3020,15 @@ function onHelperMessage(msg) {
 				}
 			}
 			if (Array.isArray(msg.queue)) {
+				// An absent repeat field means "the producer has no opinion", not
+				// "off" - keep what we already show rather than resetting the button.
+				const repeat = repeatFromMessage(msg, pageState.queue?.repeat || 'off');
 				pageState.queue = {
 					tracks: msg.queue,
 					index: Number.isFinite(Number(msg.index)) ? Number(msg.index) : -1,
 					playing: !!msg.playing,
-					loop: !!msg.loop,
+					repeat,
+					loop: loopFlagFor(repeat),
 					duration: Number(msg.queue_duration || 0),
 					count: Number(msg.queue_count || msg.queue.length || 0),
 				};
@@ -2938,6 +3207,10 @@ function buildPage(host) {
 						<div class="rw-music-brand-sub">Quiet listening</div>
 					</div>
 				</div>
+				<button id="rwUpdateBadge" class="rw-update-badge" type="button" hidden>
+					<span class="rw-update-dot" aria-hidden="true"></span>
+					<span class="rw-update-label">Update available</span>
+				</button>
 				<nav class="rw-music-nav" id="rwMusicTabs">${tabs}</nav>
 				<div class="rw-pinned-playlists" id="rwPinnedPlaylists"></div>
 				<div class="rw-music-sidebar-foot">
@@ -2998,11 +3271,82 @@ function buildPage(host) {
 	renderPinnedPlaylists();
 }
 
+// ── In-app updater badge ────────────────────────────────────────────────────
+// Desktop-only: the badge sits by the sidebar logo and only appears once GitHub
+// reports a newer release. There is no updater in browser/Edge-fallback mode
+// (no window.pywebview), so the badge simply never shows there.
+
+function updateBadgeEl() { return _host?.querySelector('#rwUpdateBadge'); }
+
+function setUpdateBadge(status) {
+	const badge = updateBadgeEl();
+	if (!badge) return;
+	if (status.status === 'update') {
+		badge.dataset.latest = status.latest || '';
+		badge.querySelector('.rw-update-label').textContent = status.latest ? `Update to ${status.latest}` : 'Update available';
+		badge.hidden = false;
+	} else {
+		badge.hidden = true;
+	}
+}
+
+async function checkForAppUpdate() {
+	const api = window.pywebview?.api;
+	if (!api?.check_for_updates) return;
+	try { setUpdateBadge(await api.check_for_updates()); }
+	catch { /* a failed check just leaves the badge hidden */ }
+}
+
+async function onUpdateBadgeClick() {
+	const api = window.pywebview?.api;
+	const badge = updateBadgeEl();
+	if (!api?.apply_update || !badge) return;
+	const latest = badge.dataset.latest;
+	const ok = await confirmDialog({
+		title: 'Update Rainette Music',
+		message: `Download and install ${latest ? 'version ' + latest : 'the latest release'}? Rainette will restart to finish.`,
+		confirmLabel: 'Update now',
+	});
+	if (!ok) return;
+	const label = badge.querySelector('.rw-update-label');
+	badge.classList.add('busy');
+	badge.disabled = true;
+	label.textContent = 'Downloading…';
+	let result;
+	try { result = await api.apply_update(); }
+	catch (err) { result = { status: 'failed', msg: String(err) }; }
+	if (result?.status === 'installing') {
+		label.textContent = 'Installing…';   // the app is about to exit and relaunch
+		return;
+	}
+	badge.classList.remove('busy');
+	badge.disabled = false;
+	label.textContent = latest ? `Update to ${latest}` : 'Update available';
+	infoDialog({
+		title: 'Update failed',
+		message: result?.status === 'unsupported'
+			? (result.msg || 'Updates apply to the installed app.')
+			: (result?.msg || 'Could not install the update. Please try again later.'),
+	});
+}
+
+function bindUpdater(host) {
+	if (_updateBound || typeof window === 'undefined' || !window.pywebview) return;
+	_updateBound = true;
+	host.querySelector('#rwUpdateBadge')?.addEventListener('click', onUpdateBadgeClick);
+	// window.pywebview.api is injected asynchronously; wait for it, then poll on a
+	// slow cadence so a long-running app still notices a release.
+	const start = () => { checkForAppUpdate(); setInterval(checkForAppUpdate, UPDATE_CHECK_INTERVAL_MS); };
+	if (window.pywebview.api) start();
+	else window.addEventListener('pywebviewready', start, { once: true });
+}
+
 export const MusicPage = {
 	mount(host) {
 		_host = host;
 		if (!host.dataset.built) { buildPage(host); host.dataset.built = '1'; }
 		_mounted = true;
+		bindUpdater(host);
 		if (!_listenerBound) {
 			_listenerBound = true;
 			document.addEventListener('rainette:helper-message', e => onHelperMessage(e.detail));

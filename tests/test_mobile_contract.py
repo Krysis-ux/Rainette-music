@@ -46,8 +46,36 @@ class MobileContractTests(unittest.TestCase):
         persisted = plugin.index('.putString("device_token", token)')
         acknowledged = plugin.index('new URL(endpoint + "/pair/ack")')
         self.assertLess(persisted, acknowledged)
+        self.assertIn("MGF1ParameterSpec.SHA1", plugin)
+        self.assertNotIn("MGF1ParameterSpec.SHA256", plugin)
         self.assertNotIn("ALLOW_ALL_HOSTNAME_VERIFIER", plugin)
         self.assertNotIn("return true; // disable", plugin)
+
+    def test_android_pairing_status_progress_and_revision_recovery_contract(self):
+        plugin = (MOBILE / "android" / "app" / "src" / "main" / "java" / "com" / "krysisux" / "rainettemusic" / "RainetteCompanionPlugin.java").read_text(encoding="utf-8")
+        status = _braced_block(plugin, "public void connectionStatus(PluginCall call)")
+        self.assertIn('new URL(endpoint + "/status")', status)
+        self.assertIn('setRequestProperty("Authorization", "Bearer " + token)', status)
+        self.assertIn('deviceId.equals(authenticatedDeviceId)', status)
+        self.assertIn('state.put("paired", true)', status)
+        self.assertIn('"reconnecting"', status)
+        for phase in ("connecting", "pending_approval", "securing"):
+            self.assertIn(f'emitPairingProgress("{phase}"', plugin)
+        self.assertIn('"rainette_companion_pairing"', plugin)
+
+        sync = _braced_block(plugin, "private void runSyncLoop()")
+        self.assertIn("activeEndpoint", sync)
+        self.assertIn("activeDeviceId", sync)
+        self.assertIn("activeToken", sync)
+        self.assertIn("revision = 0L", sync)
+        self.assertIn('latest.getString("endpoint", "")', sync)
+        self.assertIn('latest.getString("device_id", "")', sync)
+        self.assertIn('latest.getString("device_token", "")', sync)
+        self.assertIn('response.optBoolean("reset_required", false)', sync)
+        self.assertRegex(
+            sync,
+            re.compile(r"revision\s*=\s*response\.optBoolean.*?\? responseRevision\s*:\s*Math\.max", re.DOTALL),
+        )
 
     def test_android_pair_ack_is_durable_retried_and_reconciled_after_restart(self):
         plugin = (MOBILE / "android" / "app" / "src" / "main" / "java" / "com" / "krysisux" / "rainettemusic" / "RainetteCompanionPlugin.java").read_text(encoding="utf-8")
@@ -138,12 +166,21 @@ class MobileContractTests(unittest.TestCase):
         self.assertIn("distribution: 'temurin'", workflow)
         self.assertIn("java-version: '21'", workflow)
         self.assertIn("rainette-music-android.apk", workflow)
+        self.assertIn("RainetteMusicSetup.exe", workflow)
+        self.assertIn("rainette-music-android.apk.sha256", workflow)
+        self.assertIn("RainetteMusicSetup.exe.sha256", workflow)
+        self.assertIn("android-release.json", workflow)
+        self.assertIn("windows-release.json", workflow)
+        self.assertIn("fail_on_unmatched_files: true", workflow)
         self.assertIn("assembleRelease", workflow)
 
     def test_android_release_workflow_has_version_tag_trigger_and_write_permission(self):
         workflow = (ROOT / ".github" / "workflows" / "android-release.yml").read_text(encoding="utf-8")
         self.assertRegex(workflow, r"(?m)^on:\n  push:\n    tags:\n      - 'v\*'$")
         self.assertRegex(workflow, r"(?m)^permissions:\n  contents: write$")
+        self.assertIn('RAINETTE_VERSION_NAME="${GITHUB_REF_NAME#v}"', workflow)
+        self.assertIn('RAINETTE_VERSION_CODE="${GITHUB_RUN_NUMBER}"', workflow)
+        self.assertIn("chmod +x ./gradlew", workflow)
 
     def test_android_signing_secrets_are_scoped_only_to_required_steps(self):
         workflow = (ROOT / ".github" / "workflows" / "android-release.yml").read_text(encoding="utf-8")
@@ -176,8 +213,8 @@ class MobileContractTests(unittest.TestCase):
             "Install mobile dependencies",
             "Sync Capacitor Android project",
             "Add Android signing tools to PATH",
-            "Verify and prepare signed APK",
-            "Publish GitHub Release asset",
+            "Verify and prepare release assets",
+            "Publish GitHub Release assets",
         ):
             self.assertNotIn("secrets.", _workflow_step(workflow, step_name), step_name)
 
@@ -202,7 +239,9 @@ class MobileContractTests(unittest.TestCase):
         self.assertLess(verify, rename)
         self.assertLess(rename, upload)
         upload_config = workflow[upload:]
-        self.assertRegex(upload_config, r"(?m)^          files: rainette-music-android\.apk$")
+        self.assertIn("          files: |", upload_config)
+        self.assertIn("            rainette-music-android.apk", upload_config)
+        self.assertIn("            RainetteMusicSetup.exe", upload_config)
         self.assertNotRegex(upload_config, r"(?m)^          files: .*[*?\[]")
         self.assertNotIn("app-release-unsigned.apk", upload_config)
 
