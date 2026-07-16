@@ -1,0 +1,26 @@
+# Rainette Music — standalone app dependencies.
+
+# Local HTTP + WebSocket server.
+aiohttp>=3.9
+cryptography>=42.0
+zeroconf>=0.131
+qrcode[pil]>=8.0
+filelock>=3.13
+
+# Search + ad-free audio-stream extraction (YouTube etc.).
+# No upper bound on purpose — yt-dlp ships frequent extractor fixes as sites
+# change, and pinning it would silently break playback over time.
+yt-dlp>=2024.1
+
+# Artist / album / song catalog metadata (optional but recommended;
+# the app degrades to yt-dlp-only search without it).
+ytmusicapi>=1.12
+
+# Native desktop window (WebView2 on Windows). The autoplay policy patch is
+# deliberately bound to this audited pywebview implementation; changing the
+# version requires the native playback smoke test to prove the flag still lands.
+# The app still falls back to Edge --app mode if pywebview is unavailable.
+pywebview==6.2.1
+
+# Only needed to build the shipped app — see release/build-windows-release.ps1.
+pyinstaller>=6.0

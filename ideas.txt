@@ -1,0 +1,3 @@
+we need to add lyrics
+
+need now playing in the main window and mini player they need to be synced and also we should add music controls in the main window as well when a new song starts playing that should be the default and then when sokmeone clicks on the player button then the mini player comes out and the buttons on the main window are still there aswell and they are still synced.

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Rainette Music Player</title>
+	<link rel="icon" href="./assets/rainette-icon.ico">
+	<script>
+		// Kept in sync with index.html's boot script — this window is a
+		// separate document (own <html> element) even though it shares
+		// localStorage with the main window (same origin).
+		(function () {
+			try {
+				var theme = localStorage.getItem('rainette.theme');
+				if (theme === 'dark') document.documentElement.classList.add('rw-theme-dark');
+				else if (theme === 'midnight') document.documentElement.classList.add('rw-theme-midnight');
+				else if (theme === 'light') { /* explicit light choice - no class, bare :root already is light */ }
+				else document.documentElement.classList.add('rw-theme-light');
+				var accent = localStorage.getItem('rainette.accent');
+				if (accent === 'teal' || accent === 'purple') document.documentElement.classList.add('rw-accent-' + accent);
+				if (localStorage.getItem('rainette.reducedMotion') === '1') document.documentElement.classList.add('rw-reduced-motion');
+			} catch (e) { /* localStorage unavailable */ }
+		})();
+		window.RW_MINIPLAYER_ENABLED = (function () {
+			try { return localStorage.getItem('rainette.miniplayerEnabled') === '1'; }
+			catch (e) { return false; }
+		})();
+	</script>
+	<link rel="stylesheet" href="./rainette_tokens.css">
+	<style>
+		* { box-sizing: border-box; }
+		html, body { margin: 0; height: 100%; background: transparent; }
+		body {
+			font-family: var(--rw-font);
+			color: var(--rw-text);
+			background: transparent;
+			user-select: none;
+			overflow: hidden;
+		}
+		#app {
+			position: relative;
+			display: flex; flex-direction: column; height: calc(100% - 2px); margin: 1px; overflow: hidden;
+			background: color-mix(in oklab, var(--rw-surface-raised) 90%, transparent);
+			-webkit-backdrop-filter: blur(20px) saturate(1.25);
+			backdrop-filter: blur(20px) saturate(1.25);
+			border: 1px solid var(--rw-border-strong);
+			border-radius: 22px;
+			box-shadow: var(--rw-shadow-lg), inset 0 1px 0 oklch(100% 0 0 / 0.6);
+			transform: translateZ(0);
+			will-change: border-radius, transform;
+		}
+		/* Collapsed is the everyday "pill" state — lighter shadow than the
+		   expanded panel so it reads as a light-touch capsule, not a window. */
+		#app.collapsed { border-radius: var(--rw-radius-pill); box-shadow: var(--rw-shadow-md), inset 0 1px 0 oklch(100% 0 0 / 0.6); }
+		#app.collapsed .mp-titlebar,
+		#app.collapsed .mp-seek,
+		#app.collapsed .mp-times,
+		#app.collapsed .mp-controls,
+		#app.collapsed .mp-volrow { display: none; }
+
+		/* Title bar (the only draggable region) */
+		.mp-titlebar { display: flex; align-items: center; height: 28px; flex-shrink: 0;
+			background: color-mix(in oklab, var(--rw-surface) 68%, transparent); }
+		.mp-drag { flex: 1; height: 100%; display: flex; align-items: center; padding: 0 12px 0 14px; -webkit-app-region: drag; cursor: default; }
+		.mp-brand { font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--rw-text-muted); }
+		.mp-winbtns { display: flex; height: 100%; }
+		.mp-winbtn { appearance: none; border: 0; background: transparent; width: 32px; height: 100%;
+			color: var(--rw-text-soft); font-size: 13px; cursor: pointer; display: grid; place-items: center;
+			transition: background var(--rw-fast), color var(--rw-fast); }
+		.mp-winbtn:hover { background: var(--rw-bg-sunken); color: var(--rw-text); }
+		.mp-winbtn.mp-close:hover { background: var(--rw-danger-soft); color: var(--rw-danger); }
+		.mp-winbtn.on { color: var(--rw-accent-strong); background: var(--rw-accent-soft); }
+
+		/* Now playing */
+		.mp-now { display: flex; align-items: center; gap: 10px; padding: 8px 10px 4px 14px; }
+		#app.collapsed .mp-now { height: 100%; gap: 10px; padding: 7px 8px 7px 14px; }
+		.mp-art-shell {
+			display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
+			background: var(--rw-bg-sunken); border: 1px solid var(--rw-border); color: var(--rw-accent-strong);
+		}
+		#app.collapsed .mp-art-shell {
+			width: 40px; height: 40px; border: 0;
+			background: color-mix(in oklab, var(--rw-accent-soft) 88%, white);
+		}
+		.mp-art { grid-area: 1 / 1; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; visibility: hidden; }
+		.mp-art-shell.has-art .mp-art { visibility: visible; }
+		.mp-note { grid-area: 1 / 1; font-size: 22px; font-weight: 700; line-height: 1; }
+		.mp-art-shell.has-art .mp-note { display: none; }
+		/* Scoped to :not(.has-art) so cover art actually shows once loaded —
+		   the old unscoped #app.collapsed rules always won on specificity
+		   (ID selector) over the .has-art rules above, regardless of art. */
+		#app.collapsed .mp-art-shell:not(.has-art) .mp-art { display: none; }
+		#app.collapsed .mp-art-shell:not(.has-art) .mp-note { display: block; font-size: 22px; }
+		.mp-meta { min-width: 0; flex: 1; }
+		.mp-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+		.mp-artist { font-size: 11px; color: var(--rw-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
+		.mp-artist-link { display: block; max-width: 100%; padding: 0; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; -webkit-app-region: no-drag; }
+		.mp-artist-link:hover { color: var(--rw-text); text-decoration: underline; }
+		.mp-artist-link:disabled { cursor: default; text-decoration: none; }
+		.mp-artist-link:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; border-radius: 2px; }
+		#app.collapsed .mp-title { font-size: 13px; font-weight: 700; }
+		#app.collapsed .mp-artist { font-size: 11px; margin-top: 2px; }
+		.mp-collapse-toggle {
+			appearance: none; border: 1px solid var(--rw-border); background: var(--rw-surface); color: var(--rw-text-soft);
+			width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0;
+			cursor: pointer; transition: background var(--rw-fast), color var(--rw-fast), border-color var(--rw-fast);
+		}
+		.mp-collapse-toggle:hover { border-color: var(--rw-border-strong); background: var(--rw-bg-sunken); color: var(--rw-text); }
+		/* Deliberately subtle in the collapsed pill — no filled background —
+		   so the accent play button stays the one visual focal point instead
+		   of competing with an equally-heavy chevron button beside it. */
+		#app.collapsed .mp-collapse-toggle { width: 30px; height: 30px; border-color: transparent; background: transparent; }
+		#app.collapsed .mp-collapse-toggle:hover { border-color: var(--rw-border); background: var(--rw-bg-sunken); }
+		.mp-collapse-toggle svg { display: block; width: 18px; height: 18px; }
+		.error .mp-artist { color: var(--rw-danger); }
+
+		/* Pause/play control that stays reachable on the collapsed pill — the
+		   full transport row (.mp-controls) is hidden while collapsed, so this
+		   is the only way to pause without expanding. */
+		.mp-play-pill {
+			display: none; appearance: none; border: 0; cursor: pointer; flex-shrink: 0;
+			width: 34px; height: 34px; border-radius: 50%;
+			color: var(--rw-on-accent);
+			background: linear-gradient(160deg, var(--rw-accent), var(--rw-accent-strong));
+			box-shadow: var(--rw-shadow-sm);
+			transition: filter var(--rw-fast), transform var(--rw-fast);
+		}
+		.mp-play-pill:hover { filter: brightness(1.06); }
+		.mp-play-pill svg { display: block; }
+		#app.collapsed .mp-play-pill { display: grid; place-items: center; }
+
+		/* Close affordance reachable from the collapsed pill itself — the
+		   titlebar's #mpClose is display:none while collapsed (see rule near
+		   the top), so without this the only way to dismiss the player was to
+		   expand it. Kept INLINE (vertically centered), not a corner: the window
+		   is masked to a stadium shape (corner radius = height), which clips
+		   the corners - a corner button would land in the non-interactive
+		   rounded-away region. Always visible so it's discoverable. */
+		.mp-pill-close {
+			display: none; appearance: none; cursor: pointer; flex-shrink: 0; padding: 0;
+			width: 26px; height: 26px; border-radius: 50%;
+			border: 1px solid var(--rw-border); background: var(--rw-surface); color: var(--rw-text-soft);
+			align-items: center; justify-content: center;
+			transition: background var(--rw-fast), color var(--rw-fast), border-color var(--rw-fast);
+		}
+		.mp-pill-close svg { display: block; width: 14px; height: 14px; }
+		#app.collapsed .mp-pill-close { display: flex; }
+		.mp-pill-close:hover { background: var(--rw-danger-soft); color: var(--rw-danger); border-color: var(--rw-danger); }
+
+		/* Seek */
+		.mp-seek { position: relative; height: 14px; margin: 0 14px; cursor: pointer; touch-action: none; }
+		.mp-seek::before { content: ""; position: absolute; left: 0; right: 0; top: 5px; height: 6px; border-radius: 999px; background: var(--rw-bg-sunken); border: 1px solid var(--rw-border); }
+		.mp-seek-fill { position: absolute; left: 0; top: 5px; height: 6px; width: 0; border-radius: 999px; background: var(--rw-accent); }
+		.mp-times { display: flex; justify-content: space-between; padding: 0 14px; font-size: 9px; color: var(--rw-text-muted); font-variant-numeric: tabular-nums; }
+
+		/* Transport */
+		.mp-controls { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 5px 12px 4px; }
+		.mp-btn { appearance: none; border: 1px solid var(--rw-border); background: var(--rw-surface); color: var(--rw-text-soft);
+			border-radius: 50%; width: 34px; height: 34px; cursor: pointer; display: grid; place-items: center;
+			transition: background var(--rw-fast), border-color var(--rw-fast), color var(--rw-fast), transform var(--rw-fast); }
+		.mp-btn:hover { border-color: var(--rw-border-strong); background: var(--rw-bg-sunken); color: var(--rw-text); transform: translateY(-1px); }
+		.mp-btn.on { color: var(--rw-accent-strong); border-color: var(--rw-accent); background: var(--rw-accent-soft); }
+		.mp-play { width: 42px; height: 42px; color: var(--rw-on-accent); border-color: var(--rw-accent-strong);
+			background: linear-gradient(160deg, var(--rw-accent), var(--rw-accent-strong)); box-shadow: var(--rw-shadow-sm); }
+		.mp-play:hover { filter: brightness(1.06); }
+		.mp-btn svg { display: block; }
+
+		/* Volume row */
+		.mp-volrow { display: flex; align-items: center; gap: 8px; padding: 3px 12px 8px; }
+		.mp-vol-ico { display: flex; color: var(--rw-text-muted); }
+		.mp-vol-ico svg { display: block; }
+		.mp-vol { position: relative; flex: 1; height: 14px; cursor: pointer; touch-action: none; }
+		.mp-vol::before { content: ""; position: absolute; left: 0; right: 0; top: 5px; height: 5px; border-radius: 999px; background: var(--rw-bg-sunken); border: 1px solid var(--rw-border); }
+		.mp-vol-fill { position: absolute; left: 0; top: 5px; height: 5px; width: 66%; border-radius: 999px; background: var(--rw-teal); }
+		.mp-vol-val { font-size: 9px; color: var(--rw-text-muted); width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+	</style>
+</head>
+<body>
+	<div id="app"></div>
+	<script type="module" src="./miniplayer.js"></script>
+</body>
+</html>
