@@ -318,6 +318,14 @@ function updateCopy(state = {}) {
 	if (state.phase === 'checking') {
 		return ['Checking for updates...', 'Looking for an eligible signed Windows release on GitHub.'];
 	}
+	if (state.phase === 'downloading') {
+		const pct = Math.max(0, Math.min(100, Math.round((Number(state.progress) || 0) * 100)));
+		return [latest ? `Downloading ${latest}... ${pct}%` : `Downloading update... ${pct}%`,
+			'The installer is verified against Rainette\'s release signature before it runs.'];
+	}
+	if (state.phase === 'verifying') {
+		return ['Verifying the update...', 'Checking the download\'s signature before it runs.'];
+	}
 	if (state.phase === 'installing') {
 		return [latest ? `Installing ${latest}...` : 'Installing update...', 'Rainette will close only after the installer has been verified and started.'];
 	}
@@ -350,9 +358,12 @@ export function syncUpdateSettings(host, state = {}) {
 	const detail = card.querySelector('.rw-update-settings-detail');
 	const check = card.querySelector('.rw-update-settings-check');
 	const install = card.querySelector('.rw-update-settings-install');
+	const progressTrack = card.querySelector('.rw-update-settings-progress');
+	const progressFill = card.querySelector('.rw-update-settings-progress-fill');
 	if (status) status.textContent = label;
 	if (detail) detail.textContent = hint;
-	const busy = state.phase === 'checking' || state.phase === 'installing';
+	const installing = state.phase === 'downloading' || state.phase === 'verifying' || state.phase === 'installing';
+	const busy = state.phase === 'checking' || installing;
 	if (check) {
 		check.disabled = busy || !state.nativeAvailable;
 		check.textContent = state.phase === 'checking' ? 'Checking...' : (state.result ? 'Check again' : 'Check now');
@@ -360,9 +371,15 @@ export function syncUpdateSettings(host, state = {}) {
 	if (install) {
 		install.hidden = !(state.result?.status === 'update' && state.candidateId);
 		install.disabled = busy;
-		install.textContent = state.phase === 'installing'
-			? 'Installing...'
+		install.textContent = installing
+			? (state.phase === 'downloading' ? 'Downloading...' : 'Installing...')
 			: (state.phase === 'error' ? 'Try installation again' : 'Download and install');
+	}
+	if (progressTrack) progressTrack.hidden = !installing;
+	if (progressFill) {
+		progressFill.style.width = state.phase === 'downloading'
+			? Math.max(0, Math.min(100, Math.round((Number(state.progress) || 0) * 100))) + '%'
+			: (installing ? '100%' : '0%');
 	}
 	card.classList.toggle('is-busy', busy);
 }
@@ -390,6 +407,12 @@ function renderAppUpdates(updater = {}) {
 	actions.append(check, install);
 	row.append(text, actions);
 	card.appendChild(row);
+
+	// Byte-progress bar for the download; hidden except while installing.
+	const progress = el('div', 'rw-update-settings-progress');
+	progress.hidden = true;
+	progress.appendChild(el('div', 'rw-update-settings-progress-fill'));
+	card.appendChild(progress);
 
 	const source = el('p', 'rw-update-settings-source');
 	source.append('Release source: ');

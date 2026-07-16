@@ -1,4 +1,5 @@
 import functools
+import json
 import mimetypes
 import threading
 import time
@@ -8,6 +9,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+
+import main
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -487,9 +490,10 @@ def test_core_release_browser_flow():
                     "total_minutes": "10",
                     "unique_tracks": "2",
                     "unique_artists": "1",
-                    "daily": [
-                        {"date": "2026-07-11", "count": "0"},
-                        {"date": "2026-07-12", "count": "3"},
+                    "bucket_unit": "day",
+                    "buckets": [
+                        {"start": "2026-07-11", "end": "2026-07-11", "count": "0"},
+                        {"start": "2026-07-12", "end": "2026-07-12", "count": "3"},
                     ],
                     "top_tracks": [],
                     "top_artists": [],
@@ -497,15 +501,18 @@ def test_core_release_browser_flow():
             )
             assert "3 plays" in page.locator(".rw-insights-strip").inner_text()
             assert page.locator(".rw-insights-bar.zero").get_attribute("style").find("height: 0%") >= 0
-            assert page.locator(".rw-insights-bar-label.peak").inner_text() == "3"
+            # Every bar carries its number directly now (no peak-only / hover reveal).
+            labels = page.locator(".rw-insights-bar-label").all_inner_texts()
+            assert labels == ["0", "3"], labels
 
             # Every value label has to clear the top of its own bar. The label used
             # to be pinned to the full-height column at a fixed `top: -4px`, so it
-            # never tracked the bar - and the peak bar (always height:100%) grew
-            # straight into its own always-visible label, printing the number on top
-            # of the accent fill. Assert the geometry, not just the text.
+            # never tracked the bar - and the tallest bar (height:100%) grew
+            # straight into its own label, printing the number on top of the accent
+            # fill. Assert the geometry, not just the text.
             page.wait_for_timeout(600)  # let the bar grow animation settle
             peak_col = page.locator(".rw-insights-col").nth(1)
+            assert peak_col.locator(".rw-insights-bar-label").inner_text() == "3"
             label_box = peak_col.locator(".rw-insights-bar-label").bounding_box()
             bar_box = peak_col.locator(".rw-insights-bar").bounding_box()
             assert label_box["y"] + label_box["height"] <= bar_box["y"] + 0.5, (
@@ -686,7 +693,7 @@ def test_track_row_reflects_now_playing_state_and_toggles_in_place():
                 "type": "music_insights_result", "ok": True,
                 "total_plays": 3, "total_minutes": 10,
                 "unique_tracks": 1, "unique_artists": 1,
-                "daily": [], "top_tracks": [{**tracks[1], "play_count": 3}], "top_artists": [],
+                "bucket_unit": "day", "buckets": [], "top_tracks": [{**tracks[1], "play_count": 3}], "top_artists": [],
             })
             page.wait_for_timeout(100)
             insight_row = page.locator(".rw-insights-rank-row").first
@@ -1151,6 +1158,47 @@ def test_state_handshake_restores_paused_transport_without_blocking_active_recov
         thread.join(timeout=5)
 
 
+def test_miniplayer_loop_button_renders_a_glyph_in_every_repeat_state():
+    """Regression: the detached player's ICON map lacked a `loopOne` entry, so
+    cycling repeat to 'one' assigned `undefined` to the button's innerHTML and
+    rendered the literal word "undefined" inside the loop control. Every repeat
+    state must render an <svg> glyph and never that text.
+    """
+    handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
+    server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/"
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page, diagnostics = open_fake_miniplayer(browser, base)
+            loop = page.locator('[data-act="loop"]')
+
+            for mode, expected_label in (
+                ("all", "Looping the queue — click to repeat this song"),
+                ("one", "Repeating this song — click to stop looping"),
+                ("off", "Loop off — click to loop the queue"),
+            ):
+                emit_ws(page, {"type": "music_remote_control", "action": "set_repeat", "mode": mode})
+                page.wait_for_function(
+                    "label => document.querySelector('[data-act=\"loop\"]')"
+                    "?.getAttribute('aria-label') === label",
+                    arg=expected_label,
+                )
+                markup = loop.inner_html()
+                assert "<svg" in markup, f"repeat '{mode}' must render an SVG glyph, got: {markup!r}"
+                assert "undefined" not in markup, f"repeat '{mode}' rendered the literal 'undefined'"
+                assert loop.locator("path").count() > 0, f"repeat '{mode}' glyph must have paths"
+
+            assert diagnostics == [], diagnostics
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_update_badge_stays_hidden_and_binds_despite_late_pywebview_injection():
     """Two regressions in the update badge, both confirmed and fixed:
 
@@ -1280,6 +1328,136 @@ def test_settings_manual_update_check_reports_current_without_showing_badge():
             card.get_by_role("button", name="Check again").click()
             page.wait_for_function("count => window.__checkCalls > count", arg=before)
             assert not page.locator("#rwUpdateBadge").is_visible()
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_source_run_points_at_the_repository_instead_of_installing():
+    """A build that cannot install updates must route the user to the repo.
+
+    check_for_updates() returns this payload verbatim for a source run (and,
+    with different copy, for a build missing its release key), so the reason
+    has to survive into the card and leave no install button behind - the
+    release link is the only way forward.
+    """
+    handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
+    server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/?remote=1"
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1060, "height": 730})
+            page.add_init_script(FAKE_WEBSOCKET_SCRIPT)
+            page.add_init_script(
+                """
+                window.__checkCalls = 0;
+                window.pywebview = {api: {
+                    check_for_updates: async () => {
+                        window.__checkCalls += 1;
+                        return %s;
+                    },
+                    apply_update: () => { throw new Error('an unoffered update must never be applied'); },
+                }};
+                """
+                % json.dumps({
+                    "status": "unavailable",
+                    "current": "0.2.2",
+                    "msg": main.SOURCE_RUN_UPDATE_MSG,
+                })
+            )
+            page.route("**/*", fulfill_test_asset)
+            page.set_default_timeout(7_000)
+            page.goto(url, wait_until="domcontentloaded")
+            page.locator("#rwMusicTabs").wait_for(state="visible")
+            page.wait_for_function("() => window.__checkCalls >= 1")
+
+            assert not page.locator("#rwUpdateBadge").is_visible(), (
+                "an update that cannot be installed must never advertise itself"
+            )
+            page.locator('#rwMusicTabs button[data-tab="settings"]').click()
+            card = page.locator("#rwUpdateSettings")
+            card.wait_for(state="visible")
+            assert "Updates are unavailable here" in card.inner_text()
+            assert main.SOURCE_RUN_UPDATE_MSG in card.inner_text(), (
+                "the card dropped the reason and fell back to generic copy"
+            )
+            assert not card.get_by_role("button", name="Download and install").is_visible()
+            link = card.get_by_role("link", name="Krysis-ux/Rainette-music")
+            assert link.is_visible(), "no download route offered in place of the install button"
+            assert link.get_attribute("href").startswith("https://github.com/Krysis-ux/Rainette-music")
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_update_install_shows_progress_then_failure_reaches_the_user():
+    """The install flow's two halves, driven through the real page code:
+
+    1. apply_update() returns "installing" optimistically; the UI must poll
+       update_progress() and render a real percentage while downloading.
+    2. A late verification failure is only observable via that poll, so it must
+       still surface as user-visible error copy - not leave the badge spinning.
+    """
+    handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
+    server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/?remote=1"
+    candidate_id = "c" * 64
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1060, "height": 730})
+            page.add_init_script(FAKE_WEBSOCKET_SCRIPT)
+            page.add_init_script(
+                """
+                window.__progressPhase = {phase: 'downloading', received: 0, total: 100, version: '9.9.9'};
+                window.pywebview = {api: {
+                    check_for_updates: async () => ({
+                        status: 'update', current: '0.2.2', latest: '9.9.9',
+                        candidate_id: '%s', release_id: 900,
+                    }),
+                    apply_update: async () => ({status: 'installing', version: '9.9.9'}),
+                    update_progress: async () => window.__progressPhase,
+                }};
+                """ % candidate_id
+            )
+            page.route("**/*", fulfill_test_asset)
+            page.set_default_timeout(7_000)
+            page.goto(url, wait_until="domcontentloaded")
+            page.locator("#rwMusicTabs").wait_for(state="visible")
+
+            badge = page.locator("#rwUpdateBadge")
+            badge.wait_for(state="visible")
+            assert badge.inner_text().strip() == "Update to 9.9.9"
+
+            badge.click()
+            page.get_by_role("button", name="Update now").click()
+
+            page.evaluate(
+                "() => { window.__progressPhase = {phase: 'downloading', received: 42, total: 100, version: '9.9.9'}; }"
+            )
+            page.wait_for_function(
+                "() => document.querySelector('#rwUpdateBadge')?.textContent.includes('Downloading 42%')"
+            )
+            fill = badge.evaluate("el => el.style.getPropertyValue('--rw-update-progress')")
+            assert fill == "42%", f"badge progress fill should track bytes, got {fill!r}"
+
+            page.evaluate(
+                "() => { window.__progressPhase = {phase: 'failed', code: 'verification_or_launch_failed',"
+                " message: 'Rainette could not verify or start the update. Please try again.'}; }"
+            )
+            page.get_by_text("Update failed", exact=True).wait_for()
+            assert page.get_by_text(
+                "Rainette could not verify or start the update. Please try again."
+            ).first.is_visible(), "the late failure must reach the user, not just the console"
             browser.close()
     finally:
         server.shutdown()

@@ -75,6 +75,14 @@ class MusicStateFeatureTests(unittest.TestCase):
         self.assertTrue(self.state.delete_queue_session(manual["id"]))
         self.assertEqual([s["id"] for s in self.state.list_queue_sessions()], [last["id"]])
 
+    def _backdate_play(self, track_id, when):
+        """Insert a play at a chosen UTC instant so bucketing can be exercised."""
+        with self.state.connect() as conn:
+            conn.execute(
+                "INSERT INTO music_play_history (id, track_id, played_at) VALUES (?, ?, ?)",
+                ("play_" + track_id + when.isoformat(), track_id, when.isoformat(timespec="seconds")),
+            )
+
     def test_listening_insights_aggregates_play_history(self):
         favourite = self.add_track("Repeat One", artist="Rainette", duration=120)
         other = self.add_track("Side Track", artist="Someone Else", duration=60)
@@ -92,16 +100,62 @@ class MusicStateFeatureTests(unittest.TestCase):
         self.assertEqual(insights["top_tracks"][0]["title"], "Repeat One")
         self.assertEqual(insights["top_tracks"][0]["play_count"], 3)
         self.assertEqual(insights["top_artists"][0]["name"], "Rainette")
-        self.assertEqual(len(insights["daily"]), 7)
-        # All plays happened "now", so today's bucket carries all of them.
-        self.assertEqual(insights["daily"][-1]["count"], 4)
-        self.assertEqual(sum(d["count"] for d in insights["daily"]), 4)
+        # 7 days stays daily: 7 bars ending today, all plays land in today's.
+        self.assertEqual(insights["bucket_unit"], "day")
+        self.assertEqual(len(insights["buckets"]), 7)
+        self.assertEqual(insights["buckets"][-1]["count"], 4)
+        # The window is aligned to the first bucket, so bars sum to the total.
+        self.assertEqual(sum(b["count"] for b in insights["buckets"]), insights["total_plays"])
+
+    def test_listening_insights_thirty_days_rolls_up_to_weeks(self):
+        from datetime import datetime, timedelta, timezone
+
+        track = self.add_track("Weekly Habit", artist="Rainette", duration=60)
+        now = datetime.now(timezone.utc)
+        # Spread plays across the last few weeks so more than one bucket fills.
+        for offset in (0, 3, 8, 15, 22):
+            self._backdate_play(track["id"], now - timedelta(days=offset))
+
+        insights = self.state.listening_insights(days=30)
+
+        self.assertEqual(insights["bucket_unit"], "week")
+        self.assertGreaterEqual(len(insights["buckets"]), 5)
+        self.assertLessEqual(len(insights["buckets"]), 6)
+        self.assertEqual(insights["total_plays"], 5)
+        # The cutoff alignment fix: every counted play falls inside a bar.
+        self.assertEqual(sum(b["count"] for b in insights["buckets"]), insights["total_plays"])
+        # Each span is a Monday-start week: start's weekday is Monday (0).
+        for bucket in insights["buckets"]:
+            start = datetime.fromisoformat(bucket["start"])
+            self.assertEqual(start.weekday(), 0)
+
+    def test_listening_insights_all_time_rolls_up_to_months(self):
+        from datetime import datetime, timedelta, timezone
+
+        track = self.add_track("Old Favourite", artist="Rainette", duration=60)
+        now = datetime.now(timezone.utc)
+        self._backdate_play(track["id"], now)
+        self._backdate_play(track["id"], now - timedelta(days=40))
+        self._backdate_play(track["id"], now - timedelta(days=75))
+
+        insights = self.state.listening_insights(days=0)
+
+        self.assertEqual(insights["bucket_unit"], "month")
+        # Every play still counts toward the all-time totals.
+        self.assertEqual(insights["total_plays"], 3)
+        # At most 12 monthly bars, each a first-of-month start.
+        self.assertLessEqual(len(insights["buckets"]), 12)
+        self.assertTrue(insights["buckets"])
+        for bucket in insights["buckets"]:
+            self.assertEqual(datetime.fromisoformat(bucket["start"]).day, 1)
 
     def test_listening_insights_empty_history(self):
         insights = self.state.listening_insights(days=0)
         self.assertEqual(insights["total_plays"], 0)
         self.assertEqual(insights["top_tracks"], [])
-        self.assertEqual(len(insights["daily"]), 30)   # all-time chart shows last 30 days
+        # No plays: all-time still renders monthly, defaulting to the current month.
+        self.assertEqual(insights["bucket_unit"], "month")
+        self.assertEqual(len(insights["buckets"]), 1)
 
     def test_followed_artists_are_persistent_upserts(self):
         first = self.state.follow_artist(

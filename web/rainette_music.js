@@ -14,7 +14,7 @@ import { createSelect } from './rainette_select.js';
 import { renderSettings, syncUpdateSettings, defaultLandingTab, shouldAutoOpenQueue } from './rainette_settings.js';
 import { renderMobile, unmountMobile } from './rainette_mobile.js';
 import { createRainetteLoader } from './rainette_loading.js';
-import { REPEAT_LABEL, repeatFromMessage, loopFlagFor } from './repeat_mode.js';
+import { REPEAT_LABEL, repeatFromMessage, loopFlagFor, normalizeRepeat } from './repeat_mode.js';
 
 const LAYOUT_KEY = 'rainette.musicLayout';
 const QUEUE_SUPPORTED = typeof window !== 'undefined' && !!window.RW_REMOTE;
@@ -111,9 +111,14 @@ let _mounted = false;
 let _listenerBound = false;
 let _updateBound = false;
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// apply_update returns "installing" as soon as the download worker starts, so
+// the real outcome (progress, then success or a late verification failure) is
+// only observable by polling update_progress().
+const UPDATE_PROGRESS_POLL_MS = 250;
+const UPDATE_PROGRESS_DEADLINE_MS = 30 * 60 * 1000;
 let _updateCheckPromise = null;
 let _updateInstallPromise = null;
-let _updateState = { phase: 'idle', result: null, candidateId: '', message: '' };
+let _updateState = { phase: 'idle', result: null, candidateId: '', message: '', progress: 0 };
 let _paletteKeysBound = false;
 let _nowPlayingKeysBound = false;
 let _searchDebounce = null;
@@ -1808,8 +1813,11 @@ function renderInsights() {
 	scroll.appendChild(section('Your listening', insightsWindowLabel(pageState.insights.days)));
 	scroll.appendChild(strip);
 
-	scroll.appendChild(section('Daily rhythm'));
-	scroll.appendChild(renderInsightsChart(data.daily || []));
+	const buckets = Array.isArray(data.buckets) ? data.buckets : [];
+	const unit = data.bucket_unit || 'day';
+	const rhythmTitle = unit === 'week' ? 'Weekly rhythm' : unit === 'month' ? 'Monthly rhythm' : 'Daily rhythm';
+	scroll.appendChild(section(rhythmTitle, insightsRhythmSubtitle(unit, buckets)));
+	scroll.appendChild(renderInsightsChart(buckets, unit));
 
 	if (data.top_tracks?.length) {
 		scroll.appendChild(section('Heavy rotation', 'by play count'));
@@ -1855,23 +1863,58 @@ function renderInsights() {
 	body.appendChild(scroll);
 }
 
-// Single-series magnitude chart: one accent bar per local day, baseline-
-// anchored with rounded data-ends, value revealed per-bar on hover (native
-// tooltip + aria for screen readers). Peak day gets the one direct label.
-function renderInsightsChart(daily) {
+// Monthly buckets show only the last 12 months, so on a long history the chart
+// spans less than the all-time totals above it. Name that span honestly instead
+// of implying the bars cover everything.
+function insightsRhythmSubtitle(unit, buckets) {
+	if (unit !== 'month' || !buckets.length) return '';
+	const first = new Date(String(buckets[0]?.start || '') + 'T00:00:00');
+	if (!Number.isFinite(first.getTime())) return '';
+	return 'since ' + first.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+}
+
+// Full human label for a bucket's hover tooltip / aria text.
+function insightsBucketLabel(unit, bucket) {
+	const start = new Date(String(bucket.start || '') + 'T00:00:00');
+	if (!Number.isFinite(start.getTime())) return bucket.start || 'Unknown';
+	if (unit === 'month') return start.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+	if (unit === 'week') {
+		const end = new Date(String(bucket.end || bucket.start || '') + 'T00:00:00');
+		const startStr = start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+		if (!Number.isFinite(end.getTime())) return startStr;
+		return `${startStr} – ${end.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+	}
+	return start.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+// Compact x-axis tick under each bar. Days show a weekday initial; weeks show
+// their start date; months show the month, with the year on January and the
+// first bar so the timeline is never ambiguous.
+function insightsBucketTick(unit, bucket, isFirst) {
+	const start = new Date(String(bucket.start || '') + 'T00:00:00');
+	if (!Number.isFinite(start.getTime())) return '';
+	if (unit === 'day') return start.toLocaleDateString(undefined, { weekday: 'narrow' });
+	if (unit === 'week') return start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+	const showYear = isFirst || start.getMonth() === 0;
+	return start.toLocaleDateString(undefined, showYear ? { month: 'short', year: 'numeric' } : { month: 'short' });
+}
+
+// Single-series magnitude chart: one accent bar per bucket (day / week / month),
+// baseline-anchored with rounded data-ends. Bars are always few enough (<= 12)
+// that every value label renders directly; hover/aria carry the full date span.
+function renderInsightsChart(buckets, unit) {
 	const wrap = el('div', 'rw-bubble rw-bubble-pad rw-insights-chart-card');
 	const chart = el('div', 'rw-insights-chart');
 	chart.setAttribute('role', 'img');
-	const series = (Array.isArray(daily) ? daily : []).map(d => ({ date: String(d?.date || ''), count: insightCount(d?.count) }));
+	const series = (Array.isArray(buckets) ? buckets : []).map(b => ({
+		start: String(b?.start || ''), end: String(b?.end || b?.start || ''), count: insightCount(b?.count),
+	}));
 	const max = Math.max(1, ...series.map(d => d.count));
 	const total = series.reduce((sum, d) => sum + d.count, 0);
-	chart.setAttribute('aria-label', `Plays per day, ${total} total over ${series.length} days`);
-	const peakCount = Math.max(0, ...series.map(d => d.count));
-	const peakIndex = peakCount > 0 ? series.findIndex(d => d.count === peakCount) : -1;
-	// At a week's width every bar can carry its number without the labels
-	// colliding; longer ranges keep the peak-plus-hover reveal. Same density
-	// threshold the day ticks below use.
-	if (series.length && series.length <= 7) chart.classList.add('rw-insights-labelled');
+	const unitWord = unit === 'week' ? 'week' : unit === 'month' ? 'month' : 'day';
+	chart.setAttribute('aria-label', `Plays per ${unitWord}, ${total} total over ${series.length} ${unitWord}${series.length === 1 ? '' : 's'}`);
+	// Bar count is bounded by the bucket planner, so every label is always shown.
+	if (series.length) chart.classList.add('rw-insights-labelled');
 	series.forEach((d, i) => {
 		const col = el('div', 'rw-insights-col');
 		const count = d.count;
@@ -1886,20 +1929,15 @@ function renderInsightsChart(daily) {
 		// which is what keeps the label pinned just above the bar's top edge at
 		// every height instead of at a fixed offset that tall bars grow into.
 		plot.style.setProperty('--rw-bar-h', heightPct + '%');
-		const date = new Date(d.date + 'T00:00:00');
-		const validDate = Number.isFinite(date.getTime());
-		const nice = validDate ? date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : (d.date || 'Unknown day');
-		col.title = `${nice} — ${count} play${count === 1 ? '' : 's'}`;
+		col.title = `${insightsBucketLabel(unit, d)} — ${count} play${count === 1 ? '' : 's'}`;
 		col.setAttribute('aria-label', col.title);
-		plot.appendChild(el('span', 'rw-insights-bar-label' + (i === peakIndex ? ' peak' : '') + (!count ? ' zero' : ''), String(count)));
+		plot.appendChild(el('span', 'rw-insights-bar-label' + (!count ? ' zero' : ''), String(count)));
 		plot.appendChild(bar);
 		col.appendChild(plot);
-		col.appendChild(el('span', 'rw-insights-day', validDate ? (series.length <= 7
-			? date.toLocaleDateString(undefined, { weekday: 'narrow' })
-			: (date.getDate() === 1 || date.getDay() === 1 ? String(date.getDate()) : '')) : ''));
+		col.appendChild(el('span', 'rw-insights-day', insightsBucketTick(unit, d, i === 0)));
 		chart.appendChild(col);
 	});
-	if (!series.length) chart.appendChild(el('div', 'rw-status-line', 'No daily data for this range.'));
+	if (!series.length) chart.appendChild(el('div', 'rw-status-line', 'No data for this range.'));
 	wrap.appendChild(chart);
 	return wrap;
 }
@@ -2255,7 +2293,7 @@ function renderNowPlayingView() {
 	const prevBtn = iconBtn('prev', 'rw-now-view-btn', () => window.RainetteMusic?.prev?.(), 'Previous');
 	const playBtn = iconBtn(q.playing ? 'pause' : 'play', 'rw-now-view-btn rw-now-view-play', () => window.RainetteMusic?.toggle?.(), 'Play or pause');
 	const nextBtn = iconBtn('next', 'rw-now-view-btn', () => window.RainetteMusic?.next?.(), 'Next');
-	const repeat = q.repeat || (q.loop ? 'all' : 'off');
+	const repeat = normalizeRepeat(q.repeat || (q.loop ? 'all' : 'off'));
 	const loopBtn = iconBtn(repeat === 'one' ? 'loopOne' : 'loop', 'rw-now-view-btn' + (repeat !== 'off' ? ' on' : ''),
 		() => window.RainetteMusic?.toggleLoop?.(), REPEAT_LABEL[repeat]);
 	transport.append(shuffleBtn, prevBtn, playBtn, nextBtn, loopBtn);
@@ -2867,7 +2905,7 @@ function renderDockedBar() {
 	bar.querySelector('.rw-now-play').innerHTML = iconMarkup(q.playing ? 'pause' : 'play', 16);
 	const loopBtn = bar.querySelector('.rw-now-loop');
 	if (loopBtn) {
-		const repeat = q.repeat || (q.loop ? 'all' : 'off');
+		const repeat = normalizeRepeat(q.repeat || (q.loop ? 'all' : 'off'));
 		loopBtn.classList.toggle('on', repeat !== 'off');
 		loopBtn.innerHTML = iconMarkup(repeat === 'one' ? 'loopOne' : 'loop', 16);
 		loopBtn.title = REPEAT_LABEL[repeat];
@@ -3393,23 +3431,39 @@ function updateSnapshot() {
 	};
 }
 
+const UPDATE_BUSY_PHASES = ['downloading', 'verifying', 'installing'];
+
+function updateBusyLabel(state) {
+	if (state.phase === 'downloading') {
+		const pct = Math.max(0, Math.min(100, Math.round((Number(state.progress) || 0) * 100)));
+		return `Downloading ${pct}%`;
+	}
+	return state.phase === 'verifying' ? 'Verifying…' : 'Installing…';
+}
+
 function setUpdateBadge(state = updateSnapshot()) {
 	const badge = updateBadgeEl();
 	if (!badge) return;
 	const status = state.result || {};
+	const busy = UPDATE_BUSY_PHASES.includes(state.phase);
 	const eligible = status.status === 'update' && /^[0-9a-f]{64}$/i.test(state.candidateId || '');
 	if (eligible) {
 		badge.dataset.latest = status.latest || '';
-		badge.querySelector('.rw-update-label').textContent = state.phase === 'installing'
-			? 'Installing...'
+		badge.querySelector('.rw-update-label').textContent = busy
+			? updateBusyLabel(state)
 			: (status.latest ? `Update to ${status.latest}` : 'Update available');
 		badge.hidden = false;
-		badge.classList.toggle('busy', state.phase === 'installing');
-		badge.disabled = state.phase === 'installing';
+		badge.classList.toggle('busy', busy);
+		badge.disabled = busy;
+		// The badge itself is the progress bar while busy: a left-to-right
+		// accent fill driven by this custom property (see .rw-update-badge.busy).
+		badge.style.setProperty('--rw-update-progress',
+			(busy ? (state.phase === 'downloading' ? Math.round((Number(state.progress) || 0) * 100) : 100) : 0) + '%');
 	} else {
 		badge.hidden = true;
 		badge.classList.remove('busy');
 		badge.disabled = false;
+		badge.style.removeProperty('--rw-update-progress');
 		delete badge.dataset.latest;
 	}
 }
@@ -3422,7 +3476,7 @@ function publishUpdateState(next) {
 }
 
 async function checkForAppUpdate({ manual = false } = {}) {
-	if (_updateInstallPromise || _updateState.phase === 'installing') return { status: 'busy' };
+	if (_updateInstallPromise || UPDATE_BUSY_PHASES.includes(_updateState.phase)) return { status: 'busy' };
 	if (_updateCheckPromise) return _updateCheckPromise;
 	const api = window.pywebview?.api;
 	if (!api?.check_for_updates) {
@@ -3473,6 +3527,35 @@ async function installAppUpdate() {
 	return _updateInstallPromise;
 }
 
+// Poll the native bridge until the install reaches a terminal state. Success
+// ends in "installing" (the app is about to exit for the installer); failure
+// ends in "failed" with a user-facing message. Bounded by a deadline so a hung
+// bridge cannot leave the UI busy forever.
+async function watchInstallProgress(api) {
+	const deadline = Date.now() + UPDATE_PROGRESS_DEADLINE_MS;
+	while (Date.now() < deadline) {
+		await new Promise(resolve => setTimeout(resolve, UPDATE_PROGRESS_POLL_MS));
+		let progress = null;
+		try { progress = await api.update_progress?.(); }
+		catch { /* transient bridge hiccup: keep polling until the deadline */ }
+		if (!progress) continue;
+		if (progress.phase === 'downloading') {
+			const total = Number(progress.total) || 0;
+			const received = Math.min(Number(progress.received) || 0, total || Infinity);
+			publishUpdateState({ phase: 'downloading', progress: total ? received / total : 0, message: '' });
+		} else if (progress.phase === 'verifying' || progress.phase === 'launching') {
+			publishUpdateState({ phase: 'verifying', progress: 1, message: '' });
+		} else if (progress.phase === 'installing') {
+			publishUpdateState({ phase: 'installing', progress: 1, message: '' });
+			return { status: 'installing' };
+		} else if (progress.phase === 'failed') {
+			return { status: 'failed', msg: progress.message || 'Could not install the update. Please try again.' };
+		}
+		// 'idle' should not appear mid-install; tolerate it and keep polling.
+	}
+	return { status: 'failed', msg: 'The update is taking too long. Please try again.' };
+}
+
 async function performInstallAppUpdate(api, state) {
 	const latest = state.result.latest || '';
 	const ok = await confirmDialog({
@@ -3482,13 +3565,14 @@ async function performInstallAppUpdate(api, state) {
 	});
 	if (!ok) return { status: 'cancelled' };
 	const candidateId = state.candidateId;
-	publishUpdateState({ phase: 'installing', message: '' });
+	publishUpdateState({ phase: 'downloading', progress: 0, message: '' });
 	let result;
 	try { result = await api.apply_update(candidateId); }
 	catch { result = { status: 'failed', msg: 'Rainette could not verify or start the update. Please try again.' }; }
 	if (result?.status === 'installing') {
-		publishUpdateState({ phase: 'installing', message: '' });
-		return result;
+		// The bridge accepted the install; late failures surface via the poll.
+		result = await watchInstallProgress(api);
+		if (result.status === 'installing') return result;
 	}
 	const stale = result?.status === 'stale' || result?.status === 'no_update';
 	if (stale) {

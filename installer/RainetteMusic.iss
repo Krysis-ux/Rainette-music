@@ -34,8 +34,10 @@ RestartApplications=no
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Rainette Music"; Filename: "{app}\RainetteMusic.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\Rainette Music"; Filename: "{app}\RainetteMusic.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+; AppUserModelID must match APP_USER_MODEL_ID in main.py, or a pinned shortcut and
+; the running window appear as two separate taskbar buttons.
+Name: "{group}\Rainette Music"; Filename: "{app}\RainetteMusic.exe"; WorkingDir: "{app}"; AppUserModelID: "Rainette.Music"
+Name: "{autodesktop}\Rainette Music"; Filename: "{app}\RainetteMusic.exe"; WorkingDir: "{app}"; Tasks: desktopicon; AppUserModelID: "Rainette.Music"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"

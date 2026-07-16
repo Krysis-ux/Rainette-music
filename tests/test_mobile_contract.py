@@ -243,31 +243,27 @@ class MobileContractTests(unittest.TestCase):
 
     def test_windows_signing_credentials_are_isolated_from_the_python_build_runner(self):
         workflow = (ROOT / ".github" / "workflows" / "android-release.yml").read_text(encoding="utf-8")
-        build_job = workflow[workflow.index("  windows-build:"):workflow.index("  windows:")]
-        signing_job = workflow[workflow.index("  windows:"):workflow.index("  publish:")]
-        unsigned_step = _workflow_step(workflow, "Build unsigned Windows application with pinned update signer")
-        credential_step = _workflow_step(workflow, "Sign application and package Windows release in isolated phase")
+        build_job = workflow[workflow.index("  windows-build:"):workflow.index("  windows-sign:")]
+        signing_job = workflow[workflow.index("  windows-sign:"):workflow.index("  publish:")]
+        build_step = _workflow_step(workflow, "Build and package the Windows release")
+        credential_step = _workflow_step(workflow, "Sign the release manifest")
 
         self.assertIn("actions/setup-python@", build_job)
         self.assertIn("python -m pip", build_job)
-        self.assertIn("-Phase BuildUnsigned", unsigned_step)
-        self.assertIn("vars.WINDOWS_CODESIGN_CERT_SHA256", unsigned_step)
+        self.assertIn("-Phase Release", build_step)
         self.assertNotIn("secrets.", build_job)
 
         self.assertIn("needs: [test, windows-build]", signing_job)
-        self.assertIn("environment: windows-signing", signing_job)
-        self.assertIn("Download unsigned Windows application", signing_job)
-        self.assertNotIn("actions/setup-python@", signing_job)
-        self.assertNotIn("python -m pip", signing_job)
+        self.assertIn("environment: release-signing", signing_job)
+        # The credential-holding job runs only the tiny reviewed signing script:
+        # never PyInstaller, the packaged app, or the full dependency tree.
+        self.assertIn("sign_manifest.py", credential_step)
+        self.assertIn("secrets.UPDATE_SIGNING_KEY", credential_step)
         self.assertNotIn("PyInstaller", signing_job)
-        self.assertIn("secrets.WINDOWS_CODESIGN_CERT_BASE64", credential_step)
-        self.assertIn("secrets.WINDOWS_CODESIGN_CERT_PASSWORD", credential_step)
-        self.assertIn("-Phase SignAndPackage", credential_step)
-        self.assertNotIn("secrets.WINDOWS_CODESIGN_CERT_SHA256", workflow)
-
-        unsigned_build = workflow.index("-Phase BuildUnsigned")
-        credential_decode = workflow.index("[IO.File]::WriteAllBytes($certificatePath")
-        self.assertLess(unsigned_build, credential_decode)
+        self.assertNotIn("requirements.txt", signing_job)
+        # ...and the signature it produces must verify against the committed
+        # public key before anything is published.
+        self.assertIn("UPDATE_SIGNER_PUBLIC_KEY", signing_job)
 
     def test_android_release_workflow_only_uploads_a_verified_signed_apk(self):
         workflow = (ROOT / ".github" / "workflows" / "android-release.yml").read_text(encoding="utf-8")

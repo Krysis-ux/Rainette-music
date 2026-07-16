@@ -905,7 +905,18 @@ body.rw-page-open #infoPanel {
 }
 .rw-update-badge:hover { transform: translateY(-1px); background: var(--rw-accent); color: oklch(100% 0 0); }
 .rw-update-badge:focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
-.rw-update-badge[disabled], .rw-update-badge.busy { cursor: progress; opacity: 0.75; transform: none; }
+.rw-update-badge[disabled], .rw-update-badge.busy { cursor: progress; transform: none; }
+/* While an install runs the badge itself is the progress bar: a left-to-right
+   accent fill driven by --rw-update-progress (set from setUpdateBadge), the
+   same custom-property idiom the audio seek bar uses with --rw-mp-progress. */
+.rw-update-badge.busy { position: relative; overflow: hidden; }
+.rw-update-badge.busy::before {
+	content: ""; position: absolute; inset: 0 auto 0 0;
+	width: var(--rw-update-progress, 0%);
+	background: color-mix(in oklab, var(--rw-accent) 30%, transparent);
+	transition: width 0.25s linear;
+}
+.rw-update-badge.busy > * { position: relative; }
 /* [hidden] and .rw-update-badge are both single-selector (0,1,0) specificity,
    so without this the unconditional `display: inline-flex` above wins the
    cascade tie and the badge stays visible even with hidden=true - it showed
@@ -1624,6 +1635,17 @@ html.rw-reduced-motion .rw-now-art.rw-art-swap { animation: none; }
 .rw-update-settings-row { align-items: flex-start; }
 .rw-update-settings-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; flex: 0 0 auto; }
 .rw-update-settings-install[hidden] { display: none; }
+.rw-update-settings-progress {
+	height: 6px; margin: 10px 0 2px;
+	border: 1px solid var(--rw-border); border-radius: 999px;
+	background: var(--rw-bg-sunken); overflow: hidden;
+}
+.rw-update-settings-progress[hidden] { display: none; }
+.rw-update-settings-progress-fill {
+	height: 100%; width: 0;
+	background: var(--rw-accent); border-radius: 999px;
+	transition: width 0.25s linear;
+}
 .rw-update-settings-source { margin: 3px 0 0; color: var(--rw-text-muted); font-size: 11.5px; }
 .rw-update-settings-source a { color: var(--rw-text-soft); font-weight: 600; text-decoration: none; }
 .rw-update-settings-source a:hover { color: var(--rw-accent-strong); text-decoration: underline; text-underline-offset: 2px; }
@@ -2179,6 +2201,8 @@ html.rw-reduced-motion .rw-shortcuts-panel { animation: none; }
 @keyframes rwBarGrow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
 .rw-insights-bar.zero { background: var(--rw-border); }
 .rw-insights-col:hover .rw-insights-bar { background: var(--rw-accent-strong); }
+/* Bars are always few enough to label directly, so every value shows. A muted
+   zero on an empty bucket is informative, not noise. */
 .rw-insights-bar-label {
 	position: absolute; left: 50%;
 	bottom: calc(var(--rw-bar-h, 0%) + 4px);
@@ -2186,11 +2210,7 @@ html.rw-reduced-motion .rw-shortcuts-panel { animation: none; }
 	font: 650 11px/1 var(--rw-font); color: var(--rw-text-soft);
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap; pointer-events: none;
-	opacity: 0;
 }
-.rw-insights-bar-label.peak,
-.rw-insights-col:hover .rw-insights-bar-label,
-.rw-insights-labelled .rw-insights-bar-label { opacity: 1; }
 .rw-insights-bar-label.zero { color: var(--rw-text-muted); }
 .rw-insights-day {
 	flex: 0 0 auto; height: 12px;

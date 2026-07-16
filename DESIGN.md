@@ -1,7 +1,8 @@
 # Rainette Music — standalone desktop app
 
-A self-contained Rainette Music player that runs
-on its own as a native desktop app launched by `Rainette Music.exe`.
+A self-contained Rainette Music player that runs on its own as a native desktop
+app, distributed as `RainetteMusicSetup.exe` (a PyInstaller `--onedir` build
+packaged with Inno Setup).
 
 ## What it is
 
@@ -24,8 +25,8 @@ enabled (see "Equalizer" below).
 ## Architecture
 
 ```
-Rainette Music.exe        PyInstaller launcher (built from main.py)
-start.bat                 zero-build fallback (pythonw main.py)
+RainetteMusic.exe         the shipped app — PyInstaller --onedir build of main.py
+start.bat / debug.bat     dev-only source launch (pythonw / python main.py)
 main.py                   opens the native window, starts the local server
 server.py                 aiohttp: serves web/ + a /ws WebSocket on one port
 music_bridge.py           command handlers

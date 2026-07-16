@@ -27,7 +27,7 @@ def test_windows_release_build_is_self_contained_and_signing_guarded():
     assert "RAINETTE_CODESIGN_CERT_PASSWORD" in script
     assert "signtool verify" in script
     assert "RainetteMusicSetup.exe" in script
-    assert "ValidateSet('BuildUnsigned', 'SignAndPackage', 'LocalTest')" in script
+    assert "ValidateSet('BuildUnsigned', 'SignAndPackage', 'Release', 'LocalTest')" in script
 
 
 def test_windows_release_embeds_and_restores_the_public_update_signer_identity():
@@ -49,17 +49,51 @@ def test_windows_release_signing_phase_never_invokes_python_or_pyinstaller():
     script = (ROOT / "release" / "build-windows-release.ps1").read_text(encoding="utf-8")
     signing_function = script[
         script.index("function Invoke-SignedPackage"):
-        script.index("function Invoke-LocalTestPackage")
+        script.index("function Write-ReleaseManifest")
     ]
     signing_branch = script[
         script.rindex("    'SignAndPackage' {"):
-        script.rindex("    'LocalTest' {")
+        script.rindex("    'Release' {")
     ]
 
     assert "python" not in signing_function.lower()
     assert "pyinstaller" not in signing_function.lower()
     assert "Assert-SourceVersion" not in signing_branch
     assert "Invoke-SignedPackage" in signing_branch
+
+
+def test_windows_release_phase_emits_a_schema2_manifest_for_the_ed25519_updater():
+    script = (ROOT / "release" / "build-windows-release.ps1").read_text(encoding="utf-8")
+    # The updater trusts the manifest only after its Ed25519 signature verifies,
+    # and the channel is what keeps LocalTest builds non-installable.
+    assert "schema = 2" in script
+    assert "-Channel 'release'" in script
+    assert "-Channel 'local-test'" in script
+    assert "sign_manifest.py" in script
+    release_branch = script[
+        script.rindex("    'Release' {"):
+        script.rindex("    'LocalTest' {")
+    ]
+    assert "Assert-SourceVersion" in release_branch
+    assert "Invoke-ReleasePackage" in release_branch
+
+
+def test_manifest_signing_script_is_tiny_and_reads_the_key_from_the_environment():
+    script = (ROOT / "release" / "sign_manifest.py").read_text(encoding="utf-8")
+    # This is the only code the credential-holding CI job runs; it must stay
+    # small enough to review at a glance and must never hardcode key material.
+    assert "RAINETTE_UPDATE_SIGNING_KEY" in script
+    assert "Ed25519PrivateKey" in script
+    assert ".sig" in script
+    assert len(script.splitlines()) < 80
+
+
+def test_keygen_script_warns_about_key_custody():
+    script = (ROOT / "release" / "new_signing_key.py").read_text(encoding="utf-8")
+    assert "UPDATE_SIGNER_PUBLIC_KEY" in script
+    assert "UPDATE_SIGNING_KEY" in script
+    lowered = script.lower()
+    assert "lose" in lowered and "leak" in lowered and "backup" in lowered.replace("back it up", "backup")
 
 
 def test_windows_release_integrity_files_are_utf8_without_a_bom():
@@ -139,7 +173,7 @@ def test_github_release_pipeline_splits_tests_platform_builds_and_publish_permis
     test_job = _workflow_job(workflow, "test")
     android_job = _workflow_job(workflow, "android")
     windows_build_job = _workflow_job(workflow, "windows-build")
-    windows_job = _workflow_job(workflow, "windows")
+    windows_sign_job = _workflow_job(workflow, "windows-sign")
     publish_job = _workflow_job(workflow, "publish")
 
     assert re.search(r"(?m)^permissions:\s*\n  contents: read$", workflow)
@@ -150,10 +184,9 @@ def test_github_release_pipeline_splits_tests_platform_builds_and_publish_permis
     assert "runs-on: ubuntu-latest" in android_job
     assert "needs: test" in windows_build_job
     assert "runs-on: windows-latest" in windows_build_job
-    assert "needs: [test, windows-build]" in windows_job
-    assert "runs-on: windows-latest" in windows_job
-    assert "environment: windows-signing" in windows_job
-    assert "needs: [android, windows]" in publish_job
+    assert "needs: [test, windows-build]" in windows_sign_job
+    assert "environment: release-signing" in windows_sign_job
+    assert "needs: [android, windows-sign]" in publish_job
     assert re.search(r"(?m)^    permissions:\s*\n      contents: write$", publish_job)
     assert workflow.count("contents: write") == 1
 
@@ -161,55 +194,53 @@ def test_github_release_pipeline_splits_tests_platform_builds_and_publish_permis
 def test_github_windows_release_is_built_signed_and_verified_from_the_tagged_checkout():
     workflow = _release_workflow()
     windows_build_job = _workflow_job(workflow, "windows-build")
-    windows_job = _workflow_job(workflow, "windows")
+    windows_sign_job = _workflow_job(workflow, "windows-sign")
 
     assert "actions/checkout@" in windows_build_job
     assert "ref: ${{ github.ref }}" in windows_build_job
     assert "persist-credentials: false" in windows_build_job
-    assert "-Phase BuildUnsigned" in windows_build_job
-    assert "vars.WINDOWS_CODESIGN_CERT_SHA256" in windows_build_job
-    assert "rainette-windows-unsigned" in windows_build_job
+    assert "choco install innosetup --version=6.7.1" in windows_build_job
+    assert "-Phase Release" in windows_build_job
+    assert "rainette-windows-release" in windows_build_job
+    # The build job never sees a credential of any kind.
     assert "secrets." not in windows_build_job
-    assert "actions/checkout@" in windows_job
-    assert "ref: ${{ github.ref }}" in windows_job
-    assert "persist-credentials: false" in windows_job
-    assert "WINDOWS_CODESIGN_CERT_BASE64" in windows_job
-    assert "WINDOWS_CODESIGN_CERT_PASSWORD" in windows_job
-    assert "WINDOWS_CODESIGN_CERT_SHA256" in windows_job
-    assert "choco install innosetup --version=6.7.1" in windows_job
-    assert "build-windows-release.ps1" in windows_job
-    assert "-Phase SignAndPackage" in windows_job
-    assert "rainette-windows-unsigned" in windows_job
-    assert "vars.WINDOWS_CODESIGN_CERT_SHA256" in windows_job
-    assert "secrets.WINDOWS_CODESIGN_CERT_SHA256" not in workflow
-    assert "Get-AuthenticodeSignature" in windows_job
-    assert "RainetteMusicSetup.exe.sha256" in windows_job
-    assert "windows-release.json" in windows_job
-    assert "actions/upload-artifact@" in windows_job
-    assert "cp release/out" not in workflow
-    assert "signed: false" not in workflow
-    assert "signatureVerified: false" not in workflow
+    assert "RainetteMusicSetup.exe.sha256" in windows_build_job
+    assert "windows-release.json" in windows_build_job
+    # The manifest gate: schema 2 + the release channel, or the updater refuses.
+    assert "$manifest.schema -ne 2" in windows_build_job
+    assert "'release'" in windows_build_job
+    # The rebrand gate: an exe without its version resource would ship a bare
+    # filename to Task Manager again.
+    assert "FileDescription" in windows_build_job
+
+    assert "actions/checkout@" in windows_sign_job
+    assert "persist-credentials: false" in windows_sign_job
+    assert "secrets.UPDATE_SIGNING_KEY" in windows_sign_job
+    assert "sign_manifest.py" in windows_sign_job
+    assert "windows-release.json.sig" in windows_sign_job
+    # A signature CI produced but the app would refuse must fail the pipeline,
+    # not brick the release: the signature is checked against the committed key.
+    assert "UPDATE_SIGNER_PUBLIC_KEY" in windows_sign_job
 
 
-def test_github_windows_credentials_only_enter_a_fresh_protected_signing_runner():
+def test_github_signing_credentials_only_enter_the_isolated_signing_job():
     workflow = _release_workflow()
     windows_build_job = _workflow_job(workflow, "windows-build")
-    windows_job = _workflow_job(workflow, "windows")
-    credential_step_name = "Sign application and package Windows release in isolated phase"
-    credential_step = windows_job[windows_job.index(f"      - name: {credential_step_name}"):]
-    before_credentials = windows_job[:windows_job.index(f"      - name: {credential_step_name}")]
+    windows_sign_job = _workflow_job(workflow, "windows-sign")
+    credential_step_name = "Sign the release manifest"
+    credential_step = windows_sign_job[windows_sign_job.index(f"      - name: {credential_step_name}"):]
+    before_credentials = windows_sign_job[:windows_sign_job.index(f"      - name: {credential_step_name}")]
 
-    assert "environment: windows-signing" in windows_job
-    assert "actions/setup-python@" in windows_build_job
-    assert "python -m pip" in windows_build_job
-    assert "actions/setup-python@" not in windows_job
-    assert "python -m pip" not in windows_job
-    assert "PyInstaller" not in windows_job
+    assert "environment: release-signing" in windows_sign_job
+    # The signing job runs only the tiny reviewed signer plus its verification;
+    # it never builds, packages, or executes the application.
+    assert "PyInstaller" not in windows_sign_job
+    assert "requirements.txt" not in windows_sign_job
+    assert "cryptography" in windows_sign_job
     assert "secrets." not in before_credentials
-    assert "rainette-codesign.pfx" not in before_credentials
-    assert "secrets.WINDOWS_CODESIGN_CERT_BASE64" in credential_step
-    assert "secrets.WINDOWS_CODESIGN_CERT_PASSWORD" in credential_step
-    assert credential_step.index("[IO.File]::WriteAllBytes($certificatePath") < credential_step.index("-Phase SignAndPackage")
+    assert "secrets.UPDATE_SIGNING_KEY" in credential_step
+    # The build job holds no secrets at all.
+    assert "secrets." not in windows_build_job
 
 
 def test_github_android_release_requires_the_production_certificate_identity():
@@ -244,6 +275,7 @@ def test_github_publish_job_downloads_only_platform_job_artifacts():
         "RainetteMusicSetup.exe",
         "RainetteMusicSetup.exe.sha256",
         "windows-release.json",
+        "windows-release.json.sig",
     ):
         assert f"release-assets/{filename}" in publish_job
 

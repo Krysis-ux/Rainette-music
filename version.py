@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.2.3"
 
 
 def parse_version(value: str) -> tuple[int, ...]:

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Version,
-    [ValidateSet('BuildUnsigned', 'SignAndPackage', 'LocalTest')][string]$Phase = 'LocalTest',
+    [ValidateSet('BuildUnsigned', 'SignAndPackage', 'Release', 'LocalTest')][string]$Phase = 'LocalTest',
     [string]$ExpectedSignerCertSha256 = ''
 )
 
@@ -79,12 +79,20 @@ function Invoke-PyInstallerBuild([string]$EmbeddedSignerFingerprint) {
     New-Item -ItemType Directory -Force $stage, $output | Out-Null
     Clear-PackageOutputs
 
+    # Compile a Win32 version resource from version.APP_VERSION so Task Manager and
+    # the exe's Properties dialog read "Rainette Music" instead of an empty string.
+    $versionFile = Join-Path $stage 'rainette-version-info.txt'
+    python (Join-Path $PSScriptRoot 'make_version_file.py') $versionFile
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $versionFile -PathType Leaf)) {
+        throw 'Failed to generate the Windows version resource.'
+    }
+
     $runPyInstaller = {
         Push-Location $root
         try {
             python -m PyInstaller --noconfirm --clean --onedir --noconsole --name RainetteMusic `
                 --distpath $stage --workpath (Join-Path $stage 'work') --specpath (Join-Path $stage 'spec') `
-                --icon $icon `
+                --icon $icon --version-file $versionFile `
                 --add-data "$webDir;web" --collect-all webview --collect-all ytmusicapi --collect-all yt_dlp --collect-all qrcode $entryPoint
             if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed to build RainetteMusic.exe.' }
         } finally {
@@ -193,33 +201,41 @@ function Invoke-SignedPackage([string]$ExpectedFingerprint) {
     if ($LASTEXITCODE -ne 0) { throw 'Installer Authenticode verification failed.' }
     Assert-AuthenticodeSigner $installer $ExpectedFingerprint
 
+    Write-ReleaseManifest -Channel 'release' -AuthenticodeSigned $true -SignerCertSha256 $ExpectedFingerprint
+}
+
+# Schema-2 manifest: the updater trusts these fields only after the manifest's
+# detached Ed25519 signature (windows-release.json.sig, produced by
+# release/sign_manifest.py) verifies against the key in release_identity.py.
+# `channel` is what keeps LocalTest builds non-installable even if published.
+function Write-ReleaseManifest([string]$Channel, [bool]$AuthenticodeSigned, [string]$SignerCertSha256 = '') {
     $hash = Write-Checksum $installer
     $manifestJson = @{
+        schema = 2
         version = $Version
-        signed = $true
-        signatureVerified = $true
-        channel = 'release'
-        sha256 = $hash
+        channel = $Channel
         artifact = 'RainetteMusicSetup.exe'
-        signerCertificateSha256 = $ExpectedFingerprint
-    } | ConvertTo-Json
+        sha256 = $hash
+        authenticode = @{
+            signed = $AuthenticodeSigned
+            signerCertificateSha256 = $SignerCertSha256
+        }
+    } | ConvertTo-Json -Depth 4
     [IO.File]::WriteAllText($manifestPath, $manifestJson, $utf8NoBom)
+}
+
+function Invoke-ReleasePackage {
+    $iscc = Find-InnoCompiler
+    Clear-PackageOutputs
+    Invoke-InnoPackage $iscc
+    Write-ReleaseManifest -Channel 'release' -AuthenticodeSigned $false
 }
 
 function Invoke-LocalTestPackage {
     $iscc = Find-InnoCompiler
     Clear-PackageOutputs
     Invoke-InnoPackage $iscc
-    $hash = Write-Checksum $installer
-    $manifestJson = @{
-        version = $Version
-        signed = $false
-        signatureVerified = $false
-        channel = 'local-test'
-        sha256 = $hash
-        artifact = 'RainetteMusicSetup.exe'
-    } | ConvertTo-Json
-    [IO.File]::WriteAllText($manifestPath, $manifestJson, $utf8NoBom)
+    Write-ReleaseManifest -Channel 'local-test' -AuthenticodeSigned $false
 }
 
 switch ($Phase) {
@@ -233,6 +249,15 @@ switch ($Phase) {
         $expectedSigner = Normalize-SignerFingerprint $ExpectedSignerCertSha256
         Invoke-SignedPackage $expectedSigner
         Write-Host "Built signed installer at $installer"
+    }
+    'Release' {
+        # The certless release path: package + checksum + schema-2 manifest.
+        # CI signs the manifest afterwards with release/sign_manifest.py in an
+        # isolated job holding the UPDATE_SIGNING_KEY secret.
+        Assert-SourceVersion
+        Invoke-PyInstallerBuild ''
+        Invoke-ReleasePackage
+        Write-Host "Built release installer at $installer (sign the manifest with release/sign_manifest.py)"
     }
     'LocalTest' {
         Assert-SourceVersion

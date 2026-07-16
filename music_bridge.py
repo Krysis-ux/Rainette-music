@@ -715,7 +715,7 @@ REPEAT_MODES = ("off", "all", "one")
 def _repeat_fields(msg) -> dict:
     """Normalise the repeat/loop pair of a playback message.
 
-    Mirrors web/repeat_mode.mjs. Returns an empty dict when the producer said
+    Mirrors web/repeat_mode.js. Returns an empty dict when the producer said
     nothing about repeat, so the fan-out cannot silently reset a receiver that
     does have a setting.
     """

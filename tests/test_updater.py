@@ -1,8 +1,14 @@
 """In-app updater: version comparison, the GitHub check's tri-state, and the
 download/verify gate. The end-to-end download+install+relaunch can only be
 exercised once a real v* release exists, so these pin everything up to (and the
-refusal past) that boundary."""
+refusal past) that boundary.
 
+The root of trust is an Ed25519 signature over the release manifest's raw
+bytes, verified against the public key committed in release_identity.py.
+Authenticode is an optional second layer, enforced only when a certificate
+fingerprint is pinned."""
+
+import base64
 import hashlib
 import io
 import json
@@ -13,6 +19,8 @@ import unittest
 import urllib.error
 from pathlib import Path
 from unittest import mock
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import main
 import version
@@ -42,6 +50,17 @@ class VersionComparisonTests(unittest.TestCase):
 INSTALLER_NAME = "RainetteMusicSetup.exe"
 CHECKSUM_NAME = f"{INSTALLER_NAME}.sha256"
 MANIFEST_NAME = "windows-release.json"
+SIGNATURE_NAME = f"{MANIFEST_NAME}.sig"
+# The release keypair every fixture signs with, plus an unrelated key for the
+# attacker-holds-a-different-key cases. Generated fresh per test run: nothing
+# here depends on a specific key, only on the pin matching the signer.
+TEST_SIGNING_KEY = Ed25519PrivateKey.generate()
+TEST_PUBLIC_KEY_B64 = base64.b64encode(TEST_SIGNING_KEY.public_key().public_bytes_raw()).decode()
+OTHER_SIGNING_KEY = Ed25519PrivateKey.generate()
+OTHER_PUBLIC_KEY_B64 = base64.b64encode(OTHER_SIGNING_KEY.public_key().public_bytes_raw()).decode()
+# Only a certificate-holding release build pins an Authenticode fingerprint;
+# the certless default leaves it empty and skips that layer entirely.
+RAINETTE_SIGNER_SHA256 = "a" * 64
 RELEASES_URL = "https://api.github.com/repos/Krysis-ux/Rainette-music/releases?per_page=20"
 RELEASE_API_BASE = "https://api.github.com/repos/Krysis-ux/Rainette-music/releases"
 ASSET_API_BASE = f"{RELEASE_API_BASE}/assets"
@@ -71,11 +90,35 @@ def _json_response(body, url: str = RELEASES_URL):
     return _Response(json.dumps(body).encode("utf-8"), url)
 
 
+def _pinned_public_key(value: str = TEST_PUBLIC_KEY_B64):
+    return mock.patch.object(main.release_identity, "UPDATE_SIGNER_PUBLIC_KEY", value)
+
+
+def _pinned_signer(fingerprint: str = RAINETTE_SIGNER_SHA256):
+    return mock.patch.object(main.release_identity, "UPDATE_SIGNER_CERT_SHA256", fingerprint)
+
+
+def _frozen(flag: bool = True):
+    return mock.patch.object(main.sys, "frozen", flag, create=True)
+
+
+class _SignedBuildTestCase(unittest.TestCase):
+    """Base for tests that need the updater to behave as it does in a release
+    build: frozen, with the Ed25519 release key pinned and (by default) no
+    Authenticode certificate."""
+
+    def setUp(self):
+        for patcher in (_pinned_public_key(), _frozen(True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
 def _asset(asset_id: int, name: str, content: bytes, *, state: str = "uploaded", size=None):
     content_type = {
         INSTALLER_NAME: "application/x-msdownload",
         CHECKSUM_NAME: "text/plain",
         MANIFEST_NAME: "application/json",
+        SIGNATURE_NAME: "application/octet-stream",
     }.get(name, "application/octet-stream")
     return {
         "id": asset_id,
@@ -89,22 +132,32 @@ def _asset(asset_id: int, name: str, content: bytes, *, state: str = "uploaded",
     }
 
 
-def _release_fixture(version_number="0.9.0", *, release_id=900, draft=False, prerelease=False):
+def _release_fixture(version_number="0.9.0", *, release_id=900, draft=False, prerelease=False,
+                     channel="release", authenticode_signed=False, mutate_manifest=None,
+                     signing_key=TEST_SIGNING_KEY):
     installer = b"MZ pretend signed Rainette installer"
     installer_hash = hashlib.sha256(installer).hexdigest()
     checksum = f"{installer_hash}  {INSTALLER_NAME}\n".encode()
-    manifest = json.dumps({
-        "artifact": INSTALLER_NAME,
+    manifest_dict = {
+        "schema": 2,
         "version": version_number,
-        "channel": "stable",
-        "signed": True,
-        "signatureVerified": True,
+        "channel": channel,
+        "artifact": INSTALLER_NAME,
         "sha256": installer_hash,
-    }).encode()
+        "authenticode": {
+            "signed": authenticode_signed,
+            "signerCertificateSha256": RAINETTE_SIGNER_SHA256 if authenticode_signed else "",
+        },
+    }
+    if mutate_manifest is not None:
+        mutate_manifest(manifest_dict)
+    manifest = json.dumps(manifest_dict).encode()
+    signature = base64.b64encode(signing_key.sign(manifest))
     assets = [
         _asset(901, INSTALLER_NAME, installer),
         _asset(902, CHECKSUM_NAME, checksum),
         _asset(903, MANIFEST_NAME, manifest),
+        _asset(906, SIGNATURE_NAME, signature),
         _asset(904, "rainette-music-android.apk", b"android"),
         _asset(905, "DefinitelyNotRainette.exe", b"unrelated executable"),
     ]
@@ -125,6 +178,7 @@ def _release_fixture(version_number="0.9.0", *, release_id=900, draft=False, pre
         901: installer,
         902: checksum,
         903: manifest,
+        906: signature,
     }
 
 
@@ -152,7 +206,7 @@ class _UrlRouter:
         raise AssertionError(f"unexpected updater URL: {url}")
 
 
-class CheckForUpdatesTests(unittest.TestCase):
+class CheckForUpdatesTests(_SignedBuildTestCase):
     """Only a strict, complete Windows release may make the badge appear."""
 
     def test_newer_release_reports_update(self):
@@ -202,7 +256,7 @@ class CheckForUpdatesTests(unittest.TestCase):
         base, _ = _release_fixture()
         cases = {}
 
-        for missing in (INSTALLER_NAME, CHECKSUM_NAME, MANIFEST_NAME):
+        for missing in (INSTALLER_NAME, CHECKSUM_NAME, MANIFEST_NAME, SIGNATURE_NAME):
             candidate = copy.deepcopy(base)
             candidate["assets"] = [asset for asset in candidate["assets"] if asset["name"] != missing]
             cases[f"missing {missing}"] = candidate
@@ -269,7 +323,117 @@ class CheckForUpdatesTests(unittest.TestCase):
             self.assertEqual(main.check_for_updates("0.2.2")["status"], "check_failed")
 
 
-class InstallerDownloadTests(unittest.TestCase):
+class ManifestSignatureTests(unittest.TestCase):
+    """The Ed25519 manifest signature is the updater's root of trust."""
+
+    def setUp(self):
+        patcher = _pinned_public_key()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _sig(manifest: bytes, key=TEST_SIGNING_KEY) -> bytes:
+        return base64.b64encode(key.sign(manifest))
+
+    def test_valid_signature_round_trips(self):
+        manifest = b'{"schema": 2, "version": "0.9.0"}'
+        main._verify_manifest_signature(manifest, self._sig(manifest))
+
+    def test_tampered_manifest_is_rejected(self):
+        manifest = b'{"schema": 2, "version": "0.9.0"}'
+        signature = self._sig(manifest)
+        tampered = manifest.replace(b"0.9.0", b"9.9.9")
+        with self.assertRaisesRegex(RuntimeError, "not from Rainette's release signing key"):
+            main._verify_manifest_signature(tampered, signature)
+
+    def test_signature_from_a_different_key_is_rejected(self):
+        manifest = b'{"schema": 2}'
+        with self.assertRaisesRegex(RuntimeError, "not from Rainette's release signing key"):
+            main._verify_manifest_signature(manifest, self._sig(manifest, OTHER_SIGNING_KEY))
+
+    def test_malformed_signatures_are_rejected(self):
+        manifest = b'{"schema": 2}'
+        for label, signature in (
+            ("not base64", b"!!! definitely not base64 !!!"),
+            ("empty", b""),
+            ("wrong length", base64.b64encode(b"short")),
+            ("non-ascii", "signaturé".encode("utf-8")),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(RuntimeError, "malformed"):
+                    main._verify_manifest_signature(manifest, signature)
+
+    def test_rotation_accepts_a_signature_from_any_listed_key(self):
+        manifest = b'{"schema": 2}'
+        with _pinned_public_key(f"{OTHER_PUBLIC_KEY_B64}, {TEST_PUBLIC_KEY_B64}"):
+            main._verify_manifest_signature(manifest, self._sig(manifest, TEST_SIGNING_KEY))
+            main._verify_manifest_signature(manifest, self._sig(manifest, OTHER_SIGNING_KEY))
+
+    def test_unconfigured_key_fails_closed(self):
+        manifest = b'{"schema": 2}'
+        with _pinned_public_key(""):
+            with self.assertRaisesRegex(RuntimeError, "not configured"):
+                main._verify_manifest_signature(manifest, self._sig(manifest))
+
+
+class SourceRunAndKeylessUpdateTests(unittest.TestCase):
+    """A build that could not install an update must not offer one.
+
+    A source run has no installer to swap in, and a build whose committed
+    release key is missing or corrupt could only refuse whatever it downloads.
+    Either way the check must fail closed before it ever contacts GitHub."""
+
+    def test_source_run_offers_no_update_and_never_asks_github(self):
+        with _pinned_public_key(), _frozen(False), \
+             mock.patch.object(main.urllib.request, "urlopen",
+                               side_effect=AssertionError("a source run must not ask GitHub")):
+            result = main.check_for_updates("0.2.2")
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["msg"], main.SOURCE_RUN_UPDATE_MSG)
+        # No candidate may be named: the badge and install button key off these.
+        self.assertNotIn("candidate_id", result)
+        self.assertNotIn("latest", result)
+
+    def test_missing_or_invalid_release_keys_all_fail_closed(self):
+        cases = {
+            "empty": "",
+            "whitespace": "   ",
+            "comma only": ",",
+            "not base64": "!!!not-base64!!!",
+            "wrong length": base64.b64encode(b"too short").decode(),
+            "one bad entry in a rotation pair": f"{TEST_PUBLIC_KEY_B64},!!!not-base64!!!",
+        }
+        for label, value in cases.items():
+            with self.subTest(label=label):
+                with _frozen(True), _pinned_public_key(value), \
+                     mock.patch.object(main.urllib.request, "urlopen",
+                                       side_effect=AssertionError("a keyless build must not ask GitHub")):
+                    result = main.check_for_updates("0.2.2")
+                self.assertEqual(result["status"], "unavailable")
+                self.assertEqual(result["msg"], main.UNCONFIGURED_KEY_UPDATE_MSG)
+
+    def test_source_run_pins_no_candidate_so_apply_has_nothing_to_install(self):
+        api = main.WindowApi()
+        with _pinned_public_key(), _frozen(False), \
+             mock.patch.object(main.urllib.request, "urlopen",
+                               side_effect=AssertionError("must not ask GitHub")):
+            checked = api.check_for_updates()
+        self.assertEqual(checked["status"], "unavailable")
+        with _frozen(True), \
+             mock.patch.object(main.urllib.request, "urlopen",
+                               side_effect=AssertionError("an unoffered update must not reach GitHub")):
+            self.assertEqual(api.apply_update("")["status"], "no_update")
+
+    def test_pinning_a_key_restores_the_offer(self):
+        # The gate must track the key, not disable updates outright: the release
+        # build has to keep offering eligible releases.
+        release, _ = _release_fixture()
+        with _pinned_public_key(), _frozen(True), \
+             mock.patch.object(main.urllib.request, "urlopen", return_value=_json_response([release])):
+            self.assertEqual(main.check_for_updates("0.2.2")["status"], "update")
+
+
+class InstallerDownloadTests(_SignedBuildTestCase):
     def test_downloads_only_the_pinned_assets_and_streams_verified_installer(self):
         release, contents = _release_fixture()
         candidate = main._candidate_from_release(release)
@@ -279,10 +443,46 @@ class InstallerDownloadTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 path = main._download_verified_installer(candidate, Path(tmp))
                 self.assertEqual(path.read_bytes(), contents[901])
+        # Manifest and signature come first: nothing else is even fetched until
+        # the manifest's Ed25519 signature has verified.
         self.assertEqual(
             [request[0] for request in router.requests],
-            [f"{ASSET_API_BASE}/902", f"{ASSET_API_BASE}/903", f"{ASSET_API_BASE}/901"],
+            [f"{ASSET_API_BASE}/903", f"{ASSET_API_BASE}/906",
+             f"{ASSET_API_BASE}/902", f"{ASSET_API_BASE}/901"],
         )
+
+    def test_wrong_key_signature_stops_the_download_before_any_installer_bytes(self):
+        release, contents = _release_fixture(signing_key=OTHER_SIGNING_KEY)
+        candidate = main._candidate_from_release(release)
+        router = _UrlRouter(assets=contents)
+        with mock.patch.object(main.urllib.request, "urlopen", side_effect=router):
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(RuntimeError, "not from Rainette's release signing key"):
+                    main._download_verified_installer(candidate, Path(tmp))
+                self.assertEqual(list(Path(tmp).iterdir()), [])
+        # The installer asset (901) must never have been requested.
+        requested = [request[0] for request in router.requests]
+        self.assertNotIn(f"{ASSET_API_BASE}/901", requested)
+
+    def test_signed_but_ineligible_manifest_is_rejected(self):
+        # Defense in depth for validly-signed but wrong manifests — the replay
+        # of a signed local-test build being the case that matters most.
+        for label, mutate in (
+            ("unsupported schema", lambda m: m.__setitem__("schema", 1)),
+            ("local-test channel", lambda m: m.__setitem__("channel", "local-test")),
+            ("version skew", lambda m: m.__setitem__("version", "9.9.9")),
+            ("wrong artifact", lambda m: m.__setitem__("artifact", "OtherSoftware.exe")),
+            ("hash mismatch", lambda m: m.__setitem__("sha256", "0" * 64)),
+        ):
+            with self.subTest(label=label):
+                release, contents = _release_fixture(mutate_manifest=mutate)
+                candidate = main._candidate_from_release(release)
+                router = _UrlRouter(assets=contents)
+                with mock.patch.object(main.urllib.request, "urlopen", side_effect=router):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        with self.assertRaises(RuntimeError):
+                            main._download_verified_installer(candidate, Path(tmp))
+                        self.assertEqual(list(Path(tmp).iterdir()), [])
 
     def test_sidecar_must_name_the_exact_installer_and_match_github_digest(self):
         for label, checksum in (
@@ -293,23 +493,6 @@ class InstallerDownloadTests(unittest.TestCase):
                 release, contents = _release_fixture()
                 release["assets"][1] = _asset(902, CHECKSUM_NAME, checksum)
                 contents[902] = checksum
-                candidate = main._candidate_from_release(release)
-                router = _UrlRouter(assets=contents)
-                with mock.patch.object(main.urllib.request, "urlopen", side_effect=router):
-                    with tempfile.TemporaryDirectory() as tmp:
-                        with self.assertRaises(RuntimeError):
-                            main._download_verified_installer(candidate, Path(tmp))
-                        self.assertEqual(list(Path(tmp).iterdir()), [])
-
-    def test_unsigned_or_version_skewed_manifest_is_rejected(self):
-        for field, value in (("signed", False), ("signatureVerified", False), ("version", "9.9.9")):
-            with self.subTest(field=field):
-                release, contents = _release_fixture()
-                manifest = json.loads(contents[903])
-                manifest[field] = value
-                encoded = json.dumps(manifest).encode()
-                release["assets"][2] = _asset(903, MANIFEST_NAME, encoded)
-                contents[903] = encoded
                 candidate = main._candidate_from_release(release)
                 router = _UrlRouter(assets=contents)
                 with mock.patch.object(main.urllib.request, "urlopen", side_effect=router):
@@ -336,8 +519,26 @@ class InstallerDownloadTests(unittest.TestCase):
                         self.assertFalse((Path(tmp) / INSTALLER_NAME).exists())
                         self.assertFalse((Path(tmp) / f"{INSTALLER_NAME}.part").exists())
 
+    def test_download_reports_byte_progress(self):
+        release, contents = _release_fixture()
+        candidate = main._candidate_from_release(release)
+        seen = []
+        router = _UrlRouter(assets=contents)
+        with mock.patch.object(main.urllib.request, "urlopen", side_effect=router):
+            with tempfile.TemporaryDirectory() as tmp:
+                main._download_verified_installer(candidate, Path(tmp),
+                                                  progress=lambda received, total: seen.append((received, total)))
+        self.assertTrue(seen)
+        self.assertEqual(seen[-1], (candidate.installer.size, candidate.installer.size))
 
-class ApplyUpdateGuardTests(unittest.TestCase):
+
+class ApplyUpdateGuardTests(_SignedBuildTestCase):
+    def _join_worker(self, api):
+        worker = api._update_worker
+        self.assertIsNotNone(worker, "apply_update must have started the install worker")
+        worker.join(timeout=10)
+        self.assertFalse(worker.is_alive(), "install worker must finish")
+
     def test_authenticode_verification_fails_closed_when_windows_trust_is_unavailable(self):
         with mock.patch.object(main.os, "name", "posix"):
             with self.assertRaises(RuntimeError):
@@ -410,7 +611,6 @@ class ApplyUpdateGuardTests(unittest.TestCase):
         self.assertEqual(checked["status"], "update")
         for untrusted_id in ("", "0" * 64):
             with self.subTest(candidate_id=untrusted_id or "omitted"), \
-                 mock.patch.object(main.sys, "frozen", True, create=True), \
                  mock.patch.object(main.urllib.request, "urlopen",
                                    side_effect=AssertionError("stale ID must not reach GitHub")):
                 result = api.apply_update(untrusted_id)
@@ -429,15 +629,17 @@ class ApplyUpdateGuardTests(unittest.TestCase):
         replaced = copy.deepcopy(release)
         replaced["assets"][0]["id"] = 999
         router = _UrlRouter(releases_by_id={900: replaced})
-        with mock.patch.object(main.sys, "frozen", True, create=True), \
-             mock.patch.object(main.urllib.request, "urlopen", side_effect=router):
+        with mock.patch.object(main.urllib.request, "urlopen", side_effect=router):
             result = api.apply_update(checked["candidate_id"])
 
         self.assertEqual(result["status"], "stale")
         self.assertEqual([request[0] for request in router.requests], [f"{RELEASE_API_BASE}/900"])
 
-    def test_authenticode_failure_never_launches_or_closes_the_running_app(self):
-        release, contents = _release_fixture()
+    def test_bad_signature_surfaces_as_failed_progress_and_never_launches_or_closes_the_app(self):
+        # apply_update() now returns "installing" optimistically; a signature
+        # that fails to verify must surface through update_progress() while
+        # leaving the running app untouched and the lock released for a retry.
+        release, contents = _release_fixture(signing_key=OTHER_SIGNING_KEY)
         api = main.WindowApi()
         main_window = mock.Mock()
         player_window = mock.Mock()
@@ -452,25 +654,68 @@ class ApplyUpdateGuardTests(unittest.TestCase):
 
         router = _UrlRouter(releases_by_id={900: release}, assets=contents)
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(main.sys, "frozen", True, create=True), \
              mock.patch.object(main.urllib.request, "urlopen", side_effect=router), \
              mock.patch.object(main.tempfile, "mkdtemp", return_value=str(Path(tmp) / "update")), \
-             mock.patch.object(main, "_verify_authenticode", create=True,
-                               side_effect=RuntimeError("installer signature is not trusted")) as verify, \
              mock.patch.object(main.subprocess, "Popen") as popen, \
              mock.patch.object(main.threading, "Timer") as timer:
             result = api.apply_update(checked["candidate_id"])
+            self._join_worker(api)
+            progress = api.update_progress()
             update_files_left_behind = (Path(tmp) / "update").exists()
 
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["code"], "verification_or_launch_failed")
-        self.assertEqual(result["msg"], "Rainette could not verify or start the update. Please try again.")
+        self.assertEqual(result["status"], "installing")
+        self.assertEqual(progress["phase"], "failed")
+        self.assertEqual(progress["code"], "verification_or_launch_failed")
+        self.assertEqual(progress["message"], "Rainette could not verify or start the update. Please try again.")
         self.assertFalse(update_files_left_behind)
-        verify.assert_called_once()
         popen.assert_not_called()
         timer.assert_not_called()
         main_window.destroy.assert_not_called()
         player_window.destroy.assert_not_called()
+        # The failure released the lock: a retry is not spuriously "busy".
+        self.assertTrue(api._update_apply_lock.acquire(blocking=False))
+        api._update_apply_lock.release()
+
+    def test_pinned_cert_requires_authenticode_and_its_failure_never_launches(self):
+        release, contents = _release_fixture(authenticode_signed=True)
+        api = main.WindowApi()
+        with mock.patch.object(
+            main.urllib.request,
+            "urlopen",
+            side_effect=_UrlRouter(releases=[release]),
+        ):
+            checked = api.check_for_updates()
+
+        router = _UrlRouter(releases_by_id={900: release}, assets=contents)
+        with tempfile.TemporaryDirectory() as tmp, \
+             _pinned_signer(), \
+             mock.patch.object(main.urllib.request, "urlopen", side_effect=router), \
+             mock.patch.object(main.tempfile, "mkdtemp", return_value=str(Path(tmp) / "update")), \
+             mock.patch.object(main, "_verify_authenticode",
+                               side_effect=RuntimeError("installer signature is not trusted")) as verify, \
+             mock.patch.object(main.subprocess, "Popen") as popen, \
+             mock.patch.object(main.threading, "Timer") as timer:
+            api.apply_update(checked["candidate_id"])
+            self._join_worker(api)
+            progress = api.update_progress()
+
+        self.assertEqual(progress["phase"], "failed")
+        verify.assert_called_once()
+        popen.assert_not_called()
+        timer.assert_not_called()
+
+    def test_pinned_cert_rejects_a_manifest_that_does_not_promise_authenticode(self):
+        # A certless manifest replayed against a cert-pinned build must refuse
+        # before Authenticode runs: the manifest itself has to promise a signed
+        # installer.
+        release, contents = _release_fixture(authenticode_signed=False)
+        candidate = main._candidate_from_release(release)
+        router = _UrlRouter(assets=contents)
+        with _pinned_signer(), \
+             mock.patch.object(main.urllib.request, "urlopen", side_effect=router):
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(RuntimeError, "Authenticode"):
+                    main._download_verified_installer(candidate, Path(tmp))
 
     def test_successful_apply_uses_only_pinned_assets_then_starts_shutdown(self):
         release, contents = _release_fixture()
@@ -484,20 +729,26 @@ class ApplyUpdateGuardTests(unittest.TestCase):
 
         router = _UrlRouter(releases_by_id={900: release}, assets=contents)
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(main.sys, "frozen", True, create=True), \
              mock.patch.object(main.urllib.request, "urlopen", side_effect=router), \
              mock.patch.object(main.tempfile, "mkdtemp", return_value=str(Path(tmp) / "update")), \
              mock.patch.object(main, "_verify_authenticode") as verify, \
              mock.patch.object(main.subprocess, "Popen") as popen, \
              mock.patch.object(main.threading, "Timer") as timer:
             result = api.apply_update(checked["candidate_id"])
+            self._join_worker(api)
+            progress = api.update_progress()
             repeated = api.apply_update(checked["candidate_id"])
             launched_installer = Path(popen.call_args.args[0][0])
             self.assertTrue(launched_installer.is_file())
 
         self.assertEqual(result, {"status": "installing", "version": "0.9.0"})
+        self.assertEqual(progress, {"phase": "installing", "version": "0.9.0"})
+        # Success keeps the apply lock held until the process exits, so a second
+        # click can never re-launch the verified installer.
         self.assertEqual(repeated["status"], "busy")
-        verify.assert_called_once_with(launched_installer)
+        # No Authenticode certificate is pinned in this build, so the optional
+        # layer must not run — the Ed25519 manifest signature is the gate.
+        verify.assert_not_called()
         self.assertEqual(
             popen.call_args.args[0],
             [str(launched_installer), "/VERYSILENT", "/NORESTART", "/autorelaunch=1"],
@@ -508,8 +759,9 @@ class ApplyUpdateGuardTests(unittest.TestCase):
             [request[0] for request in router.requests],
             [
                 f"{RELEASE_API_BASE}/900",
-                f"{ASSET_API_BASE}/902",
                 f"{ASSET_API_BASE}/903",
+                f"{ASSET_API_BASE}/906",
+                f"{ASSET_API_BASE}/902",
                 f"{ASSET_API_BASE}/901",
             ],
         )
@@ -527,18 +779,18 @@ class ApplyUpdateGuardTests(unittest.TestCase):
 
         router = _UrlRouter(releases_by_id={900: release}, assets=contents)
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(main.sys, "frozen", True, create=True), \
              mock.patch.object(main.urllib.request, "urlopen", side_effect=router), \
              mock.patch.object(main.tempfile, "mkdtemp", return_value=str(Path(tmp) / "update")), \
-             mock.patch.object(main, "_verify_authenticode"), \
              mock.patch.object(main.subprocess, "Popen", side_effect=OSError("launch failed")), \
              mock.patch.object(main.threading, "Timer") as timer:
-            result = api.apply_update(checked["candidate_id"])
+            api.apply_update(checked["candidate_id"])
+            self._join_worker(api)
+            progress = api.update_progress()
             update_files_left_behind = (Path(tmp) / "update").exists()
 
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["code"], "verification_or_launch_failed")
-        self.assertNotIn("launch failed", result["msg"])
+        self.assertEqual(progress["phase"], "failed")
+        self.assertEqual(progress["code"], "verification_or_launch_failed")
+        self.assertNotIn("launch failed", progress["message"])
         self.assertFalse(update_files_left_behind)
         timer.assert_not_called()
         main_window.destroy.assert_not_called()
@@ -557,41 +809,33 @@ class ApplyUpdateGuardTests(unittest.TestCase):
 
         entered = threading.Event()
         release_download = threading.Event()
-        first_result = []
 
-        def blocking_download(_candidate, destination):
+        def blocking_download(_candidate, destination, progress=None):
             entered.set()
             self.assertTrue(release_download.wait(timeout=5))
             return destination / INSTALLER_NAME
 
         router = _UrlRouter(releases_by_id={900: release})
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(main.sys, "frozen", True, create=True), \
              mock.patch.object(main.urllib.request, "urlopen", side_effect=router), \
              mock.patch.object(main.tempfile, "mkdtemp", return_value=str(Path(tmp) / "update")), \
              mock.patch.object(main, "_download_verified_installer", side_effect=blocking_download), \
-             mock.patch.object(main, "_verify_authenticode"), \
              mock.patch.object(main.subprocess, "Popen"), \
              mock.patch.object(main.threading, "Timer"):
-            worker = threading.Thread(
-                target=lambda: first_result.append(api.apply_update(checked["candidate_id"])),
-                daemon=True,
-            )
-            worker.start()
+            first = api.apply_update(checked["candidate_id"])
             self.assertTrue(entered.wait(timeout=5))
             concurrent = api.apply_update(checked["candidate_id"])
             release_download.set()
-            worker.join(timeout=5)
+            self._join_worker(api)
 
+        self.assertEqual(first["status"], "installing")
         self.assertEqual(concurrent["status"], "busy")
-        self.assertEqual(first_result[0]["status"], "installing")
         main_window.destroy.assert_not_called()
         player_window.destroy.assert_not_called()
 
     def test_apply_without_a_successful_check_never_contacts_github(self):
         api = main.WindowApi()
-        with mock.patch.object(main.sys, "frozen", True, create=True), \
-             mock.patch.object(main.urllib.request, "urlopen",
+        with mock.patch.object(main.urllib.request, "urlopen",
                                side_effect=AssertionError("must not contact GitHub")):
             result = api.apply_update("0" * 64)
         self.assertEqual(result["status"], "no_update")
@@ -600,9 +844,12 @@ class ApplyUpdateGuardTests(unittest.TestCase):
         # A source checkout has no installer to swap in, so it must say so rather
         # than download an installer that can't replace anything.
         api = main.WindowApi()
-        with mock.patch.object(main.sys, "frozen", False, create=True):
+        with _frozen(False):
             result = api.apply_update()
         self.assertEqual(result["status"], "unsupported")
+
+    def test_update_progress_starts_idle(self):
+        self.assertEqual(main.WindowApi().update_progress(), {"phase": "idle"})
 
     def test_app_version_reports_the_constant(self):
         self.assertEqual(main.WindowApi().app_version(), version.APP_VERSION)

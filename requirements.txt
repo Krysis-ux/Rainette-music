@@ -22,5 +22,5 @@ ytmusicapi>=1.12
 # The app still falls back to Edge --app mode if pywebview is unavailable.
 pywebview==6.2.1
 
-# Only needed to (re)build "Rainette Music.exe" — see build_exe.bat.
+# Only needed to build the shipped app — see release/build-windows-release.ps1.
 pyinstaller>=6.0

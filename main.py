@@ -35,12 +35,20 @@ from datetime import datetime
 from pathlib import Path
 
 import qrcode
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 import release_identity
 import server
 import version
 
 WINDOW_TITLE = "Rainette Music"
+PLAYER_WINDOW_TITLE = "Rainette Music Player"
+# Windows groups taskbar buttons and picks the taskbar icon by AppUserModelID.
+# Unset, a source run inherits pythonw.exe's identity and shows the Python icon.
+# This must stay byte-identical to the installer's [Icons] AppUserModelID, or a
+# pinned shortcut and the running window split into two taskbar buttons.
+APP_USER_MODEL_ID = "Rainette.Music"
 WINDOW_SIZE = (1060, 730)
 MIN_SIZE = (780, 560)
 PLAYER_SIZE = (300, 60)
@@ -82,11 +90,20 @@ UPDATE_API_VERSION = "2022-11-28"
 WINDOWS_INSTALLER_ASSET = "RainetteMusicSetup.exe"
 WINDOWS_CHECKSUM_ASSET = f"{WINDOWS_INSTALLER_ASSET}.sha256"
 WINDOWS_MANIFEST_ASSET = "windows-release.json"
+WINDOWS_MANIFEST_SIGNATURE_ASSET = f"{WINDOWS_MANIFEST_ASSET}.sig"
 MAX_INSTALLER_BYTES = 512 * 1024 * 1024
 MAX_INTEGRITY_ASSET_BYTES = 64 * 1024
 MAX_RELEASE_METADATA_BYTES = 2 * 1024 * 1024
 _STABLE_TAG_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 _CERT_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+SOURCE_RUN_UPDATE_MSG = (
+    "Updates apply to the installed Rainette Music app, not a source run. "
+    "Install the latest release from the Rainette repository instead."
+)
+UNCONFIGURED_KEY_UPDATE_MSG = (
+    "This build has no pinned release signing key, so Rainette cannot verify an "
+    "update it downloads. Install the latest release from the Rainette repository instead."
+)
 
 
 def log(msg: str) -> None:
@@ -108,6 +125,18 @@ def _enable_high_dpi() -> None:
             ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
             pass
+
+
+def _set_app_user_model_id() -> None:
+    """Give the process an explicit taskbar identity so Windows shows Rainette
+    instead of inheriting the host interpreter's (python/pythonw) icon and label.
+    Must run before any window is created."""
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:
+        pass
 
 
 def _qr_data_url(value: str) -> str:
@@ -181,6 +210,7 @@ class _UpdateCandidate:
     installer: _UpdateAsset
     checksum: _UpdateAsset
     manifest: _UpdateAsset
+    manifest_signature: _UpdateAsset
     notes: str
 
     @property
@@ -193,6 +223,8 @@ class _UpdateCandidate:
                 [self.installer.asset_id, self.installer.name, self.installer.size, self.installer.sha256],
                 [self.checksum.asset_id, self.checksum.name, self.checksum.size, self.checksum.sha256],
                 [self.manifest.asset_id, self.manifest.name, self.manifest.size, self.manifest.sha256],
+                [self.manifest_signature.asset_id, self.manifest_signature.name,
+                 self.manifest_signature.size, self.manifest_signature.sha256],
             ],
         }
         encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -207,6 +239,7 @@ class _UpdateCandidate:
             self.installer,
             self.checksum,
             self.manifest,
+            self.manifest_signature,
         )
 
 
@@ -260,7 +293,7 @@ def _asset_from_payload(payload: object, expected_name: str) -> _UpdateAsset | N
         if size > MAX_INSTALLER_BYTES:
             return None
         allowed_types = {"application/x-msdownload", "application/octet-stream"}
-    elif expected_name == WINDOWS_CHECKSUM_ASSET:
+    elif expected_name in (WINDOWS_CHECKSUM_ASSET, WINDOWS_MANIFEST_SIGNATURE_ASSET):
         if size > MAX_INTEGRITY_ASSET_BYTES:
             return None
         allowed_types = {"text/plain", "application/octet-stream"}
@@ -292,7 +325,8 @@ def _candidate_from_release(payload: object) -> _UpdateCandidate | None:
     if not isinstance(assets, list):
         return None
     selected = {}
-    for expected_name in (WINDOWS_INSTALLER_ASSET, WINDOWS_CHECKSUM_ASSET, WINDOWS_MANIFEST_ASSET):
+    for expected_name in (WINDOWS_INSTALLER_ASSET, WINDOWS_CHECKSUM_ASSET,
+                          WINDOWS_MANIFEST_ASSET, WINDOWS_MANIFEST_SIGNATURE_ASSET):
         matches = [asset for asset in assets if isinstance(asset, dict) and asset.get("name") == expected_name]
         if len(matches) != 1:
             return None
@@ -310,6 +344,7 @@ def _candidate_from_release(payload: object) -> _UpdateCandidate | None:
         installer=selected[WINDOWS_INSTALLER_ASSET],
         checksum=selected[WINDOWS_CHECKSUM_ASSET],
         manifest=selected[WINDOWS_MANIFEST_ASSET],
+        manifest_signature=selected[WINDOWS_MANIFEST_SIGNATURE_ASSET],
         notes=str(payload.get("body") or "")[:2000],
     )
 
@@ -331,6 +366,15 @@ def _public_update_result(current: str, candidate: _UpdateCandidate) -> dict:
 
 
 def _check_for_updates(current: str = version.APP_VERSION) -> tuple[dict, _UpdateCandidate | None]:
+    # Never offer an update this build could not install. A source run has no
+    # installer to replace, and a build with no pinned signing key can only
+    # refuse whatever it downloads, so an install button in either case would
+    # lead every user to the same dead end. Checked before the request so these
+    # builds cost no GitHub call and name no candidate.
+    if not getattr(sys, "frozen", False):
+        return {"status": "unavailable", "current": current, "msg": SOURCE_RUN_UPDATE_MSG}, None
+    if not _update_signing_configured():
+        return {"status": "unavailable", "current": current, "msg": UNCONFIGURED_KEY_UPDATE_MSG}, None
     try:
         payload = _fetch_json(GITHUB_RELEASES_API)
     except urllib.error.HTTPError as exc:
@@ -399,7 +443,7 @@ def _validate_asset_response_url(url: str, asset_id: int) -> None:
         raise RuntimeError("GitHub redirected an update asset to an untrusted host")
 
 
-def _read_asset_response(response, asset: _UpdateAsset, max_bytes: int, sink=None) -> bytes:
+def _read_asset_response(response, asset: _UpdateAsset, max_bytes: int, sink=None, progress=None) -> bytes:
     _validate_asset_response_url(response.geturl(), asset.asset_id)
     content_length = response.headers.get("Content-Length") if getattr(response, "headers", None) else None
     if content_length:
@@ -425,6 +469,8 @@ def _read_asset_response(response, asset: _UpdateAsset, max_bytes: int, sink=Non
             collected.extend(chunk)
         else:
             sink.write(chunk)
+        if progress is not None:
+            progress(total, asset.size)
     if total != asset.size:
         raise RuntimeError("update asset was truncated")
     if hasher.hexdigest().lower() != asset.sha256:
@@ -443,7 +489,7 @@ def _fetch_asset_bytes(asset: _UpdateAsset, max_bytes: int, *, timeout: int = 30
         return _read_asset_response(response, asset, max_bytes)
 
 
-def _stream_asset_to_path(asset: _UpdateAsset, path: Path, *, timeout: int = 180) -> Path:
+def _stream_asset_to_path(asset: _UpdateAsset, path: Path, *, timeout: int = 180, progress=None) -> Path:
     if asset.size > MAX_INSTALLER_BYTES:
         raise RuntimeError("installer exceeded its allowed size")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -456,7 +502,7 @@ def _stream_asset_to_path(asset: _UpdateAsset, path: Path, *, timeout: int = 180
             _github_request(url, accept="application/octet-stream"),
             timeout=timeout,
         ) as response, open(partial, "xb") as output:
-            _read_asset_response(response, asset, MAX_INSTALLER_BYTES, sink=output)
+            _read_asset_response(response, asset, MAX_INSTALLER_BYTES, sink=output, progress=progress)
             output.flush()
             os.fsync(output.fileno())
         os.replace(partial, path)
@@ -470,39 +516,119 @@ def _stream_asset_to_path(asset: _UpdateAsset, path: Path, *, timeout: int = 180
 
 
 def _validate_release_manifest(candidate: _UpdateCandidate, manifest_bytes: bytes, expected_hash: str) -> None:
+    """Check the schema-2 manifest's claims. Only ever called on manifest bytes
+    whose Ed25519 signature already verified — these fields are trusted because
+    of that check, not because GitHub served them."""
     try:
         manifest = json.loads(manifest_bytes.decode("utf-8"))
     except Exception as exc:
         raise RuntimeError("release manifest is malformed") from exc
     if not isinstance(manifest, dict):
         raise RuntimeError("release manifest is malformed")
+    if manifest.get("schema") != 2:
+        raise RuntimeError("release manifest schema is not supported")
     if manifest.get("artifact") != WINDOWS_INSTALLER_ASSET:
         raise RuntimeError("release manifest named the wrong installer")
     if str(manifest.get("version") or "") != candidate.release_version:
         raise RuntimeError("release manifest version did not match its tag")
+    # local-test / dev builds must stay non-installable even when validly signed.
     if manifest.get("channel") not in {"stable", "release"}:
         raise RuntimeError("release manifest was not a stable Windows release")
-    if manifest.get("signed") is not True or manifest.get("signatureVerified") is not True:
-        raise RuntimeError("release manifest did not require a signed installer")
     if str(manifest.get("sha256") or "").lower() != expected_hash:
         raise RuntimeError("release manifest checksum did not match the installer")
+    if _authenticode_pin_configured():
+        authenticode = manifest.get("authenticode")
+        if not isinstance(authenticode, dict) or authenticode.get("signed") is not True:
+            raise RuntimeError("release manifest did not require an Authenticode-signed installer")
 
 
-def _download_verified_installer(candidate: _UpdateCandidate, dest_dir: Path) -> Path:
-    """Download the three pinned assets and stream the authenticated installer."""
+def _download_verified_installer(candidate: _UpdateCandidate, dest_dir: Path, progress=None) -> Path:
+    """Download the pinned assets and stream the authenticated installer.
+
+    The manifest signature is verified before a single field of the manifest is
+    read — everything downstream trusts the manifest only because of that check.
+    """
+    manifest_bytes = _fetch_asset_bytes(candidate.manifest, MAX_INTEGRITY_ASSET_BYTES, timeout=15)
+    signature_bytes = _fetch_asset_bytes(candidate.manifest_signature, MAX_INTEGRITY_ASSET_BYTES, timeout=15)
+    _verify_manifest_signature(manifest_bytes, signature_bytes)
     checksum_bytes = _fetch_asset_bytes(candidate.checksum, MAX_INTEGRITY_ASSET_BYTES, timeout=15)
     expected = _expected_sha256(checksum_bytes)
     if not expected:
         raise RuntimeError("release checksum is missing or malformed")
     if expected != candidate.installer.sha256:
         raise RuntimeError("release checksum did not match GitHub's installer digest")
-    manifest_bytes = _fetch_asset_bytes(candidate.manifest, MAX_INTEGRITY_ASSET_BYTES, timeout=15)
     _validate_release_manifest(candidate, manifest_bytes, expected)
-    return _stream_asset_to_path(candidate.installer, dest_dir / WINDOWS_INSTALLER_ASSET)
+    return _stream_asset_to_path(candidate.installer, dest_dir / WINDOWS_INSTALLER_ASSET, progress=progress)
+
+
+def _configured_update_public_keys() -> tuple[bytes, ...]:
+    """Return the committed Ed25519 release keys (raw 32 bytes each), failing
+    closed when absent or malformed. Multiple comma-separated keys support an
+    intentional rotation: ship an update that trusts both, then switch CI."""
+    configured = release_identity.UPDATE_SIGNER_PUBLIC_KEY
+    if not isinstance(configured, str):
+        raise RuntimeError("Rainette update signing key is invalid")
+    keys = []
+    for value in configured.split(","):
+        value = value.strip()
+        if not value:
+            continue
+        try:
+            raw = base64.b64decode(value, validate=True)
+        except Exception as exc:
+            raise RuntimeError("Rainette update signing key is invalid") from exc
+        if len(raw) != 32:
+            raise RuntimeError("Rainette update signing key is invalid")
+        keys.append(raw)
+    if not keys:
+        raise RuntimeError("Rainette update signing key is not configured")
+    return tuple(keys)
+
+
+def _update_signing_configured() -> bool:
+    """Report whether this build carries a release key it could verify against.
+
+    This decides whether an update is *offered*; the install path still calls
+    _configured_update_public_keys() and fails closed itself.
+    """
+    try:
+        _configured_update_public_keys()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _verify_manifest_signature(manifest_bytes: bytes, signature_bytes: bytes) -> None:
+    """Require a valid Ed25519 signature over the manifest's raw bytes from one
+    of the committed release keys. This is the updater's root of trust."""
+    try:
+        signature = base64.b64decode(signature_bytes.decode("ascii").strip(), validate=True)
+    except Exception as exc:
+        raise RuntimeError("release manifest signature is malformed") from exc
+    if len(signature) != 64:
+        raise RuntimeError("release manifest signature is malformed")
+    for raw_key in _configured_update_public_keys():
+        try:
+            Ed25519PublicKey.from_public_bytes(raw_key).verify(signature, manifest_bytes)
+            return
+        except InvalidSignature:
+            continue
+    raise RuntimeError("release manifest signature is not from Rainette's release signing key")
+
+
+def _authenticode_pin_configured() -> bool:
+    """Whether the optional Authenticode layer is enabled for this build.
+
+    Empty means Rainette ships without a code-signing certificate and the
+    Ed25519 manifest signature is the sole (sufficient) root of trust. Any
+    non-empty value — valid or not — turns enforcement on; an invalid value
+    then fails closed inside _configured_update_signer_hashes()."""
+    configured = release_identity.UPDATE_SIGNER_CERT_SHA256
+    return isinstance(configured, str) and bool(configured.strip())
 
 
 def _configured_update_signer_hashes() -> frozenset[str]:
-    """Return the embedded Rainette signer allow-list, failing closed if absent."""
+    """Return the embedded Authenticode signer allow-list, failing closed if absent."""
     configured = release_identity.UPDATE_SIGNER_CERT_SHA256
     if not isinstance(configured, str):
         raise RuntimeError("Rainette update signer identity is invalid")
@@ -662,6 +788,9 @@ class WindowApi:
         self._update_candidate = None
         self._update_candidate_lock = threading.Lock()
         self._update_apply_lock = threading.Lock()
+        self._update_progress_lock = threading.Lock()
+        self._update_progress = {"phase": "idle"}
+        self._update_worker = None
         # Remembers where the user last dragged the player window so reveals
         # restore it there instead of resetting to a fixed spot each time.
         self._player_onscreen_pos = _default_player_pos()
@@ -727,20 +856,35 @@ class WindowApi:
             self._update_candidate = candidate
         return result
 
+    def _set_update_progress(self, phase: str, **fields) -> None:
+        with self._update_progress_lock:
+            self._update_progress = {"phase": phase, **fields}
+
+    def update_progress(self):
+        """Snapshot of the in-flight install for the UI's progress poll.
+
+        apply_update() returns "installing" as soon as the download worker
+        starts, so a late verification failure is only observable here — the
+        poll drives the error state, not just the percentage.
+        """
+        with self._update_progress_lock:
+            return dict(self._update_progress)
+
     def apply_update(self, candidate_id: str = ""):
-        """Download, verify, and launch the new installer, then quit so it can
-        replace the running files. The installer relaunches the app when done.
+        """Start downloading, verifying, and launching the new installer, then
+        quit so it can replace the running files. The installer relaunches the
+        app when done. Every pre-flight guard stays synchronous; only the
+        download/verify/launch tail runs on a worker so the UI can poll
+        update_progress() for a real progress bar.
 
         Self-updating only makes sense for the packaged build: a source checkout
         has no installer to swap in, so say so instead of doing something surprising.
         """
         if not getattr(sys, "frozen", False):
-            return {"status": "unsupported",
-                    "msg": "Updates apply to the installed Rainette Music app, not a source run."}
+            return {"status": "unsupported", "msg": SOURCE_RUN_UPDATE_MSG}
         if not self._update_apply_lock.acquire(blocking=False):
             return {"status": "busy", "msg": "An update is already being installed."}
-        update_dir = None
-        install_started = False
+        worker_started = False
         try:
             with self._update_candidate_lock:
                 candidate = self._update_candidate
@@ -748,38 +892,69 @@ class WindowApi:
                 return {"status": "no_update", "msg": "Check for updates before installing."}
             if not isinstance(candidate_id, str) or candidate_id != candidate.candidate_id:
                 return {"status": "stale", "msg": "The selected update is no longer current. Check again."}
-            candidate = _revalidate_candidate(candidate)
+            try:
+                candidate = _revalidate_candidate(candidate)
+            except Exception as exc:
+                log(f"update revalidation failed: {exc}")
+                candidate = None
             if candidate is None:
                 return {"status": "stale", "msg": "The selected release changed. Check for updates again."}
+            self._set_update_progress("downloading", received=0, total=candidate.installer.size,
+                                      version=candidate.release_version)
+            worker = threading.Thread(target=self._apply_update_worker, args=(candidate,),
+                                      name="rainette-update", daemon=True)
+            self._update_worker = worker
+            worker.start()
+            worker_started = True
+            return {"status": "installing", "version": candidate.release_version}
+        finally:
+            if not worker_started:
+                self._update_apply_lock.release()
+
+    def _apply_update_worker(self, candidate: _UpdateCandidate) -> None:
+        """Owns _update_apply_lock (acquired by apply_update). On failure it
+        cleans up and releases the lock; on success it keeps the lock held until
+        this process exits — releasing it during the 0.6-second UI handoff
+        window allowed a second bridge call to delete or launch the
+        already-verified installer again."""
+        update_dir = None
+        install_started = False
+        try:
             update_dir = Path(tempfile.mkdtemp(prefix="RainetteMusicUpdate-"))
-            installer = _download_verified_installer(candidate, update_dir)
-            _verify_authenticode(installer)
+
+            def on_progress(received: int, total: int) -> None:
+                self._set_update_progress("downloading", received=received, total=total,
+                                          version=candidate.release_version)
+
+            installer = _download_verified_installer(candidate, update_dir, progress=on_progress)
+            self._set_update_progress("verifying", version=candidate.release_version)
+            if _authenticode_pin_configured():
+                _verify_authenticode(installer)
+            self._set_update_progress("launching", version=candidate.release_version)
             # /autorelaunch=1 is read by the installer's [Code] to relaunch the app
             # after a silent install; /VERYSILENT keeps the whole thing headless.
             subprocess.Popen(
                 [str(installer), "/VERYSILENT", "/NORESTART", "/autorelaunch=1"],
                 close_fds=True,
             )
-            # Keep the lock held until this process exits. Releasing it during
-            # the 0.6-second UI handoff window allowed a second bridge call to
-            # delete or launch the already-verified installer again.
             install_started = True
+            self._set_update_progress("installing", version=candidate.release_version)
         except Exception as exc:
             if update_dir is not None:
                 shutil.rmtree(update_dir, ignore_errors=True)
             log(f"update install failed: {exc}")
-            return {
-                "status": "failed",
-                "code": "verification_or_launch_failed",
-                "msg": "Rainette could not verify or start the update. Please try again.",
-            }
+            self._set_update_progress(
+                "failed",
+                code="verification_or_launch_failed",
+                message="Rainette could not verify or start the update. Please try again.",
+            )
         finally:
             if not install_started:
                 self._update_apply_lock.release()
-        # Give the return value a moment to reach the UI, then exit so the running
-        # exe and _internal files unlock for the installer.
-        threading.Timer(0.6, self._quit_for_update).start()
-        return {"status": "installing", "version": candidate.release_version}
+        if install_started:
+            # Give the progress poll a moment to observe "installing", then exit
+            # so the running exe and _internal files unlock for the installer.
+            threading.Timer(0.6, self._quit_for_update).start()
 
     def _quit_for_update(self) -> None:
         try:
@@ -1029,6 +1204,7 @@ def _try_pywebview(url: str) -> bool:
         return False
     try:
         _enable_high_dpi()
+        _set_app_user_model_id()
         # Kept for WebView2 hosts / future pywebview versions that honour it. The
         # bundled pywebview does not, so the patch below is what actually delivers
         # the flag today.
@@ -1041,7 +1217,7 @@ def _try_pywebview(url: str) -> bool:
             width=WINDOW_SIZE[0], height=WINDOW_SIZE[1], min_size=MIN_SIZE,
         )
         player_window = webview.create_window(
-            "Player", f"{url}miniplayer.html?token={token}", js_api=api,
+            PLAYER_WINDOW_TITLE, f"{url}miniplayer.html?token={token}", js_api=api,
             width=PLAYER_SIZE[0], height=PLAYER_SIZE[1], min_size=PLAYER_SIZE,
             # Created "shown" (not hidden=True) but positioned off-screen: see
             # PLAYER_PARK_POS for why a truly hidden window silently starves the

@@ -22,3 +22,11 @@ mobile/android/local.properties
 # OS/editor noise
 .DS_Store
 Thumbs.db
+
+# Release build outputs (published to GitHub Releases, never committed)
+release/out/
+release/stage/
+
+# Local assistant/tooling state
+.claude/
+.superpowers/

@@ -187,6 +187,11 @@ jobs:
         shell: bash
         run: rm -f "${RUNNER_TEMP}/rainette-release.jks"
 
+  # Builds and packages the Windows release without any credentials. The update
+  # root of trust is the Ed25519 manifest signature added by windows-sign below;
+  # Authenticode (the SignAndPackage phase + a windows-signing environment) can
+  # be reinstated as an additional layer if Rainette ever acquires a
+  # code-signing certificate.
   windows-build:
     needs: test
     runs-on: windows-latest
@@ -211,116 +216,27 @@ jobs:
         shell: pwsh
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Build unsigned Windows application with pinned update signer
-        shell: pwsh
-        env:
-          WINDOWS_CODESIGN_CERT_SHA256: ${{ vars.WINDOWS_CODESIGN_CERT_SHA256 }}
-        run: |
-          .\release\build-windows-release.ps1 `
-            -Version $env:RELEASE_VERSION `
-            -Phase BuildUnsigned `
-            -ExpectedSignerCertSha256 $env:WINDOWS_CODESIGN_CERT_SHA256
-
-      - name: Upload unsigned Windows application
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: rainette-windows-unsigned
-          path: |
-            release/stage/RainetteMusic
-            release/stage/rainette-unsigned-build.json
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-
-  windows:
-    needs: [test, windows-build]
-    runs-on: windows-latest
-    environment: windows-signing
-    env:
-      RELEASE_VERSION: ${{ needs.test.outputs.release_version }}
-
-    steps:
-      - name: Check out tagged source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ github.ref }}
-          persist-credentials: false
-
-      - name: Download unsigned Windows application
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: rainette-windows-unsigned
-          path: release/stage
-
       - name: Install pinned Inno Setup compiler
         shell: pwsh
         run: |
           choco install innosetup --version=6.7.1 --yes --no-progress --limit-output
           if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed.' }
 
-      - name: Locate Windows signing tools
+      - name: Build and package the Windows release
         shell: pwsh
         run: |
-          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-          $signTool = Get-ChildItem -LiteralPath $sdkRoot -Filter signtool.exe -File -Recurse |
-            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1
-          if (-not $signTool) { throw 'The Windows SDK signtool.exe was not found.' }
-          $signTool.DirectoryName >> $env:GITHUB_PATH
+          .\release\build-windows-release.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -Phase Release
 
-      - name: Sign application and package Windows release in isolated phase
+      - name: Verify built Windows release assets
         shell: pwsh
-        env:
-          WINDOWS_CODESIGN_CERT_BASE64: ${{ secrets.WINDOWS_CODESIGN_CERT_BASE64 }}
-          WINDOWS_CODESIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_CERT_PASSWORD }}
-          WINDOWS_CODESIGN_CERT_SHA256: ${{ vars.WINDOWS_CODESIGN_CERT_SHA256 }}
         run: |
-          foreach ($name in 'WINDOWS_CODESIGN_CERT_BASE64', 'WINDOWS_CODESIGN_CERT_PASSWORD', 'WINDOWS_CODESIGN_CERT_SHA256') {
-            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) { throw "$name is not configured." }
-          }
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'rainette-codesign.pfx'
-          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CODESIGN_CERT_BASE64))
-          if ((Get-Item -LiteralPath $certificatePath).Length -eq 0) { throw 'Decoded code-signing certificate is empty.' }
-          $env:RAINETTE_CODESIGN_CERT_PATH = $certificatePath
-          $env:RAINETTE_CODESIGN_CERT_PASSWORD = $env:WINDOWS_CODESIGN_CERT_PASSWORD
-          try {
-            .\release\build-windows-release.ps1 `
-              -Version $env:RELEASE_VERSION `
-              -Phase SignAndPackage `
-              -ExpectedSignerCertSha256 $env:WINDOWS_CODESIGN_CERT_SHA256
-          } finally {
-            Remove-Item Env:RAINETTE_CODESIGN_CERT_PATH -ErrorAction SilentlyContinue
-            Remove-Item Env:RAINETTE_CODESIGN_CERT_PASSWORD -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
-          }
-
-      - name: Verify signed Windows release assets
-        shell: pwsh
-        env:
-          WINDOWS_CODESIGN_CERT_SHA256: ${{ vars.WINDOWS_CODESIGN_CERT_SHA256 }}
-        run: |
-          $app = 'release\stage\RainetteMusic\RainetteMusic.exe'
           $installer = 'release\out\RainetteMusicSetup.exe'
           $sidecar = 'release\out\RainetteMusicSetup.exe.sha256'
           $manifestPath = 'release\out\windows-release.json'
-          foreach ($path in $app, $installer, $sidecar, $manifestPath) {
+          foreach ($path in $installer, $sidecar, $manifestPath) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Expected release output is missing: $path" }
-          }
-
-          $expectedCertificate = $env:WINDOWS_CODESIGN_CERT_SHA256.Replace(':', '').Replace(' ', '').ToLowerInvariant()
-          foreach ($path in $app, $installer) {
-            $signature = Get-AuthenticodeSignature -LiteralPath $path
-            if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) {
-              throw "Authenticode verification failed for $path."
-            }
-            $hasher = [Security.Cryptography.SHA256]::Create()
-            try {
-              $certificateHash = [BitConverter]::ToString($hasher.ComputeHash($signature.SignerCertificate.RawData)).Replace('-', '').ToLowerInvariant()
-            } finally {
-              $hasher.Dispose()
-            }
-            if ($certificateHash -ne $expectedCertificate) { throw "Unexpected Authenticode signer for $path." }
           }
 
           $checksum = (Get-Content -LiteralPath $sidecar -Raw).Trim()
@@ -330,15 +246,20 @@ jobs:
           if ($actualHash -ne $expectedHash) { throw 'Windows installer checksum does not match its sidecar.' }
 
           $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+          if ($manifest.schema -ne 2 -or $manifest.channel -ne 'release') {
+            throw 'Windows release manifest does not describe an installable release build.'
+          }
           if ($manifest.artifact -ne 'RainetteMusicSetup.exe' -or $manifest.version -ne $env:RELEASE_VERSION) {
             throw 'Windows release manifest identity does not match the tagged build.'
           }
-          if ($manifest.signed -ne $true -or $manifest.signatureVerified -ne $true -or $manifest.channel -ne 'release') {
-            throw 'Windows release manifest does not describe a verified production-signed build.'
-          }
           if ($manifest.sha256 -ne $actualHash) { throw 'Windows release manifest checksum does not match the installer.' }
 
-      - name: Upload verified Windows release assets
+          $exeInfo = (Get-Item -LiteralPath 'release\stage\RainetteMusic\RainetteMusic.exe').VersionInfo
+          if ($exeInfo.FileDescription -ne 'Rainette Music') {
+            throw 'RainetteMusic.exe is missing its branded version resource (Task Manager would show a bare filename).'
+          }
+
+      - name: Upload built Windows release assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rainette-windows-release
@@ -350,13 +271,79 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-      - name: Remove Windows code-signing certificate
-        if: always()
-        shell: pwsh
-        run: Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'rainette-codesign.pfx') -Force -ErrorAction SilentlyContinue
+  # The only job holding the update-signing secret. It runs exactly one small,
+  # reviewed script (release/sign_manifest.py) and never executes the packaged
+  # application, PyInstaller, or the rest of the project's dependency tree —
+  # the same credential-isolation principle the old Authenticode phase used.
+  windows-sign:
+    needs: [test, windows-build]
+    runs-on: ubuntu-latest
+    environment: release-signing
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Install signing dependency
+        run: python -m pip install --disable-pip-version-check 'cryptography>=42.0'
+
+      - name: Download built Windows release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rainette-windows-release
+          path: release/out
+
+      - name: Sign the release manifest
+        env:
+          RAINETTE_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          test -n "${RAINETTE_UPDATE_SIGNING_KEY}" || { echo "UPDATE_SIGNING_KEY secret is not configured (generate one with release/new_signing_key.py)" >&2; exit 1; }
+          python release/sign_manifest.py release/out/windows-release.json
+
+      - name: Verify the signature against the committed public key
+        run: |
+          python - <<'PY'
+          import base64
+          import sys
+          sys.path.insert(0, ".")
+          import release_identity
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+          manifest = open("release/out/windows-release.json", "rb").read()
+          signature = base64.b64decode(open("release/out/windows-release.json.sig", "rb").read())
+          keys = [value.strip() for value in release_identity.UPDATE_SIGNER_PUBLIC_KEY.split(",") if value.strip()]
+          if not keys:
+              raise SystemExit("UPDATE_SIGNER_PUBLIC_KEY in release_identity.py is empty - commit the public key before releasing")
+          for key in keys:
+              try:
+                  Ed25519PublicKey.from_public_bytes(base64.b64decode(key)).verify(signature, manifest)
+                  print("manifest signature verifies against the committed public key")
+                  break
+              except Exception:
+                  continue
+          else:
+              raise SystemExit("UPDATE_SIGNING_KEY does not match UPDATE_SIGNER_PUBLIC_KEY - installed apps would refuse this release")
+          PY
+
+      - name: Upload manifest signature
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rainette-windows-manifest-signature
+          path: release/out/windows-release.json.sig
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
   publish:
-    needs: [android, windows]
+    needs: [android, windows-sign]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -371,6 +358,12 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Download manifest signature
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rainette-windows-manifest-signature
+          path: release-assets
+
       - name: Verify exact release asset set
         shell: bash
         run: |
@@ -383,6 +376,7 @@ jobs:
             rainette-music-android.apk
             rainette-music-android.apk.sha256
             windows-release.json
+            windows-release.json.sig
           )
           mapfile -t actual < <(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)
           mapfile -t wanted < <(printf '%s\n' "${expected[@]}" | sort)
@@ -392,18 +386,25 @@ jobs:
           node <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
-          const expected = {
-            'android-release.json': 'rainette-music-android.apk',
-            'windows-release.json': 'RainetteMusicSetup.exe',
-          };
-          for (const [manifestName, artifact] of Object.entries(expected)) {
-            const manifest = JSON.parse(fs.readFileSync(path.join('release-assets', manifestName), 'utf8'));
-            if (manifest.artifact !== artifact || manifest.version !== process.env.RELEASE_VERSION) {
-              throw new Error(`${manifestName} does not match this tagged release`);
-            }
-            if (manifest.signed !== true || manifest.signatureVerified !== true) {
-              throw new Error(`${manifestName} is not production-signature verified`);
-            }
+          const read = (name) => JSON.parse(fs.readFileSync(path.join('release-assets', name), 'utf8'));
+
+          const android = read('android-release.json');
+          if (android.artifact !== 'rainette-music-android.apk' || android.version !== process.env.RELEASE_VERSION) {
+            throw new Error('android-release.json does not match this tagged release');
+          }
+          if (android.signed !== true || android.signatureVerified !== true) {
+            throw new Error('android-release.json is not production-signature verified');
+          }
+
+          // The Windows manifest is schema 2: its authenticity comes from the
+          // Ed25519 signature (verified in windows-sign against the committed
+          // public key), and the channel gate keeps dev builds non-installable.
+          const windows = read('windows-release.json');
+          if (windows.artifact !== 'RainetteMusicSetup.exe' || windows.version !== process.env.RELEASE_VERSION) {
+            throw new Error('windows-release.json does not match this tagged release');
+          }
+          if (windows.schema !== 2 || windows.channel !== 'release') {
+            throw new Error('windows-release.json does not describe an installable release build');
           }
           NODE
 
@@ -419,3 +420,4 @@ jobs:
             release-assets/RainetteMusicSetup.exe
             release-assets/RainetteMusicSetup.exe.sha256
             release-assets/windows-release.json
+            release-assets/windows-release.json.sig

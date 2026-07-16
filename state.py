@@ -7,7 +7,7 @@ support the music bridge directly.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 import json
@@ -51,6 +51,64 @@ def parse_utc(value: str | None) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def _monday_of(day: date) -> date:
+    """The Monday of ``day``'s week (weekday() has Monday == 0)."""
+    return day - timedelta(days=day.weekday())
+
+
+def _add_months(first_of_month: date, months: int) -> date:
+    """First-of-month arithmetic that never overflows a day into the wrong month."""
+    index = first_of_month.month - 1 + months
+    return date(first_of_month.year + index // 12, index % 12 + 1, 1)
+
+
+def plan_insight_buckets(today: date, days: int, earliest: date) -> tuple[str, list[dict[str, Any]]]:
+    """Choose the Insights chart's bucket unit and spans for a range.
+
+    Keeps the bar count small enough that every value label always renders:
+    a 7-day range stays daily, a month rolls up to Monday-start weeks, and
+    all-time (``days == 0``) rolls up to at most the last 12 monthly buckets.
+    The UI only ever asks for 7 / 30 / 0, which map to day / week / month.
+
+    Returns ``(unit, spans)`` where each span is ``{"start", "end", "key"}``:
+    ``start``/``end`` are inclusive local dates and ``key`` is what a play's
+    local date is matched against to fall into that bucket.
+    """
+    if days == 0:
+        this_month = today.replace(day=1)
+        start_month = max(earliest.replace(day=1), _add_months(this_month, -11))
+        spans: list[dict[str, Any]] = []
+        month = start_month
+        while month <= this_month:
+            spans.append({"start": month, "end": _add_months(month, 1) - timedelta(days=1),
+                          "key": (month.year, month.month)})
+            month = _add_months(month, 1)
+        return "month", spans
+    if days <= 7:
+        spans = []
+        day = today - timedelta(days=days - 1)
+        while day <= today:
+            spans.append({"start": day, "end": day, "key": day})
+            day += timedelta(days=1)
+        return "day", spans
+    first_monday = _monday_of(today - timedelta(days=days - 1))
+    spans = []
+    week = first_monday
+    while week <= today:
+        spans.append({"start": week, "end": week + timedelta(days=6), "key": week})
+        week += timedelta(days=7)
+    return "week", spans
+
+
+def _bucket_key(unit: str, local_day: date):
+    """The bucket key a play's local date maps to for a given unit."""
+    if unit == "day":
+        return local_day
+    if unit == "week":
+        return _monday_of(local_day)
+    return (local_day.year, local_day.month)
 
 
 class MusicState:
@@ -798,18 +856,19 @@ class MusicState:
     def listening_insights(self, *, days: int = 7) -> dict[str, Any]:
         """Aggregate play history into the Insights payload.
 
-        ``days`` bounds the window (0 = all time). Daily buckets use the local
-        timezone so "today" matches the user's clock, and the chart series
-        covers the most recent ``min(days or 30, 30)`` days ending today.
+        ``days`` bounds the window (0 = all time). Buckets use the local
+        timezone so "today" matches the user's clock, and the chart adapts its
+        unit to the range (day / week / month) via plan_insight_buckets so a
+        legible handful of bars always fits. For a bounded range the totals
+        window is aligned to the first bucket's start, so the summary strip and
+        the chart agree exactly (sum of bar counts == total_plays).
         """
         try:
             days = max(0, min(int(days or 0), 365))
         except Exception:
             days = 7
         now_local = datetime.now(timezone.utc).astimezone()
-        cutoff = None
-        if days:
-            cutoff = (now_local - timedelta(days=days)).astimezone(timezone.utc)
+        today = now_local.date()
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -820,29 +879,45 @@ class MusicState:
                 """
             ).fetchall()
 
-        chart_days = min(days or 30, 30)
-        day_keys = [(now_local - timedelta(days=offset)).strftime("%Y-%m-%d")
-                    for offset in range(chart_days - 1, -1, -1)]
-        daily = {key: 0 for key in day_keys}
-
-        total_plays = 0
-        total_seconds = 0.0
-        track_plays: dict[str, dict[str, Any]] = {}
-        artist_plays: dict[str, dict[str, Any]] = {}
+        # Pre-parse plays so the bucket planner can see the earliest play (which
+        # bounds the all-time monthly chart) before aggregation runs.
+        plays: list[tuple[datetime, dict[str, Any]]] = []
         for row in rows:
             track = self._track_row(row)
             played_at = parse_utc(track.pop("played_at", None))
             if played_at is None:
                 continue
+            plays.append((played_at, track))
+
+        earliest_local = min((played_at.astimezone().date() for played_at, _ in plays), default=today)
+        bucket_unit, bucket_spans = plan_insight_buckets(today, days, earliest_local)
+        bucket_index = {span["key"]: i for i, span in enumerate(bucket_spans)}
+        bucket_counts = [0] * len(bucket_spans)
+
+        # A bounded range counts only plays inside the chart's span, so the
+        # totals and the bars line up. All-time (cutoff None) counts every play
+        # into the totals while the chart shows just the last 12 months, so the
+        # strip can legitimately exceed the visible bars on long histories.
+        cutoff = None
+        if days and bucket_spans:
+            first = bucket_spans[0]["start"]
+            cutoff = datetime(first.year, first.month, first.day,
+                              tzinfo=now_local.tzinfo).astimezone(timezone.utc)
+
+        total_plays = 0
+        total_seconds = 0.0
+        track_plays: dict[str, dict[str, Any]] = {}
+        artist_plays: dict[str, dict[str, Any]] = {}
+        for played_at, track in plays:
             if cutoff is not None and played_at < cutoff:
                 continue
             total_plays += 1
             duration = track.get("duration_s")
             if isinstance(duration, (int, float)) and duration > 0:
                 total_seconds += float(duration)
-            local_day = played_at.astimezone().strftime("%Y-%m-%d")
-            if local_day in daily:
-                daily[local_day] += 1
+            slot = bucket_index.get(_bucket_key(bucket_unit, played_at.astimezone().date()))
+            if slot is not None:
+                bucket_counts[slot] += 1
 
             track_key = f"{track.get('source') or 'youtube'}:{track.get('source_id') or ''}"
             entry = track_plays.setdefault(track_key, {**track, "play_count": 0,
@@ -874,7 +949,9 @@ class MusicState:
             "total_minutes": int(total_seconds // 60),
             "unique_tracks": len(track_plays),
             "unique_artists": len(artist_plays),
-            "daily": [{"date": key, "count": daily[key]} for key in day_keys],
+            "bucket_unit": bucket_unit,
+            "buckets": [{"start": span["start"].isoformat(), "end": span["end"].isoformat(),
+                         "count": bucket_counts[i]} for i, span in enumerate(bucket_spans)],
             "top_tracks": top_tracks,
             "top_artists": top_artists,
         }

@@ -993,6 +993,7 @@ const ICON = {
 	play: iconMarkup('play', 18),
 	pause: iconMarkup('pause', 18),
 	loop: iconMarkup('loop', 18),
+	loopOne: iconMarkup('loopOne', 18),
 	chevronDown: iconMarkup('chevronDown', 18),
 	chevronUp: iconMarkup('chevronUp', 18),
 	close: iconMarkup('close', 16),
