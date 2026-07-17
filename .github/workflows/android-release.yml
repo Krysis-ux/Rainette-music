@@ -449,4 +449,13 @@ jobs:
         with:
           fail_on_unmatched_files: true
           generate_release_notes: true
+          body: |
+            ## Downloads
+
+            - **Windows:** download **`RainetteMusicSetup.exe`** and run it — that's the installer.
+            - **Android:** download **`rainette-music-android.apk`** (when included in this release).
+
+            Every other file here (`.sha256`, `windows-release.json`, `windows-release.json.sig`)
+            is used by Rainette's automatic updater to verify this release is authentic —
+            you don't need to download them.
           files: release-assets/*
