@@ -23,9 +23,9 @@ background.
 
 ```
 pip install -r requirements.txt
-start.bat        # run from source (windowed)
-debug.bat        # run from source with a console for errors
-python -m pytest # test suite
+pythonw main.py   # run from source (windowed)
+python main.py    # run with a console for errors
+python -m pytest  # test suite
 ```
 
 Releases are built by CI from `v*` tags — see [release/README.md](release/README.md).
