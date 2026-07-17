@@ -290,11 +290,12 @@ def test_github_android_publishing_is_optional_but_windows_signing_is_not():
     assert "android_gate" in test_job
     assert "secrets.ANDROID_KEYSTORE_BASE64" in test_job
     assert "if: needs.test.outputs.android_enabled == 'true'" in android_job
-    # ...and publish tolerates it being skipped, but never failed, while the
-    # signed Windows release is always mandatory.
+    # ...and publish requires only the signed Windows release: a skipped OR
+    # failed Android build must never block the Windows release.
     assert "needs.windows-sign.result == 'success'" in publish_job
-    assert "needs.android.result == 'success' || needs.android.result == 'skipped'" in publish_job
-    # A skipped android job must shrink the expected asset set accordingly.
+    assert "needs.android.result == 'skipped'" not in publish_job
+    # The APK ships only when the android job actually succeeded; the expected
+    # asset set shrinks to Windows-only otherwise.
     assert 'if [ "${ANDROID_RESULT}" = "success" ]' in publish_job
 
 

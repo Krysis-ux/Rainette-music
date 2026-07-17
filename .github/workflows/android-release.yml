@@ -358,7 +358,11 @@ jobs:
     needs: [android, windows-sign]
     # Publish whenever the signed Windows release is ready; Android is optional
     # (skipped when its signing secrets are absent) but must never have failed.
-    if: ${{ !cancelled() && needs.windows-sign.result == 'success' && (needs.android.result == 'success' || needs.android.result == 'skipped') }}
+    # The signed Windows release is mandatory; Android is a bonus. A skipped OR
+    # failed Android build must never hold back the Windows release — the APK is
+    # simply absent that release, and the exact-asset-set check adapts to which
+    # assets actually arrived.
+    if: ${{ !cancelled() && needs.windows-sign.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
