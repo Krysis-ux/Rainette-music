@@ -252,18 +252,12 @@ jobs:
         shell: pwsh
         run: |
           $installer = 'release\out\RainetteMusicSetup.exe'
-          $sidecar = 'release\out\RainetteMusicSetup.exe.sha256'
-          $manifestPath = 'release\out\windows-release.json'
-          foreach ($path in $installer, $sidecar, $manifestPath) {
+          $manifestPath = 'release\out\latest.json'
+          foreach ($path in $installer, $manifestPath) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Expected release output is missing: $path" }
           }
 
-          $checksum = (Get-Content -LiteralPath $sidecar -Raw).Trim()
-          if ($checksum -notmatch '^([0-9a-fA-F]{64})  RainetteMusicSetup\.exe$') { throw 'Windows checksum sidecar is malformed.' }
-          $expectedHash = $Matches[1].ToLowerInvariant()
           $actualHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualHash -ne $expectedHash) { throw 'Windows installer checksum does not match its sidecar.' }
-
           $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
           if ($manifest.schema -ne 2 -or $manifest.channel -ne 'release') {
             throw 'Windows release manifest does not describe an installable release build.'
@@ -284,8 +278,7 @@ jobs:
           name: rainette-windows-release
           path: |
             release/out/RainetteMusicSetup.exe
-            release/out/RainetteMusicSetup.exe.sha256
-            release/out/windows-release.json
+            release/out/latest.json
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -325,7 +318,7 @@ jobs:
           RAINETTE_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
           test -n "${RAINETTE_UPDATE_SIGNING_KEY}" || { echo "UPDATE_SIGNING_KEY secret is not configured (generate one with release/new_signing_key.py)" >&2; exit 1; }
-          python release/sign_manifest.py release/out/windows-release.json
+          python release/sign_manifest.py release/out/latest.json
 
       - name: Verify the signature against the committed public key
         run: |
@@ -333,14 +326,14 @@ jobs:
           import base64
           import sys
           sys.path.insert(0, ".")
-          import release_identity
+          import version
           from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-          manifest = open("release/out/windows-release.json", "rb").read()
-          signature = base64.b64decode(open("release/out/windows-release.json.sig", "rb").read())
-          keys = [value.strip() for value in release_identity.UPDATE_SIGNER_PUBLIC_KEY.split(",") if value.strip()]
+          manifest = open("release/out/latest.json", "rb").read()
+          signature = base64.b64decode(open("release/out/latest.json.sig", "rb").read())
+          keys = [value.strip() for value in version.UPDATE_SIGNER_PUBLIC_KEY.split(",") if value.strip()]
           if not keys:
-              raise SystemExit("UPDATE_SIGNER_PUBLIC_KEY in release_identity.py is empty - commit the public key before releasing")
+              raise SystemExit("UPDATE_SIGNER_PUBLIC_KEY in version.py is empty - commit the public key before releasing")
           for key in keys:
               try:
                   Ed25519PublicKey.from_public_bytes(base64.b64decode(key)).verify(signature, manifest)
@@ -356,7 +349,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rainette-windows-manifest-signature
-          path: release/out/windows-release.json.sig
+          path: release/out/latest.json.sig
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -394,11 +387,10 @@ jobs:
           export RELEASE_VERSION
           expected=(
             RainetteMusicSetup.exe
-            RainetteMusicSetup.exe.sha256
-            windows-release.json
-            windows-release.json.sig
+            latest.json
+            latest.json.sig
           )
-          checks=(RainetteMusicSetup.exe.sha256)
+          checks=()
           if [ "${ANDROID_RESULT}" = "success" ]; then
             expected+=(
               android-release.json
@@ -410,7 +402,7 @@ jobs:
           mapfile -t actual < <(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)
           mapfile -t wanted < <(printf '%s\n' "${expected[@]}" | sort)
           diff <(printf '%s\n' "${wanted[@]}") <(printf '%s\n' "${actual[@]}")
-          (cd release-assets && sha256sum --check "${checks[@]}")
+          if [ "${#checks[@]}" -gt 0 ]; then (cd release-assets && sha256sum --check "${checks[@]}"); fi
 
           node <<'NODE'
           const fs = require('node:fs');
@@ -430,19 +422,19 @@ jobs:
           // The Windows manifest is schema 2: its authenticity comes from the
           // Ed25519 signature (verified in windows-sign against the committed
           // public key), and the channel gate keeps dev builds non-installable.
-          const windows = read('windows-release.json');
+          const windows = read('latest.json');
           if (windows.artifact !== 'RainetteMusicSetup.exe' || windows.version !== process.env.RELEASE_VERSION) {
-            throw new Error('windows-release.json does not match this tagged release');
+            throw new Error('latest.json does not match this tagged release');
           }
           if (windows.schema !== 2 || windows.channel !== 'release') {
-            throw new Error('windows-release.json does not describe an installable release build');
+            throw new Error('latest.json does not describe an installable release build');
           }
           NODE
 
       # The exact-set check above is the gate; the glob then uploads precisely
       # that verified set whether or not the optional Android assets exist.
-      # Filenames it can publish: RainetteMusicSetup.exe, RainetteMusicSetup.exe.sha256,
-      # windows-release.json, windows-release.json.sig, rainette-music-android.apk,
+      # Filenames it can publish: RainetteMusicSetup.exe, latest.json,
+      # latest.json.sig, rainette-music-android.apk,
       # rainette-music-android.apk.sha256, android-release.json.
       - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -455,7 +447,6 @@ jobs:
             - **Windows:** download **`RainetteMusicSetup.exe`** and run it — that's the installer.
             - **Android:** download **`rainette-music-android.apk`** (when included in this release).
 
-            Every other file here (`.sha256`, `windows-release.json`, `windows-release.json.sig`)
-            is used by Rainette's automatic updater to verify this release is authentic —
-            you don't need to download them.
+            The `latest.json` files are used by Rainette's automatic updater to verify
+            this release is authentic — you don't need to download them.
           files: release-assets/*

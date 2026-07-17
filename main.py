@@ -38,7 +38,6 @@ import qrcode
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-import release_identity
 import server
 import version
 
@@ -88,8 +87,7 @@ ANDROID_APK_URL = f"{RELEASE_DOWNLOAD_BASE}/rainette-music-android.apk"
 UPDATE_USER_AGENT = "RainetteMusic (local desktop app)"
 UPDATE_API_VERSION = "2022-11-28"
 WINDOWS_INSTALLER_ASSET = "RainetteMusicSetup.exe"
-WINDOWS_CHECKSUM_ASSET = f"{WINDOWS_INSTALLER_ASSET}.sha256"
-WINDOWS_MANIFEST_ASSET = "windows-release.json"
+WINDOWS_MANIFEST_ASSET = "latest.json"
 WINDOWS_MANIFEST_SIGNATURE_ASSET = f"{WINDOWS_MANIFEST_ASSET}.sig"
 MAX_INSTALLER_BYTES = 512 * 1024 * 1024
 MAX_INTEGRITY_ASSET_BYTES = 64 * 1024
@@ -208,7 +206,6 @@ class _UpdateCandidate:
     release_version: str
     version_parts: tuple[int, int, int]
     installer: _UpdateAsset
-    checksum: _UpdateAsset
     manifest: _UpdateAsset
     manifest_signature: _UpdateAsset
     notes: str
@@ -221,7 +218,6 @@ class _UpdateCandidate:
             "version": self.release_version,
             "assets": [
                 [self.installer.asset_id, self.installer.name, self.installer.size, self.installer.sha256],
-                [self.checksum.asset_id, self.checksum.name, self.checksum.size, self.checksum.sha256],
                 [self.manifest.asset_id, self.manifest.name, self.manifest.size, self.manifest.sha256],
                 [self.manifest_signature.asset_id, self.manifest_signature.name,
                  self.manifest_signature.size, self.manifest_signature.sha256],
@@ -237,7 +233,6 @@ class _UpdateCandidate:
             self.tag,
             self.release_version,
             self.installer,
-            self.checksum,
             self.manifest,
             self.manifest_signature,
         )
@@ -299,7 +294,7 @@ def _asset_from_payload(payload: object, expected_name: str) -> _UpdateAsset | N
             return None
         allowed_types = {"application/x-msdownload", "application/x-msdos-program",
                          "application/vnd.microsoft.portable-executable", "application/octet-stream"}
-    elif expected_name in (WINDOWS_CHECKSUM_ASSET, WINDOWS_MANIFEST_SIGNATURE_ASSET):
+    elif expected_name == WINDOWS_MANIFEST_SIGNATURE_ASSET:
         if size > MAX_INTEGRITY_ASSET_BYTES:
             return None
         allowed_types = {"text/plain", "application/pgp-signature", "application/octet-stream"}
@@ -331,8 +326,7 @@ def _candidate_from_release(payload: object) -> _UpdateCandidate | None:
     if not isinstance(assets, list):
         return None
     selected = {}
-    for expected_name in (WINDOWS_INSTALLER_ASSET, WINDOWS_CHECKSUM_ASSET,
-                          WINDOWS_MANIFEST_ASSET, WINDOWS_MANIFEST_SIGNATURE_ASSET):
+    for expected_name in (WINDOWS_INSTALLER_ASSET, WINDOWS_MANIFEST_ASSET, WINDOWS_MANIFEST_SIGNATURE_ASSET):
         matches = [asset for asset in assets if isinstance(asset, dict) and asset.get("name") == expected_name]
         if len(matches) != 1:
             return None
@@ -348,7 +342,6 @@ def _candidate_from_release(payload: object) -> _UpdateCandidate | None:
         release_version=release_version,
         version_parts=version_parts,
         installer=selected[WINDOWS_INSTALLER_ASSET],
-        checksum=selected[WINDOWS_CHECKSUM_ASSET],
         manifest=selected[WINDOWS_MANIFEST_ASSET],
         manifest_signature=selected[WINDOWS_MANIFEST_SIGNATURE_ASSET],
         notes=str(payload.get("body") or "")[:2000],
@@ -418,21 +411,6 @@ def _revalidate_candidate(candidate: _UpdateCandidate) -> _UpdateCandidate | Non
     if refreshed.pinned_identity != candidate.pinned_identity:
         return None
     return refreshed
-
-
-def _expected_sha256(sha_bytes: bytes) -> str:
-    """Parse the one allowed GNU-style checksum line for the Rainette installer."""
-    if len(sha_bytes) > MAX_INTEGRITY_ASSET_BYTES:
-        return ""
-    try:
-        text = sha_bytes.decode("ascii").strip()
-    except UnicodeDecodeError:
-        return ""
-    match = re.fullmatch(
-        rf"([0-9a-fA-F]{{64}})[ \t]+\*?{re.escape(WINDOWS_INSTALLER_ASSET)}",
-        text,
-    )
-    return match.group(1).lower() if match else ""
 
 
 def _validate_asset_response_url(url: str, asset_id: int) -> None:
@@ -521,7 +499,7 @@ def _stream_asset_to_path(asset: _UpdateAsset, path: Path, *, timeout: int = 180
         raise
 
 
-def _validate_release_manifest(candidate: _UpdateCandidate, manifest_bytes: bytes, expected_hash: str) -> None:
+def _validate_release_manifest(candidate: _UpdateCandidate, manifest_bytes: bytes) -> None:
     """Check the schema-2 manifest's claims. Only ever called on manifest bytes
     whose Ed25519 signature already verified — these fields are trusted because
     of that check, not because GitHub served them."""
@@ -540,7 +518,10 @@ def _validate_release_manifest(candidate: _UpdateCandidate, manifest_bytes: byte
     # local-test / dev builds must stay non-installable even when validly signed.
     if manifest.get("channel") not in {"stable", "release"}:
         raise RuntimeError("release manifest was not a stable Windows release")
-    if str(manifest.get("sha256") or "").lower() != expected_hash:
+    # The signed hash is the installer's identity: it must match the digest
+    # GitHub reports for the asset, and the streamed bytes are hashed against
+    # that same digest, so a swapped installer can never reach the disk name.
+    if str(manifest.get("sha256") or "").lower() != candidate.installer.sha256:
         raise RuntimeError("release manifest checksum did not match the installer")
     if _authenticode_pin_configured():
         authenticode = manifest.get("authenticode")
@@ -557,13 +538,7 @@ def _download_verified_installer(candidate: _UpdateCandidate, dest_dir: Path, pr
     manifest_bytes = _fetch_asset_bytes(candidate.manifest, MAX_INTEGRITY_ASSET_BYTES, timeout=15)
     signature_bytes = _fetch_asset_bytes(candidate.manifest_signature, MAX_INTEGRITY_ASSET_BYTES, timeout=15)
     _verify_manifest_signature(manifest_bytes, signature_bytes)
-    checksum_bytes = _fetch_asset_bytes(candidate.checksum, MAX_INTEGRITY_ASSET_BYTES, timeout=15)
-    expected = _expected_sha256(checksum_bytes)
-    if not expected:
-        raise RuntimeError("release checksum is missing or malformed")
-    if expected != candidate.installer.sha256:
-        raise RuntimeError("release checksum did not match GitHub's installer digest")
-    _validate_release_manifest(candidate, manifest_bytes, expected)
+    _validate_release_manifest(candidate, manifest_bytes)
     return _stream_asset_to_path(candidate.installer, dest_dir / WINDOWS_INSTALLER_ASSET, progress=progress)
 
 
@@ -571,7 +546,7 @@ def _configured_update_public_keys() -> tuple[bytes, ...]:
     """Return the committed Ed25519 release keys (raw 32 bytes each), failing
     closed when absent or malformed. Multiple comma-separated keys support an
     intentional rotation: ship an update that trusts both, then switch CI."""
-    configured = release_identity.UPDATE_SIGNER_PUBLIC_KEY
+    configured = version.UPDATE_SIGNER_PUBLIC_KEY
     if not isinstance(configured, str):
         raise RuntimeError("Rainette update signing key is invalid")
     keys = []
@@ -629,13 +604,13 @@ def _authenticode_pin_configured() -> bool:
     Ed25519 manifest signature is the sole (sufficient) root of trust. Any
     non-empty value — valid or not — turns enforcement on; an invalid value
     then fails closed inside _configured_update_signer_hashes()."""
-    configured = release_identity.UPDATE_SIGNER_CERT_SHA256
+    configured = version.UPDATE_SIGNER_CERT_SHA256
     return isinstance(configured, str) and bool(configured.strip())
 
 
 def _configured_update_signer_hashes() -> frozenset[str]:
     """Return the embedded Authenticode signer allow-list, failing closed if absent."""
-    configured = release_identity.UPDATE_SIGNER_CERT_SHA256
+    configured = version.UPDATE_SIGNER_CERT_SHA256
     if not isinstance(configured, str):
         raise RuntimeError("Rainette update signer identity is invalid")
     values = [value.strip().lower() for value in configured.split(",") if value.strip()]

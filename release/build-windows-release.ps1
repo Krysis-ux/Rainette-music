@@ -13,11 +13,11 @@ $appDir = Join-Path $stage 'RainetteMusic'
 $appExecutable = Join-Path $appDir 'RainetteMusic.exe'
 $buildMarker = Join-Path $stage 'rainette-unsigned-build.json'
 $installer = Join-Path $output 'RainetteMusicSetup.exe'
-$manifestPath = Join-Path $output 'windows-release.json'
+$manifestPath = Join-Path $output 'latest.json'
 $webDir = Join-Path $root 'web'
 $icon = Join-Path $webDir 'assets\rainette-icon.ico'
 $entryPoint = Join-Path $root 'main.py'
-$releaseIdentity = Join-Path $root 'release_identity.py'
+$releaseIdentity = Join-Path $root 'version.py'
 $utf8NoBom = [Text.UTF8Encoding]::new($false)
 
 function Require-Command([string]$Name) {
@@ -45,16 +45,6 @@ function Normalize-SignerFingerprint([string]$Value) {
     return $normalized
 }
 
-function Write-Checksum([string]$Path) {
-    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
-    [IO.File]::WriteAllText(
-        "$Path.sha256",
-        "$hash  $(Split-Path -Leaf $Path)",
-        $utf8NoBom
-    )
-    return $hash
-}
-
 function Assert-SourceVersion {
     Require-Command 'python'
     # The updater compares the running app's version.APP_VERSION against the
@@ -69,7 +59,7 @@ function Assert-SourceVersion {
 
 function Clear-PackageOutputs {
     New-Item -ItemType Directory -Force $output | Out-Null
-    foreach ($path in @($installer, "$installer.sha256", $manifestPath)) {
+    foreach ($path in @($installer, $manifestPath)) {
         Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
     }
 }
@@ -102,7 +92,7 @@ function Invoke-PyInstallerBuild([string]$EmbeddedSignerFingerprint) {
 
     if ($EmbeddedSignerFingerprint) {
         if (-not (Test-Path -LiteralPath $releaseIdentity -PathType Leaf)) {
-            throw 'release_identity.py is required to pin the production update signer.'
+            throw 'version.py is required to pin the production update signer.'
         }
         $originalIdentityBytes = [IO.File]::ReadAllBytes($releaseIdentity)
         $utf8 = [Text.UTF8Encoding]::new($false, $true)
@@ -110,7 +100,7 @@ function Invoke-PyInstallerBuild([string]$EmbeddedSignerFingerprint) {
         $identityPattern = '(?m)^UPDATE_SIGNER_CERT_SHA256\s*=\s*(?:""|'''')\s*$'
         $matches = [regex]::Matches($originalIdentity, $identityPattern)
         if ($matches.Count -ne 1) {
-            throw 'release_identity.py must contain exactly one empty UPDATE_SIGNER_CERT_SHA256 assignment.'
+            throw 'version.py must contain exactly one empty UPDATE_SIGNER_CERT_SHA256 assignment.'
         }
         $embeddedIdentity = [regex]::Replace(
             $originalIdentity,
@@ -205,11 +195,11 @@ function Invoke-SignedPackage([string]$ExpectedFingerprint) {
 }
 
 # Schema-2 manifest: the updater trusts these fields only after the manifest's
-# detached Ed25519 signature (windows-release.json.sig, produced by
-# release/sign_manifest.py) verifies against the key in release_identity.py.
+# detached Ed25519 signature (latest.json.sig, produced by
+# release/sign_manifest.py) verifies against the key in version.py.
 # `channel` is what keeps LocalTest builds non-installable even if published.
 function Write-ReleaseManifest([string]$Channel, [bool]$AuthenticodeSigned, [string]$SignerCertSha256 = '') {
-    $hash = Write-Checksum $installer
+    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
     $manifestJson = @{
         schema = 2
         version = $Version

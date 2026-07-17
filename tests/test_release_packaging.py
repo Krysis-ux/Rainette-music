@@ -35,7 +35,7 @@ def test_windows_release_embeds_and_restores_the_public_update_signer_identity()
 
     assert "Normalize-SignerFingerprint" in script
     assert "^[0-9a-f]{64}$" in script
-    assert "release_identity.py" in script
+    assert "version.py" in script
     assert "UPDATE_SIGNER_CERT_SHA256" in script
     assert "[IO.File]::ReadAllBytes($releaseIdentity)" in script
     assert "[IO.File]::WriteAllBytes($releaseIdentity, $originalIdentityBytes)" in script
@@ -101,7 +101,6 @@ def test_windows_release_integrity_files_are_utf8_without_a_bom():
 
     assert "$utf8NoBom = [Text.UTF8Encoding]::new($false)" in script
     assert "[IO.File]::WriteAllText(" in script
-    assert '"$Path.sha256"' in script
     assert "[IO.File]::WriteAllText($buildMarker, $markerJson, $utf8NoBom)" in script
     assert "[IO.File]::WriteAllText($manifestPath, $manifestJson, $utf8NoBom)" in script
     assert "Set-Content -LiteralPath $manifestPath" not in script
@@ -115,8 +114,7 @@ def test_webview_runtime_is_pinned_to_the_autoplay_patch_contract():
 def test_windows_release_build_preserves_android_artifacts():
     script = (ROOT / "release" / "build-windows-release.ps1").read_text(encoding="utf-8")
     assert "Remove-Item -LiteralPath $output -Recurse" not in script
-    assert '"$installer.sha256"' in script
-    assert "$manifestPath = Join-Path $output 'windows-release.json'" in script
+    assert "$manifestPath = Join-Path $output 'latest.json'" in script
 
 
 def test_inno_setup_wizard_installs_shortcuts_and_uninstaller_contract():
@@ -204,8 +202,7 @@ def test_github_windows_release_is_built_signed_and_verified_from_the_tagged_che
     assert "rainette-windows-release" in windows_build_job
     # The build job never sees a credential of any kind.
     assert "secrets." not in windows_build_job
-    assert "RainetteMusicSetup.exe.sha256" in windows_build_job
-    assert "windows-release.json" in windows_build_job
+    assert "latest.json" in windows_build_job
     # The manifest gate: schema 2 + the release channel, or the updater refuses.
     assert "$manifest.schema -ne 2" in windows_build_job
     assert "'release'" in windows_build_job
@@ -217,7 +214,7 @@ def test_github_windows_release_is_built_signed_and_verified_from_the_tagged_che
     assert "persist-credentials: false" in windows_sign_job
     assert "secrets.UPDATE_SIGNING_KEY" in windows_sign_job
     assert "sign_manifest.py" in windows_sign_job
-    assert "windows-release.json.sig" in windows_sign_job
+    assert "latest.json.sig" in windows_sign_job
     # A signature CI produced but the app would refuse must fail the pipeline,
     # not brick the release: the signature is checked against the committed key.
     assert "UPDATE_SIGNER_PUBLIC_KEY" in windows_sign_job
@@ -275,9 +272,8 @@ def test_github_publish_job_downloads_only_platform_job_artifacts():
         "rainette-music-android.apk.sha256",
         "android-release.json",
         "RainetteMusicSetup.exe",
-        "RainetteMusicSetup.exe.sha256",
-        "windows-release.json",
-        "windows-release.json.sig",
+        "latest.json",
+        "latest.json.sig",
     ):
         assert filename in publish_job
     assert "files: release-assets/*" in publish_job

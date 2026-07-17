@@ -168,9 +168,8 @@ class MobileContractTests(unittest.TestCase):
         self.assertIn("rainette-music-android.apk", workflow)
         self.assertIn("RainetteMusicSetup.exe", workflow)
         self.assertIn("rainette-music-android.apk.sha256", workflow)
-        self.assertIn("RainetteMusicSetup.exe.sha256", workflow)
         self.assertIn("android-release.json", workflow)
-        self.assertIn("windows-release.json", workflow)
+        self.assertIn("latest.json", workflow)
         self.assertIn("fail_on_unmatched_files: true", workflow)
         self.assertIn("assembleRelease", workflow)
 

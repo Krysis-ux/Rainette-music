@@ -5,7 +5,7 @@ Run this ONCE on a trusted machine:
     python release/new_signing_key.py
 
 Then:
-  1. Paste the PUBLIC key into release_identity.py (UPDATE_SIGNER_PUBLIC_KEY)
+  1. Paste the PUBLIC key into version.py (UPDATE_SIGNER_PUBLIC_KEY)
      and commit it. It is public — committing it is the point.
   2. Add the PRIVATE key as the GitHub Actions repository secret
      UPDATE_SIGNING_KEY (Settings > Secrets and variables > Actions).
@@ -36,7 +36,7 @@ def main() -> None:
     # ASCII-only output: Windows consoles often decode cp1252 and turn fancy
     # dashes into mojibake right where the user is copying key material.
     print("Rainette release-signing keypair generated.\n")
-    print("PUBLIC key - commit this into release_identity.py:")
+    print("PUBLIC key - commit this into version.py:")
     print(f'    UPDATE_SIGNER_PUBLIC_KEY = "{public_b64}"\n')
     print("PRIVATE key - GitHub secret UPDATE_SIGNING_KEY (and an offline backup):")
     print(f"    {private_b64}\n")

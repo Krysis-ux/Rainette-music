@@ -1,8 +1,8 @@
-"""Sign windows-release.json with the Ed25519 release key.
+"""Sign latest.json with the Ed25519 release key.
 
 Writes a detached signature (base64, over the manifest's raw bytes) to
 <manifest>.sig — the asset the in-app updater verifies against the public key
-committed in release_identity.py.
+committed in version.py.
 
 Deliberately tiny: this is the only code the credential-holding CI job runs,
 preserving the release pipeline's isolation principle (the job with the secret
@@ -10,7 +10,7 @@ never executes arbitrary project code).
 
 Usage:
     RAINETTE_UPDATE_SIGNING_KEY=<base64 raw Ed25519 private key> \
-        python release/sign_manifest.py <path-to-windows-release.json>
+        python release/sign_manifest.py <path-to-latest.json>
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
-        sys.stderr.write("usage: sign_manifest.py <path-to-windows-release.json>\n")
+        sys.stderr.write("usage: sign_manifest.py <path-to-latest.json>\n")
         return 2
     manifest_path = Path(argv[1])
     if not manifest_path.is_file():

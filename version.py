@@ -10,7 +10,16 @@ from __future__ import annotations
 
 import re
 
-APP_VERSION = "0.2.3"
+APP_VERSION = "0.2.4"
+
+# Release-signing identity for self-updates. The PUBLIC Ed25519 key below can
+# only verify signatures, never create them (the private key lives outside the
+# repo); comma-separate multiple keys during an intentional rotation.
+UPDATE_SIGNER_PUBLIC_KEY = "cC0YeVcuZx/JhAU4Ctg/jOEDoIO8nCb/J0bLJSuzUJk="
+
+# Optional Authenticode layer, enforced only when a certificate fingerprint is
+# injected by the release build. Required by the updater even while empty.
+UPDATE_SIGNER_CERT_SHA256 = ""
 
 
 def parse_version(value: str) -> tuple[int, ...]:

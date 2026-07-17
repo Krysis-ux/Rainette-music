@@ -4,9 +4,9 @@ exercised once a real v* release exists, so these pin everything up to (and the
 refusal past) that boundary.
 
 The root of trust is an Ed25519 signature over the release manifest's raw
-bytes, verified against the public key committed in release_identity.py.
-Authenticode is an optional second layer, enforced only when a certificate
-fingerprint is pinned."""
+bytes, verified against the public key committed in version.py. Authenticode
+is an optional second layer, enforced only when a certificate fingerprint is
+pinned."""
 
 import base64
 import hashlib
@@ -48,8 +48,7 @@ class VersionComparisonTests(unittest.TestCase):
 
 
 INSTALLER_NAME = "RainetteMusicSetup.exe"
-CHECKSUM_NAME = f"{INSTALLER_NAME}.sha256"
-MANIFEST_NAME = "windows-release.json"
+MANIFEST_NAME = "latest.json"
 SIGNATURE_NAME = f"{MANIFEST_NAME}.sig"
 # The release keypair every fixture signs with, plus an unrelated key for the
 # attacker-holds-a-different-key cases. Generated fresh per test run: nothing
@@ -91,11 +90,11 @@ def _json_response(body, url: str = RELEASES_URL):
 
 
 def _pinned_public_key(value: str = TEST_PUBLIC_KEY_B64):
-    return mock.patch.object(main.release_identity, "UPDATE_SIGNER_PUBLIC_KEY", value)
+    return mock.patch.object(main.version, "UPDATE_SIGNER_PUBLIC_KEY", value)
 
 
 def _pinned_signer(fingerprint: str = RAINETTE_SIGNER_SHA256):
-    return mock.patch.object(main.release_identity, "UPDATE_SIGNER_CERT_SHA256", fingerprint)
+    return mock.patch.object(main.version, "UPDATE_SIGNER_CERT_SHA256", fingerprint)
 
 
 def _frozen(flag: bool = True):
@@ -116,7 +115,6 @@ class _SignedBuildTestCase(unittest.TestCase):
 def _asset(asset_id: int, name: str, content: bytes, *, state: str = "uploaded", size=None):
     content_type = {
         INSTALLER_NAME: "application/x-msdownload",
-        CHECKSUM_NAME: "text/plain",
         MANIFEST_NAME: "application/json",
         SIGNATURE_NAME: "application/octet-stream",
     }.get(name, "application/octet-stream")
@@ -137,7 +135,6 @@ def _release_fixture(version_number="0.9.0", *, release_id=900, draft=False, pre
                      signing_key=TEST_SIGNING_KEY):
     installer = b"MZ pretend signed Rainette installer"
     installer_hash = hashlib.sha256(installer).hexdigest()
-    checksum = f"{installer_hash}  {INSTALLER_NAME}\n".encode()
     manifest_dict = {
         "schema": 2,
         "version": version_number,
@@ -155,7 +152,6 @@ def _release_fixture(version_number="0.9.0", *, release_id=900, draft=False, pre
     signature = base64.b64encode(signing_key.sign(manifest))
     assets = [
         _asset(901, INSTALLER_NAME, installer),
-        _asset(902, CHECKSUM_NAME, checksum),
         _asset(903, MANIFEST_NAME, manifest),
         _asset(906, SIGNATURE_NAME, signature),
         _asset(904, "rainette-music-android.apk", b"android"),
@@ -176,7 +172,6 @@ def _release_fixture(version_number="0.9.0", *, release_id=900, draft=False, pre
     }
     return release, {
         901: installer,
-        902: checksum,
         903: manifest,
         906: signature,
     }
@@ -256,7 +251,7 @@ class CheckForUpdatesTests(_SignedBuildTestCase):
         base, _ = _release_fixture()
         cases = {}
 
-        for missing in (INSTALLER_NAME, CHECKSUM_NAME, MANIFEST_NAME, SIGNATURE_NAME):
+        for missing in (INSTALLER_NAME, MANIFEST_NAME, SIGNATURE_NAME):
             candidate = copy.deepcopy(base)
             candidate["assets"] = [asset for asset in candidate["assets"] if asset["name"] != missing]
             cases[f"missing {missing}"] = candidate
@@ -330,7 +325,6 @@ class CheckForUpdatesTests(_SignedBuildTestCase):
         release, _ = _release_fixture()
         live_types = {
             INSTALLER_NAME: "application/x-msdos-program",
-            CHECKSUM_NAME: "application/octet-stream",
             MANIFEST_NAME: "application/json",
             SIGNATURE_NAME: "application/pgp-signature",
         }
@@ -464,12 +458,11 @@ class InstallerDownloadTests(_SignedBuildTestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 path = main._download_verified_installer(candidate, Path(tmp))
                 self.assertEqual(path.read_bytes(), contents[901])
-        # Manifest and signature come first: nothing else is even fetched until
-        # the manifest's Ed25519 signature has verified.
+        # Manifest and signature come first: the installer is not even fetched
+        # until the manifest's Ed25519 signature has verified.
         self.assertEqual(
             [request[0] for request in router.requests],
-            [f"{ASSET_API_BASE}/903", f"{ASSET_API_BASE}/906",
-             f"{ASSET_API_BASE}/902", f"{ASSET_API_BASE}/901"],
+            [f"{ASSET_API_BASE}/903", f"{ASSET_API_BASE}/906", f"{ASSET_API_BASE}/901"],
         )
 
     def test_wrong_key_signature_stops_the_download_before_any_installer_bytes(self):
@@ -497,23 +490,6 @@ class InstallerDownloadTests(_SignedBuildTestCase):
         ):
             with self.subTest(label=label):
                 release, contents = _release_fixture(mutate_manifest=mutate)
-                candidate = main._candidate_from_release(release)
-                router = _UrlRouter(assets=contents)
-                with mock.patch.object(main.urllib.request, "urlopen", side_effect=router):
-                    with tempfile.TemporaryDirectory() as tmp:
-                        with self.assertRaises(RuntimeError):
-                            main._download_verified_installer(candidate, Path(tmp))
-                        self.assertEqual(list(Path(tmp).iterdir()), [])
-
-    def test_sidecar_must_name_the_exact_installer_and_match_github_digest(self):
-        for label, checksum in (
-            ("wrong filename", f"{'0' * 64}  OtherSoftware.exe\n".encode()),
-            ("wrong hash", f"{'0' * 64}  {INSTALLER_NAME}\n".encode()),
-        ):
-            with self.subTest(label=label):
-                release, contents = _release_fixture()
-                release["assets"][1] = _asset(902, CHECKSUM_NAME, checksum)
-                contents[902] = checksum
                 candidate = main._candidate_from_release(release)
                 router = _UrlRouter(assets=contents)
                 with mock.patch.object(main.urllib.request, "urlopen", side_effect=router):
@@ -570,7 +546,7 @@ class ApplyUpdateGuardTests(_SignedBuildTestCase):
             installer = Path(tmp) / INSTALLER_NAME
             installer.write_bytes(b"MZ signed installer fixture")
             with mock.patch.object(main.os, "name", "nt"), \
-                 mock.patch.object(main.release_identity, "UPDATE_SIGNER_CERT_SHA256", ""), \
+                 mock.patch.object(main.version, "UPDATE_SIGNER_CERT_SHA256", ""), \
                  mock.patch.object(main, "_verify_windows_authenticode_trust") as trust, \
                  mock.patch.object(main, "_authenticode_signer_sha256") as signer:
                 with self.assertRaisesRegex(RuntimeError, "identity is not configured"):
@@ -586,7 +562,7 @@ class ApplyUpdateGuardTests(_SignedBuildTestCase):
             installer.write_bytes(b"MZ signed installer fixture")
             with mock.patch.object(main.os, "name", "nt"), \
                  mock.patch.object(
-                     main.release_identity,
+                     main.version,
                      "UPDATE_SIGNER_CERT_SHA256",
                      trusted_rainette_signer,
                  ), \
@@ -609,7 +585,7 @@ class ApplyUpdateGuardTests(_SignedBuildTestCase):
             installer.write_bytes(b"MZ signed installer fixture")
             with mock.patch.object(main.os, "name", "nt"), \
                  mock.patch.object(
-                     main.release_identity,
+                     main.version,
                      "UPDATE_SIGNER_CERT_SHA256",
                      f"{rainette_signer}, {rollover_signer}",
                  ), \
@@ -782,7 +758,6 @@ class ApplyUpdateGuardTests(_SignedBuildTestCase):
                 f"{RELEASE_API_BASE}/900",
                 f"{ASSET_API_BASE}/903",
                 f"{ASSET_API_BASE}/906",
-                f"{ASSET_API_BASE}/902",
                 f"{ASSET_API_BASE}/901",
             ],
         )
