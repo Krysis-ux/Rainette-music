@@ -322,6 +322,27 @@ class CheckForUpdatesTests(_SignedBuildTestCase):
             # still turn it into check_failed rather than propagate.
             self.assertEqual(main.check_for_updates("0.2.2")["status"], "check_failed")
 
+    def test_accepts_the_content_types_github_actually_assigns_on_upload(self):
+        # Regression: the real v0.2.3 release was rejected because GitHub's
+        # upload path (action-gh-release) tags .exe as x-msdos-program and .sig
+        # as pgp-signature, neither of which was on the allow-list. These are
+        # the verbatim content types observed on the live published release.
+        release, _ = _release_fixture()
+        live_types = {
+            INSTALLER_NAME: "application/x-msdos-program",
+            CHECKSUM_NAME: "application/octet-stream",
+            MANIFEST_NAME: "application/json",
+            SIGNATURE_NAME: "application/pgp-signature",
+        }
+        for asset in release["assets"]:
+            if asset["name"] in live_types:
+                asset["content_type"] = live_types[asset["name"]]
+        with mock.patch.object(main.urllib.request, "urlopen",
+                               return_value=_json_response([release])):
+            result = main.check_for_updates("0.2.2")
+        self.assertEqual(result["status"], "update")
+        self.assertEqual(result["latest"], "0.9.0")
+
 
 class ManifestSignatureTests(unittest.TestCase):
     """The Ed25519 manifest signature is the updater's root of trust."""

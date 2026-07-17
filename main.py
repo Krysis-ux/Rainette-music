@@ -289,14 +289,20 @@ def _asset_from_payload(payload: object, expected_name: str) -> _UpdateAsset | N
     digest_match = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", digest)
     if not digest_match:
         return None
+    # The content-type check is upload hygiene, not a security boundary (the
+    # digest + manifest signature + hash chain are); it accepts every MIME type
+    # GitHub's upload path actually assigns to these extensions. The live
+    # publisher (action-gh-release) tags .exe as x-msdos-program and .sig as
+    # pgp-signature — verified against a real published release.
     if expected_name == WINDOWS_INSTALLER_ASSET:
         if size > MAX_INSTALLER_BYTES:
             return None
-        allowed_types = {"application/x-msdownload", "application/octet-stream"}
+        allowed_types = {"application/x-msdownload", "application/x-msdos-program",
+                         "application/vnd.microsoft.portable-executable", "application/octet-stream"}
     elif expected_name in (WINDOWS_CHECKSUM_ASSET, WINDOWS_MANIFEST_SIGNATURE_ASSET):
         if size > MAX_INTEGRITY_ASSET_BYTES:
             return None
-        allowed_types = {"text/plain", "application/octet-stream"}
+        allowed_types = {"text/plain", "application/pgp-signature", "application/octet-stream"}
     else:
         if size > MAX_INTEGRITY_ASSET_BYTES:
             return None
