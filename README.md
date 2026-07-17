@@ -2,6 +2,7 @@
 
 A self-contained desktop music player for Windows, with an optional Android
 companion app for remote control over your local network.
+(Android Companion is very buggy I am working on fixes right now)
 
 ## Install
 
