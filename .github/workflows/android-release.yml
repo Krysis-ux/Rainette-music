@@ -13,6 +13,7 @@ jobs:
     runs-on: windows-latest
     outputs:
       release_version: ${{ steps.release_version.outputs.version }}
+      android_enabled: ${{ steps.android_gate.outputs.enabled }}
 
     steps:
       - name: Check out tagged source
@@ -59,6 +60,19 @@ jobs:
         shell: pwsh
         run: python -m pytest -q
 
+      # Android publishing is optional: without its signing secrets the release
+      # ships Windows-only, and the app's Mobile page shows its release-not-
+      # available state. Job-level `if` cannot read the secrets context, so this
+      # step exports the decision as a job output instead.
+      - name: Decide whether Android release signing is configured
+        id: android_gate
+        shell: pwsh
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          $enabled = -not [string]::IsNullOrWhiteSpace($env:ANDROID_KEYSTORE_BASE64)
+          "enabled=$($enabled.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
       - name: Check JavaScript module syntax
         shell: pwsh
         run: |
@@ -69,6 +83,7 @@ jobs:
 
   android:
     needs: test
+    if: needs.test.outputs.android_enabled == 'true'
     runs-on: ubuntu-latest
     env:
       RELEASE_VERSION: ${{ needs.test.outputs.release_version }}
@@ -348,11 +363,15 @@ jobs:
 
   publish:
     needs: [android, windows-sign]
+    # Publish whenever the signed Windows release is ready; Android is optional
+    # (skipped when its signing secrets are absent) but must never have failed.
+    if: ${{ !cancelled() && needs.windows-sign.result == 'success' && (needs.android.result == 'success' || needs.android.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       RELEASE_VERSION: ${{ github.ref_name }}
+      ANDROID_RESULT: ${{ needs.android.result }}
 
     steps:
       - name: Download produced release assets
@@ -376,28 +395,36 @@ jobs:
           expected=(
             RainetteMusicSetup.exe
             RainetteMusicSetup.exe.sha256
-            android-release.json
-            rainette-music-android.apk
-            rainette-music-android.apk.sha256
             windows-release.json
             windows-release.json.sig
           )
+          checks=(RainetteMusicSetup.exe.sha256)
+          if [ "${ANDROID_RESULT}" = "success" ]; then
+            expected+=(
+              android-release.json
+              rainette-music-android.apk
+              rainette-music-android.apk.sha256
+            )
+            checks+=(rainette-music-android.apk.sha256)
+          fi
           mapfile -t actual < <(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)
           mapfile -t wanted < <(printf '%s\n' "${expected[@]}" | sort)
           diff <(printf '%s\n' "${wanted[@]}") <(printf '%s\n' "${actual[@]}")
-          (cd release-assets && sha256sum --check rainette-music-android.apk.sha256 RainetteMusicSetup.exe.sha256)
+          (cd release-assets && sha256sum --check "${checks[@]}")
 
           node <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
           const read = (name) => JSON.parse(fs.readFileSync(path.join('release-assets', name), 'utf8'));
 
-          const android = read('android-release.json');
-          if (android.artifact !== 'rainette-music-android.apk' || android.version !== process.env.RELEASE_VERSION) {
-            throw new Error('android-release.json does not match this tagged release');
-          }
-          if (android.signed !== true || android.signatureVerified !== true) {
-            throw new Error('android-release.json is not production-signature verified');
+          if (fs.existsSync(path.join('release-assets', 'android-release.json'))) {
+            const android = read('android-release.json');
+            if (android.artifact !== 'rainette-music-android.apk' || android.version !== process.env.RELEASE_VERSION) {
+              throw new Error('android-release.json does not match this tagged release');
+            }
+            if (android.signed !== true || android.signatureVerified !== true) {
+              throw new Error('android-release.json is not production-signature verified');
+            }
           }
 
           // The Windows manifest is schema 2: its authenticity comes from the
@@ -412,16 +439,14 @@ jobs:
           }
           NODE
 
+      # The exact-set check above is the gate; the glob then uploads precisely
+      # that verified set whether or not the optional Android assets exist.
+      # Filenames it can publish: RainetteMusicSetup.exe, RainetteMusicSetup.exe.sha256,
+      # windows-release.json, windows-release.json.sig, rainette-music-android.apk,
+      # rainette-music-android.apk.sha256, android-release.json.
       - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           fail_on_unmatched_files: true
           generate_release_notes: true
-          files: |
-            release-assets/rainette-music-android.apk
-            release-assets/rainette-music-android.apk.sha256
-            release-assets/android-release.json
-            release-assets/RainetteMusicSetup.exe
-            release-assets/RainetteMusicSetup.exe.sha256
-            release-assets/windows-release.json
-            release-assets/windows-release.json.sig
+          files: release-assets/*

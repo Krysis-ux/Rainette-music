@@ -30,3 +30,6 @@ release/stage/
 # Local assistant/tooling state
 .claude/
 .superpowers/
+
+# Stray nested clone of this repo (local only)
+Rainette-music/

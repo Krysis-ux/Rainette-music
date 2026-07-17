@@ -272,11 +272,14 @@ class MobileContractTests(unittest.TestCase):
         upload = workflow.index("softprops/action-gh-release")
         self.assertLess(verify, rename)
         self.assertLess(rename, upload)
+        # The upload is a glob over release-assets/, so the exact-set diff gate
+        # (which fails the job on any unexpected or missing file) must sit
+        # between artifact download and the release upload.
+        exact_set_gate = workflow.index('diff <(printf \'%s\\n\' "${wanted[@]}")')
+        self.assertLess(exact_set_gate, upload)
         upload_config = workflow[upload:]
-        self.assertIn("          files: |", upload_config)
-        self.assertIn("            release-assets/rainette-music-android.apk", upload_config)
-        self.assertIn("            release-assets/RainetteMusicSetup.exe", upload_config)
-        self.assertNotRegex(upload_config, r"(?m)^          files: .*[*?\[]")
+        self.assertIn("files: release-assets/*", upload_config)
+        self.assertIn("fail_on_unmatched_files: true", upload_config)
         self.assertNotIn("app-release-unsigned.apk", upload_config)
 
     def test_android_release_build_uses_environment_backed_signing_config(self):

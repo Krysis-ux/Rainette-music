@@ -268,6 +268,8 @@ def test_github_publish_job_downloads_only_platform_job_artifacts():
     assert workflow.count("softprops/action-gh-release@") == 1
     assert "needs.test.outputs" not in publish_job
     assert "RELEASE_VERSION: ${{ github.ref_name }}" in publish_job
+    # The exact-set verification gates the upload; every publishable asset must
+    # be accounted for in the expected-set check.
     for filename in (
         "rainette-music-android.apk",
         "rainette-music-android.apk.sha256",
@@ -277,7 +279,27 @@ def test_github_publish_job_downloads_only_platform_job_artifacts():
         "windows-release.json",
         "windows-release.json.sig",
     ):
-        assert f"release-assets/{filename}" in publish_job
+        assert filename in publish_job
+    assert "files: release-assets/*" in publish_job
+    assert "fail_on_unmatched_files: true" in publish_job
+
+
+def test_github_android_publishing_is_optional_but_windows_signing_is_not():
+    workflow = _release_workflow()
+    test_job = _workflow_job(workflow, "test")
+    android_job = _workflow_job(workflow, "android")
+    publish_job = _workflow_job(workflow, "publish")
+
+    # The android job runs only when its signing secrets exist...
+    assert "android_gate" in test_job
+    assert "secrets.ANDROID_KEYSTORE_BASE64" in test_job
+    assert "if: needs.test.outputs.android_enabled == 'true'" in android_job
+    # ...and publish tolerates it being skipped, but never failed, while the
+    # signed Windows release is always mandatory.
+    assert "needs.windows-sign.result == 'success'" in publish_job
+    assert "needs.android.result == 'success' || needs.android.result == 'skipped'" in publish_job
+    # A skipped android job must shrink the expected asset set accordingly.
+    assert 'if [ "${ANDROID_RESULT}" = "success" ]' in publish_job
 
 
 def test_github_actions_are_pinned_to_full_commit_shas():
