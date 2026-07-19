@@ -1,4 +1,6 @@
 # Rainette Music
+(currently in beta please submit all issues to the issues page in this repo)
+
 
 A self-contained desktop music player for Windows, with an optional Android
 companion app for remote control over your local network.
