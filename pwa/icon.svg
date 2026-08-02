@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Rainette Music">
+  <rect width="512" height="512" rx="116" fill="#080a09"/>
+  <g fill="#f4f6f4" transform="translate(256 256)">
+    <ellipse rx="42" ry="122" transform="rotate(0) translate(0 -104)"/>
+    <ellipse rx="42" ry="122" transform="rotate(45) translate(0 -104)"/>
+    <ellipse rx="42" ry="122" transform="rotate(90) translate(0 -104)"/>
+    <ellipse rx="42" ry="122" transform="rotate(135) translate(0 -104)"/>
+    <ellipse rx="42" ry="122" transform="rotate(180) translate(0 -104)"/>
+    <ellipse rx="42" ry="122" transform="rotate(225) translate(0 -104)"/>
+    <ellipse rx="42" ry="122" transform="rotate(270) translate(0 -104)"/>
+    <ellipse rx="42" ry="122" transform="rotate(315) translate(0 -104)"/>
+    <circle r="72" fill="#080a09"/>
+    <circle r="48"/>
+  </g>
+</svg>
