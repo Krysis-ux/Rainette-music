@@ -1,4 +1,3 @@
-import asyncio
 import unittest
 
 from aiohttp.test_utils import TestClient, TestServer
@@ -120,12 +119,14 @@ class PwaCompanionHttpTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RelayStoreTests(unittest.TestCase):
-    def test_grants_expire(self):
+    def test_grants_enforce_the_minimum_lifetime_then_expire(self):
         clock = [1_000]
         relay = pwa_companion.RelayStore(now=lambda: clock[0])
         grant = relay.create("https://example.googlevideo.com/audio", ttl_s=10)
         self.assertIsNotNone(relay.resolve(grant))
-        clock[0] += 11
+        clock[0] += 29
+        self.assertIsNotNone(relay.resolve(grant))
+        clock[0] += 2
         self.assertIsNone(relay.resolve(grant))
 
     def test_only_expected_media_hosts_can_be_relayed(self):
