@@ -1,0 +1,53 @@
+name: PWA companion checks
+
+on:
+  pull_request:
+    paths:
+      - "pwa/**"
+      - "pwa_companion.py"
+      - "tests/test_pwa_companion.py"
+      - ".github/workflows/pwa-companion-checks.yml"
+  push:
+    branches:
+      - "agent/iphone-pwa-companion"
+    paths:
+      - "pwa/**"
+      - "pwa_companion.py"
+      - "tests/test_pwa_companion.py"
+      - ".github/workflows/pwa-companion-checks.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile companion gateway
+        run: python -m py_compile pwa_companion.py
+
+      - name: Run companion contract tests
+        run: python -m unittest tests.test_pwa_companion
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Parse browser JavaScript
+        run: node --check pwa/app.js
+
+      - name: Validate static configuration
+        run: |
+          python -m json.tool pwa/manifest.webmanifest > /dev/null
+          python -m json.tool pwa/vercel.json > /dev/null
