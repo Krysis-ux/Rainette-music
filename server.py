@@ -10,15 +10,20 @@ on network I/O.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hmac
 import json
 import os
 import re
 import secrets
 import socket
+import sys
 import threading
+import time
 import uuid
+import urllib.parse
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
 import aiohttp
@@ -26,12 +31,31 @@ from aiohttp import WSMsgType, web
 
 import shared
 import music_bridge
-from companion import CompanionRegistry, ensure_tls_certificate
+from companion import CompanionRegistry
 from state import MusicState
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
-APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or BASE_DIR) / "Rainette Music"
+
+
+def app_data_dir() -> Path:
+    """Per-user writable directory for the database, artwork, and credentials.
+
+    Every entry point must agree on this path.  An earlier revision fell back to
+    ``BASE_DIR`` off Windows, so the companion gateway kept its database beside
+    the source tree while the desktop app used the platform location: two
+    processes, two different ``music.db`` files, one very confusing bug report.
+    """
+    if os.name == "nt":
+        root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+        return root / "Rainette Music"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Rainette Music"
+    root = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return root / "Rainette Music"
+
+
+APP_DATA_DIR = app_data_dir()
 DB_PATH = APP_DATA_DIR / "music.db"
 ARTWORK_DIR = APP_DATA_DIR / "playlist-artwork"
 MAX_PLAYLIST_ARTWORK_BYTES = 5 * 1024 * 1024
@@ -40,6 +64,24 @@ CLIENT_KEY = web.AppKey("rainette_http_client", aiohttp.ClientSession)
 COMPANION_REGISTRY_KEY = web.AppKey("rainette_companion_registry", CompanionRegistry)
 COMMAND_TIMEOUT_KEY = web.AppKey("rainette_companion_command_timeout", float)
 SYNC_BROKER_KEY = web.AppKey("rainette_companion_sync_broker", object)
+ALLOWED_ORIGINS_KEY = web.AppKey("rainette_companion_allowed_origins", frozenset)
+PAIR_LIMITER_KEY = web.AppKey("rainette_companion_pair_limiter", object)
+POLL_LIMITER_KEY = web.AppKey("rainette_companion_poll_limiter", object)
+
+# A phone polls /pair/result on a short cycle for as long as it takes somebody
+# to walk to the computer and approve it, so this budget has to cover minutes of
+# honest polling. It is deliberately far looser than the attempt limiter: the
+# poll already requires a valid request id *and* its matching invitation, so it
+# is not a blind guessing surface the way /pair/request is.
+PAIR_POLL_LIMIT_PER_MINUTE = 120
+
+# Identifies which paired phone caused the music_bridge handler that is running
+# right now to fan out.  Playback events are routed back to that device only, so
+# two phones on one computer never overwrite each other's now-playing state.
+# The desktop's own windows leave this empty and keep receiving everything.
+_origin_device: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "rainette_origin_device_id", default=""
+)
 
 _ARTWORK_TYPES = {
     "image/png": ("png", lambda data: data.startswith(b"\x89PNG\r\n\x1a\n")),
@@ -57,6 +99,11 @@ PORT_RANGE = range(8777, 8788)
 # paired (or after every old pairing has been revoked).
 COMPANION_PORT_RANGE = range(47878, 47888)
 COMPANION_PORT_FILENAME = "companion-port"
+PWA_CONFIG_FILENAME = "pwa-config.json"
+
+# The production PWA. The operator can point Rainette at their own deployment
+# (a fork, or a Vercel preview) from Settings → Mobile; this is only the default.
+DEFAULT_PWA_URL = "https://music-pwa-web.vercel.app"
 
 # The /audio proxy only relays these hosts (googlevideo serves the actual audio;
 # youtube/ytimg for redirects/art). Keeps the local proxy from being a general
@@ -138,13 +185,64 @@ COMPANION_ONE_WAY_COMMAND_TYPES = frozenset({
 })
 
 
-class CompanionSyncBroker:
-    """Small, replayable event log shared by all paired companion devices.
+class _DeviceEventLog:
+    """One replayable event log belonging to a single paired device."""
 
-    The desktop hub is the source of truth.  Phones long-poll this broker and
+    def __init__(self, *, history_limit: int) -> None:
+        self._history_limit = history_limit
+        self._revision = 0
+        self._events: list[dict] = []
+        self.last_read_at = time.monotonic()
+        self.condition = threading.Condition()
+
+    def publish_locked(self, message: dict) -> None:
+        """Append one event.  Caller must hold ``self.condition``."""
+        self._revision += 1
+        self._events.append({"revision": self._revision, "message": dict(message)})
+        if len(self._events) > self._history_limit:
+            del self._events[: len(self._events) - self._history_limit]
+        self.condition.notify_all()
+
+    def read_after_locked(self, after: int) -> dict:
+        first = self._events[0]["revision"] if self._events else self._revision
+        # A client can be ahead when the desktop process (and therefore this
+        # in-memory log) restarts.  Without this branch a phone would keep
+        # polling an impossible future revision forever.  Falling behind the
+        # retained history has the same recovery contract.
+        reset_required = after > self._revision or bool(self._events and after < first - 1)
+        events = [] if reset_required else [event for event in self._events if event["revision"] > after]
+        return {"revision": self._revision, "reset_required": reset_required, "events": events}
+
+
+class CompanionSyncBroker:
+    """Replayable event logs, one per paired companion device.
+
+    The desktop hub is the source of truth.  Phones long-poll their own log and
     use its monotonic revision to detect reconnect gaps without opening the
-    desktop WebSocket to the LAN.
+    desktop WebSocket to anything but loopback.
+
+    Two categories of event are routed differently, and the split is the whole
+    point of this class:
+
+    * **Playback state** (``_SESSION_TYPES``) belongs to whichever device caused
+      it.  A phone hitting pause must not pause a different phone, so these are
+      delivered only to the originating device's log.
+    * **Catalog state** (everything else in ``_SYNC_TYPES``) describes the one
+      shared music library on this computer.  A playlist created on one phone
+      genuinely should appear on all of them, so these still fan out.
+
+    Output transfer inverts the rule: its entire purpose is to reach a *different*
+    device, so it routes by ``target_device_id`` instead of by origin.
     """
+
+    _SESSION_TYPES = frozenset({
+        "music_now_playing", "music_progress", "music_remote_play",
+        "music_remote_control", "music_request_state", "music_open_artist",
+    })
+
+    _TARGETED_TYPES = frozenset({
+        "music_output_transfer", "music_output_transfer_result",
+    })
 
     _SYNC_TYPES = frozenset({
         "music_now_playing", "music_progress", "music_remote_play",
@@ -165,39 +263,69 @@ class CompanionSyncBroker:
         "music_queue_session_deleted",
     })
 
+    # A log is dropped once its phone has not polled for this long.  Phones
+    # long-poll on a 25s cycle, so this is many missed cycles, not a live device.
+    _IDLE_EVICTION_S = 15 * 60
+
     def __init__(self, *, history_limit: int = 256) -> None:
         self._history_limit = max(32, int(history_limit))
-        self._revision = 0
-        self._events: list[dict] = []
-        self._condition = threading.Condition()
+        self._lock = threading.Lock()
+        self._logs: dict[str, _DeviceEventLog] = {}
 
-    def publish(self, message: dict) -> None:
+    def _log_for(self, device_id: str) -> _DeviceEventLog:
+        """Return (creating if needed) the log belonging to one device."""
+        with self._lock:
+            log = self._logs.get(device_id)
+            if log is None:
+                log = _DeviceEventLog(history_limit=self._history_limit)
+                self._logs[device_id] = log
+            return log
+
+    def _evict_idle_locked(self) -> None:
+        cutoff = time.monotonic() - self._IDLE_EVICTION_S
+        for device_id in [key for key, log in self._logs.items() if log.last_read_at < cutoff]:
+            self._logs.pop(device_id, None)
+
+    def forget(self, device_id: str) -> None:
+        """Drop a device's log, used when its pairing is revoked."""
+        with self._lock:
+            self._logs.pop(str(device_id), None)
+
+    def _recipients(self, message: dict, origin_device_id: str) -> list[_DeviceEventLog]:
+        message_type = message.get("type")
+        with self._lock:
+            self._evict_idle_locked()
+            if message_type in self._TARGETED_TYPES:
+                target = str(message.get("target_device_id") or "")
+                # An unaddressed transfer is a desktop-only broadcast; a phone
+                # with no matching log simply has nothing to receive.
+                log = self._logs.get(target)
+                return [log] if log is not None else []
+            if message_type in self._SESSION_TYPES:
+                if not origin_device_id:
+                    # Desktop-originated playback: no phone session owns it.
+                    return []
+                log = self._logs.get(origin_device_id)
+                return [log] if log is not None else []
+            return list(self._logs.values())
+
+    def publish(self, message: dict, origin_device_id: str = "") -> None:
         if not isinstance(message, dict) or message.get("type") not in self._SYNC_TYPES:
             return
-        with self._condition:
-            self._revision += 1
-            self._events.append({"revision": self._revision, "message": dict(message)})
-            if len(self._events) > self._history_limit:
-                del self._events[: len(self._events) - self._history_limit]
-            self._condition.notify_all()
+        for log in self._recipients(message, str(origin_device_id or "")):
+            with log.condition:
+                log.publish_locked(message)
 
-    def _read_after_locked(self, after: int) -> dict:
-        first = self._events[0]["revision"] if self._events else self._revision
-        # A client can be ahead when the desktop process (and therefore this
-        # in-memory broker) restarts.  Without this branch Android would keep
-        # polling an impossible future revision forever.  Falling behind the
-        # retained history has the same recovery contract.
-        reset_required = after > self._revision or bool(self._events and after < first - 1)
-        events = [] if reset_required else [event for event in self._events if event["revision"] > after]
-        return {"revision": self._revision, "reset_required": reset_required, "events": events}
-
-    def read_after(self, after: int, wait_s: float) -> dict:
-        with self._condition:
-            result = self._read_after_locked(after)
+    def read_after(self, device_id: str, after: int, wait_s: float) -> dict:
+        log = self._log_for(str(device_id))
+        with log.condition:
+            log.last_read_at = time.monotonic()
+            result = log.read_after_locked(after)
             if result["events"] or result["reset_required"] or wait_s <= 0:
                 return result
-            self._condition.wait(timeout=min(max(wait_s, 0), 25))
-            return self._read_after_locked(after)
+            log.condition.wait(timeout=min(max(wait_s, 0), 25))
+            log.last_read_at = time.monotonic()
+            return log.read_after_locked(after)
 
 
 class CommandBroker:
@@ -267,9 +395,27 @@ class Hub:
 
     def broadcast(self, msg: dict) -> None:
         """Wired into shared.notify_browsers. Called from the loop thread
-        (CRUD handlers) and from daemon threads (yt-dlp workers) alike."""
+        (CRUD handlers) and from daemon threads (yt-dlp workers) alike.
+
+        ``_origin_device`` is read here rather than threaded through every
+        handler signature, which keeps music_bridge unaware that phones exist.
+
+        This works because every session-scoped event is published synchronously
+        from the handler that the request thread is already running. A plain
+        ``threading.Thread`` does NOT inherit the calling context, so the yt-dlp
+        workers started by ``music_bridge._run_bg`` see an empty origin. That is
+        fine today: those workers only emit request-correlated results (search,
+        stream URL, lyrics, catalog), which are not session-scoped and are
+        returned to their caller by ``command_broker`` anyway.
+
+        If a session-scoped event is ever moved onto a background thread, it
+        will arrive here untagged and be delivered to no phone at all rather
+        than to the wrong one, so the failure is a missing update, not a leak.
+        Fixing it would mean passing ``contextvars.copy_context()`` into that
+        thread.
+        """
         command_broker.receive(msg)
-        companion_sync_broker.publish(msg)
+        companion_sync_broker.publish(msg, _origin_device.get(""))
         loop = self.loop
         if loop is None:
             return
@@ -522,10 +668,88 @@ async def _on_cleanup(app: web.Application) -> None:
         await session.close()
 
 
+class RateLimiter:
+    """Fixed-window attempt cap, keyed by caller.
+
+    The pairing endpoints are the only unauthenticated surface on the gateway.
+    Without a cap, an invitation token (or a request id) could be brute-forced
+    through the operator's own tunnel at line rate.
+    """
+
+    def __init__(self, *, limit: int = 20, window_s: float = 60.0,
+                 now: Callable[[], float] = time.monotonic) -> None:
+        self._limit = max(1, int(limit))
+        self._window_s = max(1.0, float(window_s))
+        self._now = now
+        self._lock = threading.Lock()
+        self._hits: dict[str, list[float]] = {}
+
+    def allow(self, key: str) -> bool:
+        now = self._now()
+        cutoff = now - self._window_s
+        with self._lock:
+            for stale in [k for k, hits in self._hits.items() if not hits or hits[-1] < cutoff]:
+                self._hits.pop(stale, None)
+            hits = [hit for hit in self._hits.get(key, []) if hit >= cutoff]
+            if len(hits) >= self._limit:
+                self._hits[key] = hits
+                return False
+            hits.append(now)
+            self._hits[key] = hits
+            return True
+
+
+def _client_key(request: web.Request) -> str:
+    """Identify a caller for rate limiting.
+
+    Behind the operator's tunnel every request arrives from loopback, so the
+    forwarded-for hint is used when present and the peer address is the
+    fallback.  This is abuse damping, not authentication; a spoofed header can
+    only ever cost the spoofer their own bucket.
+    """
+    forwarded = str(request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return forwarded or (request.remote or "unknown")
+
+
+def _origin_allowed(request: web.Request) -> bool:
+    origin = str(request.headers.get("Origin") or "").rstrip("/")
+    return not origin or origin in request.app[ALLOWED_ORIGINS_KEY]
+
+
+def _apply_cors(request: web.Request, response: web.StreamResponse) -> web.StreamResponse:
+    origin = str(request.headers.get("Origin") or "").rstrip("/")
+    if origin and origin in request.app[ALLOWED_ORIGINS_KEY]:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+        response.headers["Access-Control-Max-Age"] = "600"
+        response.headers["Vary"] = "Origin"
+    return response
+
+
+@web.middleware
+async def _companion_cors(request: web.Request, handler):
+    """Admit only the exact PWA origins this computer was configured for.
+
+    The gateway is reachable over the public internet through the operator's
+    tunnel, so a wildcard here would let any website drive their music.
+    """
+    if not _origin_allowed(request):
+        return web.json_response({"ok": False, "msg": "origin is not allowed"}, status=403)
+    if request.method == "OPTIONS":
+        return _apply_cors(request, web.Response(status=204))
+    return _apply_cors(request, await handler(request))
+
+
 @web.middleware
 async def _companion_auth(request: web.Request, handler):
-    """Authorize every LAN companion route except the one-time pairing call."""
-    if request.path in {"/pair/request", "/pair/result"}:
+    """Authorize every companion route except pairing and audio redemption.
+
+    ``/audio/`` is exempt because a browser media element cannot send headers;
+    that route authenticates on the unguessable grant in its own path instead
+    (see ``CompanionRegistry.resolve_relay``).
+    """
+    if request.path in {"/pair/request", "/pair/result"} or request.path.startswith("/audio/"):
         return await handler(request)
     registry = request.app[COMPANION_REGISTRY_KEY]
     auth = str(request.headers.get("Authorization") or "")
@@ -538,12 +762,13 @@ async def _companion_auth(request: web.Request, handler):
 
 
 async def companion_pair_request(request: web.Request) -> web.StreamResponse:
+    if not request.app[PAIR_LIMITER_KEY].allow(_client_key(request)):
+        return _json_error(429, "too many pairing attempts; wait a moment and try again")
     try:
         payload = await request.json()
         result = request.app[COMPANION_REGISTRY_KEY].request_pairing(
             str(payload.get("invitation") or ""),
             str(payload.get("device_name") or ""),
-            str(payload.get("public_key") or ""),
         )
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         return _json_error(400, str(exc))
@@ -551,6 +776,8 @@ async def companion_pair_request(request: web.Request) -> web.StreamResponse:
 
 
 async def companion_pair_result(request: web.Request) -> web.StreamResponse:
+    if not request.app[POLL_LIMITER_KEY].allow(_client_key(request)):
+        return _json_error(429, "too many pairing attempts; wait a moment and try again")
     try:
         payload = await request.json()
         result = request.app[COMPANION_REGISTRY_KEY].pairing_result(
@@ -598,8 +825,9 @@ async def companion_events(request: web.Request) -> web.StreamResponse:
     except ValueError:
         return _json_error(400, "after and wait must be numeric")
     broker = request.app[SYNC_BROKER_KEY]
-    payload = await asyncio.to_thread(broker.read_after, after, wait_s)
-    payload.update({"ok": True, "device_id": request["companion_device_id"]})
+    device_id = request["companion_device_id"]
+    payload = await asyncio.to_thread(broker.read_after, device_id, after, wait_s)
+    payload.update({"ok": True, "device_id": device_id})
     return web.json_response(payload)
 
 
@@ -620,31 +848,51 @@ async def companion_command(request: web.Request) -> web.StreamResponse:
         payload["id"] = request_id
     elif not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 200:
         return _json_error(400, "command id is invalid")
-    if command_type in COMPANION_ONE_WAY_COMMAND_TYPES:
-        _dispatch(payload)
-        return web.json_response({
-            "ok": True,
-            "id": request_id,
-            "type": f"{command_type}_accepted",
-        })
+    device_id = request["companion_device_id"]
+    # Everything this command fans out is attributed to the calling phone, so
+    # its playback events come back to it and to no other paired device.
+    token = _origin_device.set(device_id)
     try:
-        result = await command_broker.dispatch_and_wait(
-            payload,
-            timeout_s=request.app[COMMAND_TIMEOUT_KEY],
-        )
-    except asyncio.TimeoutError:
-        return _json_error(504, "desktop command timed out")
-    except ValueError as exc:
-        return _json_error(409, str(exc))
+        if command_type in COMPANION_ONE_WAY_COMMAND_TYPES:
+            _dispatch(payload)
+            return web.json_response({
+                "ok": True,
+                "id": request_id,
+                "type": f"{command_type}_accepted",
+            })
+        try:
+            result = await command_broker.dispatch_and_wait(
+                payload,
+                timeout_s=request.app[COMMAND_TIMEOUT_KEY],
+            )
+        except asyncio.TimeoutError:
+            return _json_error(504, "desktop command timed out")
+        except ValueError as exc:
+            return _json_error(409, str(exc))
+    finally:
+        _origin_device.reset(token)
+
+    # A phone never receives a raw googlevideo URL. Swap it for an opaque grant
+    # that only this device's token can redeem, so a leaked media URL is not a
+    # usable credential and cannot be replayed by another paired phone.
+    if command_type == "music_stream_url" and result.get("ok") and result.get("url"):
+        try:
+            ttl = min(max(int(result.get("expires_hint_s") or 3600), 60), 21_600)
+            grant = request.app[COMPANION_REGISTRY_KEY].create_relay_grant(
+                device_id, str(result["url"]), ttl_s=ttl
+            )
+        except (TypeError, ValueError) as exc:
+            return _json_error(502, str(exc))
+        result = dict(result)
+        result["url"] = "/audio/" + grant["token"]
+        result["relayed_by"] = "user-pc"
     return web.json_response(result)
 
 
 async def companion_audio_relay(request: web.Request) -> web.StreamResponse:
     """Relay an opaque, short-lived, device-bound grant with Range support."""
-    auth = str(request.headers.get("Authorization") or "")
-    _, _, device_token = auth.partition(" ")
     upstream_url = request.app[COMPANION_REGISTRY_KEY].resolve_relay(
-        request.match_info.get("grant", ""), device_token
+        request.match_info.get("grant", "")
     )
     if not upstream_url or not _audio_host_allowed(upstream_url):
         return _json_error(404, "relay grant is not available")
@@ -678,17 +926,25 @@ def build_companion_app(
     *,
     command_timeout_s: float = 25.0,
     sync_broker: CompanionSyncBroker | None = None,
+    allowed_origins: set[str] | frozenset[str] | None = None,
+    pair_limiter: RateLimiter | None = None,
+    poll_limiter: RateLimiter | None = None,
 ) -> web.Application:
-    """Build the LAN-only companion API without exposing desktop web routes.
+    """Build the companion API without exposing desktop web routes.
 
-    The listener is started separately from :func:`start`; keeping it as a
-    small app prevents the desktop launch token and static UI from ever being
-    reachable over the home network.
+    The listener is started separately from :func:`start`; keeping it a small,
+    separate app means the desktop launch token and the static UI are never
+    reachable through the operator's public tunnel — only these routes are.
     """
-    app = web.Application(middlewares=[_companion_auth])
+    app = web.Application(middlewares=[_companion_cors, _companion_auth])
     app[COMPANION_REGISTRY_KEY] = registry or companion_registry
     app[COMMAND_TIMEOUT_KEY] = float(command_timeout_s)
     app[SYNC_BROKER_KEY] = sync_broker or companion_sync_broker
+    app[ALLOWED_ORIGINS_KEY] = frozenset(
+        normalize_origin(origin) for origin in (allowed_origins or configured_pwa_origins())
+    )
+    app[PAIR_LIMITER_KEY] = pair_limiter or RateLimiter()
+    app[POLL_LIMITER_KEY] = poll_limiter or RateLimiter(limit=PAIR_POLL_LIMIT_PER_MINUTE)
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
     app.router.add_post("/pair/request", companion_pair_request)
@@ -772,14 +1028,80 @@ def start(preferred: int | None = None) -> int:
     return port
 
 
-def _lan_address() -> str:
-    """Best-effort LAN address for mDNS/QR; never opens a public listener."""
+def normalize_origin(value: str) -> str:
+    """Reduce a URL to a bare scheme://host[:port] origin, or reject it."""
+    parsed = urlparse(str(value or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"invalid origin: {value}")
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+
+def _pwa_config_path() -> Path:
+    return APP_DATA_DIR / PWA_CONFIG_FILENAME
+
+
+def read_pwa_config() -> dict:
+    """Return the operator's PWA address and public tunnel address.
+
+    These are routing data, not secrets: the PWA is a public static site and
+    the tunnel hostname is already visible to anyone who can reach it.
+    """
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.connect(("192.0.2.1", 9))
-            return str(sock.getsockname()[0])
-    except OSError:
-        return "127.0.0.1"
+        payload = json.loads(_pwa_config_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"pwa_url": DEFAULT_PWA_URL, "public_url": ""}
+    if not isinstance(payload, dict):
+        return {"pwa_url": DEFAULT_PWA_URL, "public_url": ""}
+    return {
+        "pwa_url": str(payload.get("pwa_url") or DEFAULT_PWA_URL),
+        "public_url": str(payload.get("public_url") or ""),
+    }
+
+
+def write_pwa_config(pwa_url: str, public_url: str) -> dict:
+    """Validate and persist the two addresses pairing links are built from."""
+    pwa = str(pwa_url or "").strip() or DEFAULT_PWA_URL
+    public = str(public_url or "").strip()
+    normalize_origin(pwa)  # raises ValueError on anything unusable
+    if public:
+        parsed = urlparse(public)
+        local = (parsed.hostname or "") in {"localhost", "127.0.0.1", "::1"}
+        # An HTTPS page cannot call a plain-HTTP endpoint on another device, so
+        # a non-local companion address that is not HTTPS can never work; fail
+        # here rather than minting a pairing link that silently cannot connect.
+        if parsed.scheme != "https" and not (parsed.scheme == "http" and local):
+            raise ValueError("the public companion address must use trusted HTTPS")
+    config = {"pwa_url": pwa.rstrip("/"), "public_url": public.rstrip("/")}
+    path = _pwa_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(config, separators=(",", ":")), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return config
+
+
+def configured_pwa_origins() -> frozenset[str]:
+    """Exact origins the gateway will answer, never a wildcard."""
+    origins = {normalize_origin(DEFAULT_PWA_URL)}
+    configured = read_pwa_config().get("pwa_url") or ""
+    if configured:
+        try:
+            origins.add(normalize_origin(configured))
+        except ValueError:
+            pass
+    for extra in str(os.environ.get("RAINETTE_PWA_ORIGIN", "")).split(","):
+        if extra.strip():
+            try:
+                origins.add(normalize_origin(extra))
+            except ValueError:
+                continue
+    return frozenset(origins)
 
 
 def _companion_port_path() -> Path:
@@ -859,11 +1181,11 @@ def _companion_port_candidates(requested: int | None) -> tuple[list[int], bool]:
 
 
 def _bind_companion_socket(host: str, port: int) -> socket.socket:
-    """Bind the LAN listener without Windows wildcard-port sharing.
+    """Bind the companion listener without Windows wildcard-port sharing.
 
-    ``asyncio.create_server``/``TCPSite`` may successfully bind ``0.0.0.0`` on
+    ``asyncio.create_server``/``TCPSite`` may successfully bind a host on
     Windows while another process already owns ``127.0.0.1`` on the same port.
-    That makes the persisted phone endpoint ambiguous and defeats the fail-closed
+    That makes the persisted tunnel target ambiguous and defeats the fail-closed
     paired-device port policy.  SO_EXCLUSIVEADDRUSE reserves the complete port
     before aiohttp takes ownership of the socket.
     """
@@ -879,7 +1201,7 @@ def _bind_companion_socket(host: str, port: int) -> socket.socket:
         raise
 
 
-def _run_companion_loop(app: web.Application, ssl_context, host: str, ports: list[int],
+def _run_companion_loop(app: web.Application, host: str, ports: list[int],
                          holder: dict, ready: threading.Event) -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -891,7 +1213,7 @@ def _run_companion_loop(app: web.Application, ssl_context, host: str, ports: lis
             listener: socket.socket | None = None
             try:
                 listener = _bind_companion_socket(host, candidate)
-                site = web.SockSite(runner, listener, ssl_context=ssl_context)
+                site = web.SockSite(runner, listener)
                 loop.run_until_complete(site.start())
                 sockets = site._server.sockets if site._server is not None else []  # aiohttp exposes no public port accessor
                 holder["port"] = int(sockets[0].getsockname()[1]) if sockets else candidate
@@ -901,7 +1223,7 @@ def _run_companion_loop(app: web.Application, ssl_context, host: str, ports: lis
                 if listener is not None:
                     listener.close()
         if "port" not in holder:
-            raise RuntimeError("no companion LAN port is available") from last_error
+            raise RuntimeError("no companion port is available") from last_error
         holder["loop"] = loop
     except Exception as exc:
         holder["error"] = exc
@@ -924,7 +1246,7 @@ def _stop_companion_runtime(runtime: dict, *, timeout_s: float = 5.0) -> bool:
 
 
 def stop_companion(*, timeout_s: float = 5.0) -> bool:
-    """Stop the LAN listener (primarily for orderly shutdown and restart tests)."""
+    """Stop the companion listener (for orderly shutdown and restart tests)."""
     with _companion_lock:
         runtime = dict(_companion_runtime)
         _companion_runtime.clear()
@@ -933,8 +1255,14 @@ def stop_companion(*, timeout_s: float = 5.0) -> bool:
     return _stop_companion_runtime(runtime, timeout_s=timeout_s)
 
 
-def start_companion(*, host: str = "0.0.0.0", port: int | None = None) -> dict:
-    """Start the separate TLS LAN listener on a durable endpoint.
+def start_companion(*, host: str = "127.0.0.1", port: int | None = None) -> dict:
+    """Start the companion gateway on loopback, on a durable port.
+
+    The listener stays on ``127.0.0.1`` by design.  Phones reach it through the
+    operator's own trusted HTTPS tunnel, which terminates TLS with a real
+    certificate a browser will accept — a self-signed LAN certificate cannot be
+    pinned by a browser the way a native app could, and forwarding this port on
+    the router would publish an unencrypted gateway to the internet.
 
     This does not alter the loopback desktop app or make its routes public.
     Callers use :func:`create_companion_invitation` to obtain the QR payload.
@@ -944,12 +1272,11 @@ def start_companion(*, host: str = "0.0.0.0", port: int | None = None) -> dict:
         if _companion_runtime.get("port"):
             return dict(_companion_runtime)
         ports, may_change_port = _companion_port_candidates(port)
-        certificate = ensure_tls_certificate(APP_DATA_DIR / "companion")
-        holder: dict = {"certificate": certificate, "host": _lan_address()}
+        holder: dict = {"host": host}
         ready = threading.Event()
         thread = threading.Thread(
             target=_run_companion_loop,
-            args=(build_companion_app(companion_registry), certificate.ssl_context, host, ports, holder, ready),
+            args=(build_companion_app(companion_registry), host, ports, holder, ready),
             name="rainette-companion-server",
             daemon=True,
         )
@@ -983,16 +1310,34 @@ def start_paired_companion() -> dict | None:
 
 
 def create_companion_invitation(*, ttl_s: int = 300) -> dict:
-    """Return the short-lived QR payload; only an approved device gets access."""
+    """Return the short-lived pairing payload for the QR code.
+
+    The invitation alone grants nothing: it only lets a phone *ask*, and the
+    operator still has to approve that request on the desktop before any
+    credential exists.  The endpoint is the operator's configured tunnel; the
+    loopback fallback is useful for same-machine testing only, since an HTTPS
+    page on a phone cannot reach another device's localhost.
+    """
     runtime = start_companion()
+    config = read_pwa_config()
     invitation = companion_registry.create_invitation(ttl_s=ttl_s)
-    certificate = runtime["certificate"]
+    endpoint = config.get("public_url") or f"http://127.0.0.1:{runtime['port']}"
+    pairing_url = (
+        config["pwa_url"].rstrip("/")
+        + "/#"
+        + urllib.parse.urlencode({
+            "endpoint": endpoint.rstrip("/"),
+            "invitation": invitation["token"],
+        })
+    )
     return {
-        "version": 1,
-        "endpoint": f"https://{runtime['host']}:{runtime['port']}",
-        "certificate_sha256": certificate.fingerprint_sha256,
+        "version": 2,
+        "endpoint": endpoint,
+        "pwa_url": config["pwa_url"],
+        "pairing_url": pairing_url,
         "invitation": invitation["token"],
         "expires_at": invitation["expires_at"],
+        "tunnel_configured": bool(config.get("public_url")),
     }
 
 
@@ -1017,7 +1362,12 @@ def reject_companion_request(request_id: str) -> bool:
 
 
 def revoke_companion_device(device_id: str) -> bool:
-    return companion_registry.revoke(device_id)
+    revoked = companion_registry.revoke(device_id)
+    if revoked:
+        # Drop the phone's queued events too, so a revoked device cannot drain
+        # one last batch of another session's state on its way out.
+        companion_sync_broker.forget(device_id)
+    return revoked
 
 
 if __name__ == "__main__":

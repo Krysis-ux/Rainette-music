@@ -83,7 +83,6 @@ GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_
 GITHUB_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_ASSET_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/assets"
 RELEASE_DOWNLOAD_BASE = f"https://github.com/{GITHUB_REPO}/releases/latest/download"
-ANDROID_APK_URL = f"{RELEASE_DOWNLOAD_BASE}/rainette-music-android.apk"
 UPDATE_USER_AGENT = "RainetteMusic (local desktop app)"
 UPDATE_API_VERSION = "2022-11-28"
 WINDOWS_INSTALLER_ASSET = "RainetteMusicSetup.exe"
@@ -149,23 +148,6 @@ def _qr_data_url(value: str) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
-def _android_release_status(url: str) -> str:
-    """Distinguish an absent release from a failed availability check."""
-    try:
-        request = urllib.request.Request(url, method="HEAD")
-        with urllib.request.urlopen(request, timeout=3) as response:
-            return "published" if 200 <= int(response.status) < 400 else "unavailable"
-    except urllib.error.HTTPError as exc:
-        return "unavailable" if exc.code == 404 else "check_failed"
-    except Exception:
-        return "check_failed"
-
-
-def _is_url_published(url: str) -> bool:
-    """Backward-compatible boolean publication helper."""
-    return _android_release_status(url) == "published"
-
-
 def _default_player_pos() -> tuple[int, int]:
     """First-launch player position, before the user has ever dragged it:
     bottom-right corner of the primary screen, matching where such a widget
@@ -185,9 +167,9 @@ def _default_player_pos() -> tuple[int, int]:
 
 # ── In-app updater ──────────────────────────────────────────────────────────
 #
-# A GitHub release may contain Android builds, source archives, or unrelated
-# attachments. Only these three exact Windows asset names are ever eligible for
-# the native updater, and their numeric GitHub asset IDs are pinned together.
+# A GitHub release may contain source archives or unrelated attachments. Only
+# these three exact Windows asset names are ever eligible for the native
+# updater, and their numeric GitHub asset IDs are pinned together.
 
 
 @dataclass(frozen=True)
@@ -783,22 +765,41 @@ class WindowApi:
         self._main_window = main_window
 
     def companion_create_invitation(self):
-        """Expose explicit desktop-controlled pairing to the settings UI."""
+        """Expose explicit desktop-controlled pairing to the settings UI.
+
+        The QR encodes a link to the hosted PWA with the endpoint and a
+        short-lived invitation in the URL *fragment*, so those values are
+        processed by the phone's browser and never sent to the static host.
+        """
         try:
             invitation = server.create_companion_invitation()
-            pairing_uri = "rainette://pair?" + urllib.parse.urlencode({
-                "endpoint": invitation["endpoint"],
-                "certificate_sha256": invitation["certificate_sha256"],
-                "invitation": invitation["invitation"],
-            })
             return {
                 "ok": True,
-                "pairing_uri": pairing_uri,
-                "pairing_qr_data_url": _qr_data_url(pairing_uri),
+                "pairing_url": invitation["pairing_url"],
+                "pairing_qr_data_url": _qr_data_url(invitation["pairing_url"]),
                 "expires_at": invitation["expires_at"],
+                "endpoint": invitation["endpoint"],
+                "tunnel_configured": invitation["tunnel_configured"],
             }
         except Exception as exc:
             log(f"companion invitation failed: {exc}")
+            return {"ok": False, "msg": str(exc)}
+
+    def pwa_config_get(self):
+        """Return the PWA address and public tunnel address for the UI."""
+        try:
+            return {"ok": True, **server.read_pwa_config(), "default_pwa_url": server.DEFAULT_PWA_URL}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+    def pwa_config_set(self, pwa_url: str, public_url: str):
+        """Persist the two addresses every future pairing link is built from."""
+        try:
+            return {"ok": True, **server.write_pwa_config(str(pwa_url or ""), str(public_url or ""))}
+        except ValueError as exc:
+            return {"ok": False, "msg": str(exc)}
+        except Exception as exc:
+            log(f"pwa config update failed: {exc}")
             return {"ok": False, "msg": str(exc)}
 
     def companion_management_state(self):
@@ -815,15 +816,6 @@ class WindowApi:
 
     def companion_revoke_device(self, device_id: str):
         return server.revoke_companion_device(str(device_id or ""))
-
-    def android_download_info(self):
-        status = _android_release_status(ANDROID_APK_URL)
-        return {
-            "url": ANDROID_APK_URL,
-            "install_qr_data_url": _qr_data_url(ANDROID_APK_URL),
-            "status": status,
-            "published": status == "published",
-        }
 
     def app_version(self):
         return version.APP_VERSION

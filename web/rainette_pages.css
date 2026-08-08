@@ -2410,7 +2410,7 @@ html.rw-reduced-motion .rw-track-card:hover, html.rw-reduced-motion .rw-btn:hove
 html.rw-reduced-motion .rw-btn-ghost:hover, html.rw-reduced-motion .rw-icon-btn:hover,
 html.rw-reduced-motion .rw-now-btn:hover, html.rw-reduced-motion .rw-now-output:hover, html.rw-reduced-motion .rw-now-view-btn:hover { transform: none; }
 
-/* ── Android download and desktop pairing ─────────────────────────────── */
+/* ── PWA pairing panel (Settings → Mobile) ────────────────────────────── */
 .rw-mobile-grid {
 	display: grid;
 	grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2432,7 +2432,35 @@ html.rw-reduced-motion .rw-now-btn:hover, html.rw-reduced-motion .rw-now-output:
 }
 .rw-mobile-download { display: inline-flex; text-decoration: none; }
 .rw-mobile-note { margin: 13px 0 0 !important; font-size: 12px !important; }
-.rw-mobile-note[data-published="false"] { color: var(--rw-warn, #a66b13); }
+.rw-mobile-field { display: grid; gap: 6px; margin: 0 0 12px; }
+.rw-mobile-field > span { color: var(--rw-text-soft); font-size: 12px; font-weight: 700; }
+.rw-mobile-field input {
+	min-width: 0;
+	border: 1px solid var(--rw-border);
+	border-radius: 11px;
+	padding: 10px 12px;
+	background: var(--rw-bg);
+	color: var(--rw-text);
+	font: inherit;
+	font-size: 13px;
+}
+.rw-mobile-field input:focus-visible {
+	outline: none;
+	border-color: var(--rw-accent);
+	box-shadow: 0 0 0 3px var(--rw-accent-soft);
+}
+.rw-mobile-link {
+	width: 100%;
+	box-sizing: border-box;
+	margin: 10px 0 8px;
+	border: 1px solid var(--rw-border);
+	border-radius: 11px;
+	padding: 9px 11px;
+	background: var(--rw-bg-sunken);
+	color: var(--rw-text-muted);
+	font: 11px/1.4 ui-monospace, monospace;
+	text-overflow: ellipsis;
+}
 .rw-mobile-card-pair { grid-column: 1 / -1; }
 .rw-mobile-pair-head {
 	display: flex;

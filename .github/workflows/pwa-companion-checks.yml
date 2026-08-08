@@ -4,16 +4,22 @@ on:
   pull_request:
     paths:
       - "pwa/**"
-      - "pwa_companion.py"
-      - "tests/test_pwa_companion.py"
+      - "companion.py"
+      - "server.py"
+      - "tests/test_companion.py"
+      - "tests/test_companion_security.py"
+      - "tests/test_pwa_session_e2e.py"
       - ".github/workflows/pwa-companion-checks.yml"
   push:
     branches:
-      - "agent/iphone-pwa-companion"
+      - main
     paths:
       - "pwa/**"
-      - "pwa_companion.py"
-      - "tests/test_pwa_companion.py"
+      - "companion.py"
+      - "server.py"
+      - "tests/test_companion.py"
+      - "tests/test_companion_security.py"
+      - "tests/test_pwa_session_e2e.py"
       - ".github/workflows/pwa-companion-checks.yml"
 
 permissions:
@@ -32,13 +38,17 @@ jobs:
           cache: pip
 
       - name: Install Python dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt pytest
 
       - name: Compile companion gateway
-        run: python -m py_compile pwa_companion.py
+        run: python -m py_compile server.py companion.py
 
-      - name: Run companion contract tests
-        run: python -m unittest tests.test_pwa_companion
+      - name: Run pairing and session-isolation tests
+        run: >-
+          python -m pytest -q
+          tests/test_companion.py
+          tests/test_companion_security.py
+          tests/test_pwa_session_e2e.py
 
       - uses: actions/setup-node@v4
         with:
@@ -51,3 +61,16 @@ jobs:
         run: |
           python -m json.tool pwa/manifest.webmanifest > /dev/null
           python -m json.tool pwa/vercel.json > /dev/null
+
+      # pwa/ is mirrored to Krysis-ux/music-pwa-web, which is what deploys.
+      # A phone loading a client that its paired computer cannot answer is the
+      # failure this guards against, so drift between the two must not merge.
+      - name: Verify the deployable app shell is complete
+        run: |
+          for f in index.html styles.css app.js sw.js manifest.webmanifest \
+                   vercel.json icon.svg icon-192.png icon-512.png \
+                   icon-maskable-512.png apple-touch-icon.png; do
+            test -f "pwa/$f" || { echo "missing pwa/$f"; exit 1; }
+          done
+          grep -q 'manifest.webmanifest' pwa/index.html
+          grep -q 'serviceWorker.register' pwa/app.js

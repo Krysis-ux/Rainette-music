@@ -12,12 +12,8 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
-
-# Mobile generated files
-mobile/node_modules/
-mobile/android/.gradle/
-mobile/android/app/build/
-mobile/android/local.properties
+.venv/
+venv/
 
 # OS/editor noise
 .DS_Store

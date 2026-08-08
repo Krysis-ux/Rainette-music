@@ -1,106 +1,79 @@
-# Rainette Music iPhone PWA
+# Rainette Music PWA
 
-This directory is a static Progressive Web App intended to be deployed as a separate Vercel project with `pwa/` selected as the project root.
+The phone client for Rainette Music. It installs from the browser on iPhone and
+Android, and it plays music from the computer you already own.
+
+This directory is a static site with no build step. It is mirrored to
+[`Krysis-ux/music-pwa-web`](https://github.com/Krysis-ux/music-pwa-web), which is
+what actually deploys to Vercel. Keep the two copies identical.
 
 ## Architecture
 
 ```text
-iPhone Safari / Home Screen
-        ↓ loads static files once
-Rainette PWA hosted by Vercel
-        ↓ authenticated HTTPS requests
-Trusted tunnel to the user's computer
+Phone browser / Home Screen
+        ↓ loads the static app once
+Rainette PWA on Vercel
+        ↓ authenticated HTTPS, only after the desktop approves this phone
+Trusted HTTPS tunnel to the user's computer
         ↓ loopback only
-pwa_companion.py on Windows or macOS
+Rainette desktop app (server.py companion gateway)
         ↓
-Rainette music_bridge → yt-dlp / YouTube Music
+music_bridge → yt-dlp / YouTube Music
 ```
 
-Vercel does **not** run yt-dlp, store the user's access key, proxy the audio, or need a long-running backend. After the PWA loads, Safari talks directly to the user's HTTPS companion endpoint. Audio is resolved and relayed by the user's computer through short-lived random grant URLs.
+Vercel serves the interface and nothing else. It never runs yt-dlp, never sees a
+pairing credential, and never proxies audio. The computer has to be on, with
+Rainette running and its tunnel up.
 
-The computer must remain on and `pwa_companion.py` plus the HTTPS tunnel must remain running. A Vercel deployment alone cannot reach a computer behind a home router.
+## Pairing
 
-## 1. Deploy the PWA to Vercel
+Pairing is deliberately two-sided. Possessing a link is not enough; somebody at
+the computer has to approve the phone.
 
-Create a Vercel project from this repository and set the **Root Directory** to `pwa`.
+1. On the computer, open Rainette → **Settings → Mobile**, set the two addresses
+   once, then create a pairing code.
+2. Scan the QR with the phone, or paste the pairing link into this app.
+3. The phone appears in the computer's **Waiting for approval** list. Approve it.
+4. The phone receives its own device token and connects.
 
-No build command or environment variables are required. The output is static.
+Each approved phone gets a distinct credential and its own listening session, so
+two people can search and play independently without interrupting each other.
+Revoking one phone on the computer leaves the others untouched.
 
-Assume the resulting URL is:
+The endpoint and invitation travel in the link's URL fragment. Browsers never
+send fragments in an HTTP request, so the host serving this page never receives
+them.
 
-```text
-https://your-rainette-pwa.vercel.app
-```
+## Deploying
 
-## 2. Create a trusted HTTPS endpoint for the computer
+Import the repository as its own Vercel project.
 
-The companion intentionally listens on `127.0.0.1:47888`. Put a trusted HTTPS tunnel in front of it. A stable named tunnel is preferable because the pairing stays valid after restarts.
+- Framework preset: **Other**
+- Build command / output directory: leave both empty
+- Environment variables: none
 
-Example Cloudflare Tunnel ingress target:
+`vercel.json` already sets the security headers and service-worker scope.
 
-```text
-http://127.0.0.1:47888
-```
-
-Assume the public tunnel URL is:
-
-```text
-https://music-pc.example.com
-```
-
-Do not expose port `47888` directly through router port forwarding. The loopback listener plus a managed HTTPS tunnel is safer and avoids browser certificate errors.
-
-## 3. Start the companion on the computer
-
-From the repository root:
-
-```bash
-pip install -r requirements.txt
-python pwa_companion.py \
-  --pwa-url https://your-rainette-pwa.vercel.app \
-  --public-url https://music-pc.example.com
-```
-
-Windows PowerShell uses backticks instead of backslashes for multiline commands, or put the command on one line.
-
-The companion:
-
-- uses the same Rainette database and `music_bridge` handlers;
-- runs search and stream resolution with the computer's installed `yt-dlp`;
-- binds only to loopback by default;
-- generates a persistent 384-bit access key in Rainette's application-data directory;
-- prints a pairing link and an ASCII QR code;
-- permits only the exact PWA origin and Rainette's existing mobile music-command allowlist;
-- replaces upstream media URLs with expiring PC relay grants.
-
-Additional exact origins can be allowed explicitly:
-
-```bash
-python pwa_companion.py \
-  --pwa-url https://your-rainette-pwa.vercel.app \
-  --public-url https://music-pc.example.com \
-  --origin https://rainette-preview.example.com
-```
-
-## 4. Pair the iPhone
-
-Open the printed pairing link on the iPhone or scan the QR code. The endpoint and access key are stored by the PWA and removed from the address bar immediately.
-
-The access key is placed after `#` in the pairing URL. URL fragments are processed by the browser and are not sent to Vercel in the HTTP request.
-
-In Safari, tap **Share → Add to Home Screen**.
+Use one stable production URL for pairing. Preview deployments have different
+origins; to pair against one, add that exact origin in the desktop app's Mobile
+settings first. Never use a wildcard origin.
 
 ## Security boundaries
 
-- The PWA accepts only trusted HTTPS companion endpoints, except localhost during desktop testing.
-- The gateway requires a bearer token for status, commands, and event polling.
-- Cross-origin requests are accepted only from exact configured origins.
-- Arbitrary desktop commands are rejected; the gateway reuses Rainette's mobile music-command allowlist.
-- Raw YouTube/Google media URLs are not returned to the PWA. The computer issues random, expiring relay grants and supports HTTP Range requests for seeking.
-- The token is persistent until its local token file is deleted. Disconnecting inside the PWA removes only that iPhone's saved copy.
+- Pairing requires explicit approval on the computer. An invitation alone grants
+  nothing and expires in five minutes.
+- Credentials live only in this browser's local storage.
+- The desktop gateway accepts exact origins only, and rate-limits pairing.
+- Audio is served through short-lived, per-device relay grants with HTTP Range
+  support. Raw upstream media URLs are never sent to the phone, and a revoked
+  phone's grants stop resolving immediately.
+- The gateway reuses Rainette's existing music-command allowlist, so a phone
+  cannot invoke arbitrary desktop functions.
+- Do not port-forward the companion port. Use a trusted HTTPS tunnel.
 
-## Current scope
+## Capabilities
 
-This is a browser companion path, isolated from the existing Android Capacitor companion so Android certificate pinning and native media controls are not changed.
+Search, library sync, queue and previous/next, recent history, lock-screen
+Media Session controls, stream-expiry recovery, and an offline app shell.
 
-The PWA supports search, library sync, local iPhone playback, lock-screen Media Session controls, recent history, reconnection polling, and an offline application shell. Music itself still requires the computer and internet connection.
+Playback still needs the paired computer to be awake and online.

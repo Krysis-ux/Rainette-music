@@ -23,10 +23,6 @@ export const app = {
 
 const RAINETTE_TOKEN = new URLSearchParams(location.search).get('token') || '';
 
-function _nativeTransport() {
-	return window.RainetteNativeTransport?.isNative ? window.RainetteNativeTransport : null;
-}
-
 export function rainetteAuthHeaders() {
 	return RAINETTE_TOKEN ? { 'X-Rainette-Token': RAINETTE_TOKEN } : {};
 }
@@ -42,7 +38,6 @@ function _wsUrl() {
 // ── WebSocket transport ──────────────────────────────────────────────────────
 
 export function ensureHelperWS() {
-	if (_nativeTransport()) return null;
 	if (app.helperWS && (app.helperWS.readyState === WebSocket.OPEN || app.helperWS.readyState === WebSocket.CONNECTING)) {
 		return app.helperWS;
 	}
@@ -70,15 +65,6 @@ export function ensureHelperWS() {
 }
 
 export function sendHelper(payload) {
-	const native = _nativeTransport();
-	if (native) {
-		Promise.resolve(native.request(payload)).then(response => {
-			if (response) handleHelperMessage(response);
-		}).catch(error => {
-			handleHelperMessage({ id: payload.id, ok: false, msg: error?.message || 'native companion request failed' });
-		});
-		return;
-	}
 	const ws = ensureHelperWS();
 	const json = JSON.stringify(payload);
 	if (ws.readyState === WebSocket.OPEN) ws.send(json);
@@ -86,10 +72,6 @@ export function sendHelper(payload) {
 		app.helperQueue.push(json);
 		if (app.helperQueue.length > 60) app.helperQueue.shift();
 	}
-}
-
-if (typeof window !== 'undefined') {
-	window.addEventListener('rainette:native-message', event => handleHelperMessage(event.detail));
 }
 
 export function helperRequest(type, payload = {}, timeoutMs = 5000) {

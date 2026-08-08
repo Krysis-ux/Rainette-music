@@ -1,9 +1,6 @@
 import asyncio
-import base64
 
 from aiohttp.test_utils import TestClient, TestServer
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from companion import CompanionRegistry
 import server
@@ -15,26 +12,12 @@ def async_test(function):
     return run
 
 
-def _phone_keypair():
-    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    public = private.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("ascii")
-    return private, public
-
-
 def _approve(registry: CompanionRegistry):
-    private, public = _phone_keypair()
     invitation = registry.create_invitation(ttl_s=60)
-    request = registry.request_pairing(invitation["token"], "Pixel", public)
+    request = registry.request_pairing(invitation["token"], "Pixel")
     approved = registry.approve(request["request_id"])
     result = registry.pairing_result(request["request_id"], invitation["token"])
-    token = private.decrypt(
-        base64.b64decode(result["encrypted_device_token"]),
-        padding.OAEP(mgf=padding.MGF1(hashes.SHA1()), algorithm=hashes.SHA256(), label=None),
-    ).decode("utf-8")
-    return invitation, request, approved, token
+    return invitation, request, approved, result["device_token"]
 
 
 @async_test

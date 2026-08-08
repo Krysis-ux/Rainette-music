@@ -95,7 +95,7 @@ const TAB_META = {
 	recent: { label: 'Recents', eyebrow: 'History', title: 'Recently played', sub: 'Return to recently played songs, artists, and albums.' },
 	insights: { label: 'Insights', eyebrow: 'History', title: 'Listening insights', sub: 'What you actually played — totals, daily rhythm, and your heavy rotation.' },
 	queue: { label: 'Queue', eyebrow: 'Up Next', title: 'Queue', sub: 'Review, reorder, clean up, and save the current queue.' },
-	mobile: { label: 'Mobile', eyebrow: 'Companion', title: 'Rainette on Android', sub: 'Download the app, install it, and pair securely with this desktop.' },
+	mobile: { label: 'Mobile', eyebrow: 'Companion', title: 'Rainette on your phone', sub: 'Open the Rainette web app on any phone and pair it securely with this desktop.' },
 	settings: { label: 'Settings', eyebrow: 'App', title: 'Settings', sub: 'Tune appearance, behavior, and desktop playback preferences.' },
 };
 

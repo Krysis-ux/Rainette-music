@@ -536,20 +536,16 @@ def test_core_release_browser_flow():
             page.evaluate("delete window.pywebview")
             page.locator('#rwMusicTabs button[data-tab="mobile"]').click()
             steps = page.locator("#rwMusicBody .rw-mobile-step-title").all_inner_texts()
-            assert steps == ["1. Download", "2. Install", "3. Pair"]
-            download = page.locator('#rwMusicBody a[download="rainette-music-android.apk"]')
-            assert download.inner_text() == "Download APK"
-            assert download.get_attribute("href") == (
-                "https://github.com/Krysis-ux/Rainette-music/releases/latest/download/"
-                "rainette-music-android.apk"
-            )
+            assert steps == ["1. Open", "2. Make this computer reachable", "3. Pair"]
+            pwa_link = page.locator("#rwPwaLink")
+            assert pwa_link.inner_text() == "Open the Rainette PWA"
+            assert pwa_link.get_attribute("href") == "https://music-pwa-web.vercel.app"
             assert page.get_by_text(
                 "Pairing requires the installed Rainette desktop app.", exact=True
             ).is_visible()
-            assert page.get_by_text(
-                "Release status unavailable here. Use the official GitHub link to check for the Android app.",
-                exact=True,
-            ).is_visible()
+            # Without the desktop bridge the panel must not pretend it can pair.
+            assert page.locator("#rwNewPairingCode").is_disabled()
+            assert page.locator("#rwPairingLink").is_hidden()
             assert page.locator(".rw-mobile-grid").evaluate(
                 "el => getComputedStyle(el).gridTemplateColumns.trim().split(/\\s+/).length === 1"
             )

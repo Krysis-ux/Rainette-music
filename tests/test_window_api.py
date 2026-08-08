@@ -477,26 +477,33 @@ class AutoplayFlagPatchTests(unittest.TestCase):
 
 def test_companion_invitation_returns_local_qr_without_launch_token(monkeypatch):
     monkeypatch.setattr(server, "create_companion_invitation", lambda: {
-        "version": 1,
-        "endpoint": "https://192.168.1.5:9999",
-        "certificate_sha256": "abc",
+        "version": 2,
+        "endpoint": "https://music-pc.example.com",
+        "pwa_url": "https://music-pwa-web.vercel.app",
+        "pairing_url": "https://music-pwa-web.vercel.app/#endpoint=https%3A%2F%2Fmusic-pc.example.com&invitation=invite",
         "invitation": "invite",
         "expires_at": 1300,
+        "tunnel_configured": True,
     })
 
     result = main.WindowApi().companion_create_invitation()
 
     assert result["ok"] is True
-    assert result["pairing_uri"].startswith("rainette://pair?")
     assert result["pairing_qr_data_url"].startswith("data:image/png;base64,")
-    query = parse_qs(urlparse(result["pairing_uri"]).query)
+    assert result["expires_at"] == 1300
+    assert result["tunnel_configured"] is True
+
+    # The invitation rides in the fragment, so the static PWA host never
+    # receives it, and the desktop's own launch token is never exposed.
+    scheme, _, rest = result["pairing_url"].partition("://")
+    assert scheme == "https"
+    assert "#" in rest
+    query = parse_qs(urlparse("https://x/?" + result["pairing_url"].split("#", 1)[1]).query)
     assert query == {
-        "endpoint": ["https://192.168.1.5:9999"],
-        "certificate_sha256": ["abc"],
+        "endpoint": ["https://music-pc.example.com"],
         "invitation": ["invite"],
     }
-    assert result["expires_at"] == 1300
-    assert server.APP_TOKEN not in result["pairing_uri"]
+    assert server.APP_TOKEN not in result["pairing_url"]
 
 
 def test_desktop_startup_restores_listener_for_existing_paired_devices(monkeypatch):
@@ -546,82 +553,29 @@ def test_companion_management_methods_delegate_to_server(monkeypatch):
     ]
 
 
-def test_android_download_info_uses_exact_release_url_and_local_qr(monkeypatch):
-    checked = []
-    monkeypatch.setattr(
-        main,
-        "_android_release_status",
-        lambda url: checked.append(url) or "published",
-        raising=False,
-    )
-
-    result = main.WindowApi().android_download_info()
-
-    expected_url = (
-        "https://github.com/Krysis-ux/Rainette-music/releases/latest/download/"
-        "rainette-music-android.apk"
-    )
-    assert result == {
-        "url": expected_url,
-        "install_qr_data_url": result["install_qr_data_url"],
-        "status": "published",
-        "published": True,
-    }
-    assert result["install_qr_data_url"].startswith("data:image/png;base64,")
-    assert checked == [expected_url]
-
-
-def test_download_publication_check_uses_head_with_three_second_ceiling(monkeypatch):
-    observed = {}
-
-    class Response:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-    def fake_urlopen(request, timeout):
-        observed["method"] = request.get_method()
-        observed["timeout"] = timeout
-        return Response()
-
-    monkeypatch.setattr(main.urllib.request, "urlopen", fake_urlopen)
-
-    assert main._is_url_published("https://example.invalid/app.apk") is True
-    assert observed == {"method": "HEAD", "timeout": 3}
-
-
-def test_download_publication_network_failure_returns_false(monkeypatch):
-    def fail_urlopen(_request, timeout):
-        assert timeout == 3
-        raise OSError("offline")
-
-    monkeypatch.setattr(main.urllib.request, "urlopen", fail_urlopen)
-
-    assert main._is_url_published("https://example.invalid/app.apk") is False
-
-
-def test_android_download_info_distinguishes_published_unavailable_and_check_failed(monkeypatch):
-    api = main.WindowApi()
-    for check, expected in (("published", "published"), ("unavailable", "unavailable"), ("check_failed", "check_failed")):
-        monkeypatch.setattr(main, "_android_release_status", lambda _url, value=check: value)
-        result = api.android_download_info()
-        assert result["status"] == expected
-        assert result["published"] is (expected == "published")
-
-
-def test_release_status_maps_404_separately_from_network_failure(monkeypatch):
-    def missing(_request, timeout):
-        raise urllib.error.HTTPError("url", 404, "missing", {}, None)
-    monkeypatch.setattr(main.urllib.request, "urlopen", missing)
-    assert main._android_release_status("https://example.invalid/app.apk") == "unavailable"
-
-    monkeypatch.setattr(main.urllib.request, "urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")))
-    assert main._android_release_status("https://example.invalid/app.apk") == "check_failed"
-
-
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_pwa_config_round_trips_through_the_window_api(monkeypatch, tmp_path):
+    """The Mobile panel reads and writes the two addresses pairing links use."""
+    monkeypatch.setattr(server, "APP_DATA_DIR", tmp_path)
+    monkeypatch.setattr(server, "_pwa_config_path", lambda: tmp_path / "pwa-config.json")
+    api = main.WindowApi()
+
+    saved = api.pwa_config_set("https://my-pwa.example", "https://music-pc.example")
+
+    assert saved["ok"] is True
+    assert saved["pwa_url"] == "https://my-pwa.example"
+    assert api.pwa_config_get()["public_url"] == "https://music-pc.example"
+
+
+def test_pwa_config_rejects_a_public_address_a_phone_could_never_reach(monkeypatch, tmp_path):
+    """An HTTPS PWA cannot call a plain-HTTP endpoint on another device."""
+    monkeypatch.setattr(server, "APP_DATA_DIR", tmp_path)
+    monkeypatch.setattr(server, "_pwa_config_path", lambda: tmp_path / "pwa-config.json")
+
+    result = main.WindowApi().pwa_config_set("https://my-pwa.example", "http://192.168.1.9:47878")
+
+    assert result["ok"] is False
+    assert "HTTPS" in result["msg"]

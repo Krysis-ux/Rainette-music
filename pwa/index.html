@@ -3,127 +3,167 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#080a09">
+  <meta name="theme-color" content="#0a0d0b">
   <meta name="color-scheme" content="dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Rainette">
-  <meta name="description" content="Rainette Music on iPhone, powered by your own computer.">
+  <meta name="description" content="Rainette Music on your phone, playing from your own computer.">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="./icon.svg">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
   <link rel="stylesheet" href="./styles.css">
   <title>Rainette Music</title>
 </head>
 <body>
-  <main class="shell">
-    <header class="topbar">
-      <a class="brand" href="#home" aria-label="Rainette Music home">
-        <img src="./icon.svg" alt="">
-        <span>Rainette</span>
-      </a>
-      <button id="connectionButton" class="status-pill" type="button" aria-label="Connection settings">
-        <span id="statusDot" class="status-dot"></span>
-        <span id="statusText">Not connected</span>
-      </button>
-    </header>
+  <header class="topbar">
+    <span class="brand">
+      <img src="./icon.svg" alt="" width="24" height="24">
+      Rainette
+    </span>
+    <button id="connectionButton" class="status-pill" type="button">
+      <span id="statusDot" class="status-dot"></span>
+      <span id="statusText">Not connected</span>
+    </button>
+  </header>
 
-    <section id="setupView" class="setup-card" aria-labelledby="setupTitle">
-      <p class="eyebrow">Your computer is the backend</p>
-      <h1 id="setupTitle">Connect Rainette to your PC or Mac.</h1>
-      <p class="setup-copy">Vercel hosts only this interface. Search, library access, yt-dlp, and the audio relay run on your computer.</p>
-      <form id="connectionForm" class="connection-form">
-        <label>
-          Companion HTTPS address
-          <input id="endpointInput" name="endpoint" type="url" inputmode="url" autocomplete="url" placeholder="https://music-pc.example.com" required>
+  <main class="shell">
+    <section id="setupView" class="setup" aria-labelledby="setupTitle">
+      <p class="eyebrow">Step one</p>
+      <h1 id="setupTitle">Point this phone at your&nbsp;computer.</h1>
+      <p class="lede">
+        Rainette keeps your music on the computer you already own. This page is only the
+        remote, so nothing plays until that computer says yes.
+      </p>
+
+      <form id="pairForm" class="pair-form">
+        <label class="field">
+          <span>Pairing link</span>
+          <input id="pairLinkInput" type="text" inputmode="url" autocomplete="off"
+                 autocapitalize="off" spellcheck="false"
+                 placeholder="Paste it, or scan the QR code instead" required>
         </label>
-        <label>
-          Access key
-          <input id="tokenInput" name="token" type="password" autocomplete="off" placeholder="Paste the key generated on your computer" required>
+        <label class="field">
+          <span>Name this phone</span>
+          <input id="pairDeviceName" type="text" autocomplete="off" maxlength="60">
         </label>
-        <button class="primary" type="submit">Connect securely</button>
+        <button id="pairSubmit" class="primary" type="submit">Ask to pair</button>
+        <p class="hint">
+          Open Rainette on your computer, go to <b>Settings → Mobile</b>, and create a
+          pairing code. Scanning its QR code fills this in for you.
+        </p>
       </form>
-      <details>
-        <summary>iPhone setup</summary>
-        <ol>
-          <li>Run <code>python pwa_companion.py</code> on the computer that has Rainette.</li>
-          <li>Expose the local port through a trusted HTTPS tunnel.</li>
-          <li>Open the generated pairing link or scan its QR code.</li>
-          <li>In Safari, use Share → Add to Home Screen.</li>
-        </ol>
-      </details>
+
+      <div id="pairWaiting" class="waiting" hidden>
+        <div class="waiting-pulse" aria-hidden="true"></div>
+        <h2>Waiting for your computer</h2>
+        <p>Approve this phone in Rainette's <b>Settings → Mobile</b> panel. This page continues on its own.</p>
+        <button id="cancelPairing" class="ghost" type="button">Cancel</button>
+      </div>
+
       <p id="setupError" class="error" role="alert"></p>
     </section>
 
-    <section id="appView" class="app-view" hidden>
-      <section id="homePanel" class="panel active" data-panel="home">
-        <div class="hero">
-          <p class="eyebrow">Quiet listening, everywhere.</p>
-          <h1>Your music.<br>Powered at home.</h1>
-          <p id="computerLabel" class="muted"></p>
+    <div id="appView" hidden>
+      <section class="panel active" data-panel="home">
+        <p class="eyebrow" id="computerLabel"></p>
+        <h1>Tonight's listening</h1>
+        <div class="section-head">
+          <h2>Recent</h2>
         </div>
-        <section>
-          <div class="section-heading">
-            <h2>Recently played</h2>
-            <button id="refreshLibraryButton" class="text-button" type="button">Refresh</button>
-          </div>
-          <div id="recentList" class="track-list"><p class="empty">Your recent music will appear here.</p></div>
-        </section>
+        <div id="recentList" class="track-list"></div>
       </section>
 
-      <section id="searchPanel" class="panel" data-panel="search">
+      <section class="panel" data-panel="search">
         <h1>Search</h1>
-        <form id="searchForm" class="search-form">
-          <input id="searchInput" type="search" autocomplete="off" enterkeyhint="search" placeholder="Songs, artists, albums" aria-label="Search music">
-          <button class="primary compact" type="submit">Search</button>
+        <form id="searchForm" class="search-form" role="search">
+          <input id="searchInput" type="search" autocomplete="off" enterkeyhint="search"
+                 placeholder="Songs, artists, albums" aria-label="Search music">
+          <button class="primary compact" type="submit">Go</button>
         </form>
-        <p id="searchMessage" class="muted"></p>
+        <p id="searchMessage" class="muted" role="status" aria-live="polite"></p>
         <div id="searchResults" class="track-list"></div>
       </section>
 
-      <section id="libraryPanel" class="panel" data-panel="library">
-        <div class="section-heading">
+      <section class="panel" data-panel="library">
+        <div class="section-head">
           <h1>Library</h1>
-          <button id="libraryRefreshButton" class="text-button" type="button">Refresh</button>
+          <button id="libraryRefreshButton" class="ghost small" type="button">Refresh</button>
         </div>
-        <div id="libraryList" class="track-list"><p class="empty">Connect to load your saved music.</p></div>
+        <div id="libraryList" class="track-list"></div>
       </section>
 
-      <section id="settingsPanel" class="panel" data-panel="settings">
+      <section class="panel" data-panel="settings">
         <h1>Settings</h1>
         <div class="settings-list">
-          <button id="testConnectionButton" type="button"><span><b>Test computer connection</b><small>Check the companion and access key</small></span><i>›</i></button>
-          <button id="installHelpButton" type="button"><span><b>Add to Home Screen</b><small>Open from Safari’s Share menu</small></span><i>›</i></button>
-          <button id="disconnectButton" class="danger" type="button"><span><b>Disconnect this iPhone</b><small>Remove the saved endpoint and key</small></span><i>›</i></button>
+          <button id="testConnectionButton" type="button">
+            <span><b>Check the connection</b><small>Confirm this phone can still reach your computer</small></span>
+          </button>
+          <button id="installHelpButton" type="button">
+            <span><b>Add to Home Screen</b><small>Open Rainette without the browser chrome</small></span>
+          </button>
+          <button id="disconnectButton" class="danger" type="button">
+            <span><b>Disconnect this phone</b><small>Forget the saved pairing on this device</small></span>
+          </button>
         </div>
-        <p class="privacy-note">The access key stays in this browser. It is placed in a URL fragment during pairing, so Vercel does not receive it.</p>
+        <p class="privacy-note">
+          The pairing key never leaves this browser. It travels in the link fragment, which
+          browsers keep to themselves, so the site hosting this page never receives it.
+        </p>
       </section>
-    </section>
+    </div>
   </main>
 
   <section id="player" class="player" hidden aria-label="Now playing">
-    <img id="playerArt" src="./icon.svg" alt="">
-    <button id="playerInfo" class="player-info" type="button">
+    <div class="player-progress" aria-hidden="true"><span></span></div>
+    <input id="playerScrubber" class="scrubber" type="range" min="0" max="0" step="1" value="0" aria-label="Seek">
+    <img id="playerArt" src="./icon.svg" alt="" width="46" height="46">
+    <div class="player-copy">
       <b id="playerTitle">Nothing playing</b>
       <span id="playerArtist">Rainette Music</span>
-    </button>
-    <button id="previousButton" class="player-control" type="button" aria-label="Previous track">◀</button>
-    <button id="playPauseButton" class="player-control main" type="button" aria-label="Play">▶</button>
-    <button id="nextButton" class="player-control" type="button" aria-label="Next track">▶</button>
+    </div>
+    <div class="player-time"><span id="playerElapsed">0:00</span><span id="playerDuration"></span></div>
+    <div class="player-controls">
+      <button id="previousButton" class="icon" type="button" aria-label="Previous track">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 6v12M18 7.2v9.6a1 1 0 0 1-1.5.87l-8-4.8a1 1 0 0 1 0-1.74l8-4.8A1 1 0 0 1 18 7.2z"/></svg>
+      </button>
+      <button id="playPauseButton" class="icon play" type="button" aria-label="Play" data-state="paused">
+        <svg class="glyph-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.6v12.8a1 1 0 0 0 1.53.85l10-6.4a1 1 0 0 0 0-1.7l-10-6.4A1 1 0 0 0 8 5.6z"/></svg>
+        <svg class="glyph-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h3v14H8zM13 5h3v14h-3z"/></svg>
+        <span class="glyph-wait" aria-hidden="true"></span>
+      </button>
+      <button id="nextButton" class="icon" type="button" aria-label="Next track">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 6v12M6 7.2v9.6a1 1 0 0 0 1.5.87l8-4.8a1 1 0 0 0 0-1.74l-8-4.8A1 1 0 0 0 6 7.2z"/></svg>
+      </button>
+    </div>
     <audio id="audio" preload="metadata"></audio>
   </section>
 
   <nav id="tabBar" class="tabbar" hidden aria-label="Primary">
-    <button class="active" data-tab="home" type="button"><span>⌂</span>Home</button>
-    <button data-tab="search" type="button"><span>⌕</span>Search</button>
-    <button data-tab="library" type="button"><span>▦</span>Library</button>
-    <button data-tab="settings" type="button"><span>•••</span>More</button>
+    <button data-tab="home" type="button" class="active" aria-current="page">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4v-5h-6v5H5a1 1 0 0 1-1-1z"/></svg>
+      Home
+    </button>
+    <button data-tab="search" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m15.5 15.5 4 4"/></svg>
+      Search
+    </button>
+    <button data-tab="library" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4v16M10 4v16M15.5 5l4 15"/></svg>
+      Library
+    </button>
+    <button data-tab="settings" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2.6"/><path d="M12 4v2.2M12 17.8V20M4 12h2.2M17.8 12H20M6.3 6.3l1.6 1.6M16.1 16.1l1.6 1.6M17.7 6.3l-1.6 1.6M7.9 16.1l-1.6 1.6"/></svg>
+      More
+    </button>
   </nav>
 
   <dialog id="installDialog">
     <form method="dialog">
-      <h2>Add Rainette to iPhone</h2>
-      <p>Open this page in Safari, tap the Share button, then choose <b>Add to Home Screen</b>.</p>
+      <h2>Keep Rainette one tap away</h2>
+      <p><b>iPhone:</b> tap Share in Safari, then <b>Add to Home Screen</b>.</p>
+      <p><b>Android:</b> open the browser menu, then <b>Install app</b>.</p>
       <button class="primary" value="close">Got it</button>
     </form>
   </dialog>
