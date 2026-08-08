@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Rainette Kagebana flower mark</title>
+  <desc id="desc">A layered seven-petal paper flower on a plain ink-black field.</desc>
+  <rect width="1024" height="1024" rx="236" fill="#0b0f0d"/>
+  <g transform="translate(512 512)">
+    <g fill="#dae0d8">
+      <path id="outer-petal" d="M0-388C-92-312-116-186 0-92C116-186 92-312 0-388Z"/>
+      <use href="#outer-petal" transform="rotate(51.4286)"/>
+      <use href="#outer-petal" transform="rotate(102.8571)"/>
+      <use href="#outer-petal" transform="rotate(154.2857)"/>
+      <use href="#outer-petal" transform="rotate(205.7143)"/>
+      <use href="#outer-petal" transform="rotate(257.1429)"/>
+      <use href="#outer-petal" transform="rotate(308.5714)"/>
+    </g>
+    <g fill="#7e9c87" transform="rotate(25.7143)">
+      <path id="inner-petal" d="M0-278C-64-222-78-133 0-61C78-133 64-222 0-278Z"/>
+      <use href="#inner-petal" transform="rotate(51.4286)"/>
+      <use href="#inner-petal" transform="rotate(102.8571)"/>
+      <use href="#inner-petal" transform="rotate(154.2857)"/>
+      <use href="#inner-petal" transform="rotate(205.7143)"/>
+      <use href="#inner-petal" transform="rotate(257.1429)"/>
+      <use href="#inner-petal" transform="rotate(308.5714)"/>
+    </g>
+  </g>
+  <circle cx="512" cy="512" r="120" fill="#173427" stroke="#dae0d8" stroke-width="14"/>
+</svg>
