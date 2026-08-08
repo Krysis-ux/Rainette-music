@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _release_workflow() -> str:
-    return (ROOT / ".github" / "workflows" / "android-release.yml").read_text(encoding="utf-8")
+    return (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
 
 def _workflow_job(workflow: str, name: str) -> str:
@@ -111,7 +111,7 @@ def test_webview_runtime_is_pinned_to_the_autoplay_patch_contract():
     assert "pywebview==6.2.1" in requirements
 
 
-def test_windows_release_build_preserves_android_artifacts():
+def test_windows_release_build_preserves_existing_artifacts():
     script = (ROOT / "release" / "build-windows-release.ps1").read_text(encoding="utf-8")
     assert "Remove-Item -LiteralPath $output -Recurse" not in script
     assert "$manifestPath = Join-Path $output 'latest.json'" in script
@@ -156,20 +156,9 @@ def test_windows_build_pins_runtime_version_to_the_release_version():
     assert "does not match -Version" in script
 
 
-def test_android_release_requires_signing_and_verifies_apk():
-    script = (ROOT / "mobile" / "build-release.ps1").read_text(encoding="utf-8")
-    for variable in ("ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS", "ANDROID_KEY_PASSWORD"):
-        assert variable in script
-    assert "Refusing to build a publish-ready Android release without publisher signing" in script
-    assert "LocalTest" in script
-    assert "verify --verbose" in script
-    assert "rainette-music-android.apk" in script
-
-
 def test_github_release_pipeline_splits_tests_platform_builds_and_publish_permissions():
     workflow = _release_workflow()
     test_job = _workflow_job(workflow, "test")
-    android_job = _workflow_job(workflow, "android")
     windows_build_job = _workflow_job(workflow, "windows-build")
     windows_sign_job = _workflow_job(workflow, "windows-sign")
     publish_job = _workflow_job(workflow, "publish")
@@ -178,13 +167,11 @@ def test_github_release_pipeline_splits_tests_platform_builds_and_publish_permis
     assert "runs-on: windows-latest" in test_job
     assert "python -m pytest" in test_job
     assert "node --check" in test_job
-    assert "needs: test" in android_job
-    assert "runs-on: ubuntu-latest" in android_job
     assert "needs: test" in windows_build_job
     assert "runs-on: windows-latest" in windows_build_job
     assert "needs: [test, windows-build]" in windows_sign_job
     assert "environment: release-signing" in windows_sign_job
-    assert "needs: [android, windows-sign]" in publish_job
+    assert "needs: windows-sign" in publish_job
     assert re.search(r"(?m)^    permissions:\s*\n      contents: write$", publish_job)
     assert workflow.count("contents: write") == 1
 
@@ -240,25 +227,12 @@ def test_github_signing_credentials_only_enter_the_isolated_signing_job():
     assert "secrets." not in windows_build_job
 
 
-def test_github_android_release_requires_the_production_certificate_identity():
-    workflow = _release_workflow()
-    android_job = _workflow_job(workflow, "android")
-
-    assert "ANDROID_SIGNING_CERT_SHA256" in android_job
-    assert "ref: ${{ github.ref }}" in android_job
-    assert "release/out/RainetteMusicSetup.exe" not in android_job
-    assert "apksigner verify" in android_job
-    assert "Signer #1 certificate SHA-256 digest" in android_job
-    assert "signatureVerified: true" in android_job
-    assert "actions/upload-artifact@" in android_job
-    assert "if: always()" in android_job
-
-
 def test_github_publish_job_downloads_only_platform_job_artifacts():
     workflow = _release_workflow()
     publish_job = _workflow_job(workflow, "publish")
 
-    assert workflow.count("actions/upload-artifact@") == 3
+    # windows-build uploads the installer; windows-sign uploads its signature.
+    assert workflow.count("actions/upload-artifact@") == 2
     assert "actions/download-artifact@" in publish_job
     assert "merge-multiple: true" in publish_job
     assert "softprops/action-gh-release@" in publish_job
@@ -268,35 +242,16 @@ def test_github_publish_job_downloads_only_platform_job_artifacts():
     # The exact-set verification gates the upload; every publishable asset must
     # be accounted for in the expected-set check.
     for filename in (
-        "rainette-music-android.apk",
-        "rainette-music-android.apk.sha256",
-        "android-release.json",
         "RainetteMusicSetup.exe",
         "latest.json",
         "latest.json.sig",
     ):
         assert filename in publish_job
+    # Phones install the PWA from its own repository, so no phone artifact is
+    # ever attached to a desktop release.
+    assert "android" not in publish_job.lower()
     assert "files: release-assets/*" in publish_job
     assert "fail_on_unmatched_files: true" in publish_job
-
-
-def test_github_android_publishing_is_optional_but_windows_signing_is_not():
-    workflow = _release_workflow()
-    test_job = _workflow_job(workflow, "test")
-    android_job = _workflow_job(workflow, "android")
-    publish_job = _workflow_job(workflow, "publish")
-
-    # The android job runs only when its signing secrets exist...
-    assert "android_gate" in test_job
-    assert "secrets.ANDROID_KEYSTORE_BASE64" in test_job
-    assert "if: needs.test.outputs.android_enabled == 'true'" in android_job
-    # ...and publish requires only the signed Windows release: a skipped OR
-    # failed Android build must never block the Windows release.
-    assert "needs.windows-sign.result == 'success'" in publish_job
-    assert "needs.android.result == 'skipped'" not in publish_job
-    # The APK ships only when the android job actually succeeded; the expected
-    # asset set shrinks to Windows-only otherwise.
-    assert 'if [ "${ANDROID_RESULT}" = "success" ]' in publish_job
 
 
 def test_github_actions_are_pinned_to_full_commit_shas():

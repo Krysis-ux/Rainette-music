@@ -1,7 +1,0 @@
-<?xml version='1.0' encoding='utf-8'?>
-<resources>
-    <string name="app_name">Rainette Music</string>
-    <string name="title_activity_main">Rainette Music</string>
-    <string name="package_name">com.krysisux.rainettemusic</string>
-    <string name="custom_url_scheme">com.krysisux.rainettemusic</string>
-</resources>

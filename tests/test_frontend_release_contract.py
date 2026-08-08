@@ -114,9 +114,9 @@ class FrontendReleaseContractTests(unittest.TestCase):
 
     def test_mobile_page_contract(self):
         mobile = (ROOT / "web" / "rainette_mobile.js").read_text(encoding="utf-8")
-        self.assertIn("rainette-music-android.apk", mobile)
+        self.assertIn("music-pwa-web.vercel.app", mobile)
         self.assertIn("New pairing code", mobile)
-        self.assertIn("Download APK", mobile)
+        self.assertIn("Open the Rainette PWA", mobile)
         self.assertIn("Approve", mobile)
         self.assertIn("Reject", mobile)
         self.assertIn("Revoke", mobile)
@@ -127,10 +127,13 @@ class FrontendReleaseContractTests(unittest.TestCase):
         self.assertIn("companion_revoke_device", mobile)
         self.assertIn("mountGeneration", mobile)
         self.assertIn("isCurrentMount", mobile)
-        self.assertIn("Release status unavailable", mobile)
-        self.assertIn("network or certificate error", mobile)
-        self.assertIn("official GitHub link to retry", mobile)
-        self.assertIn("releaseStatus === 'unavailable'", mobile)
+        self.assertIn("pwa_config_get", mobile)
+        self.assertIn("pwa_config_set", mobile)
+        self.assertIn("tunnel_configured", mobile)
+        self.assertIn("pairing_url", mobile)
+        # Pairing must stay desktop-approved: the panel never mints a credential
+        # on its own, it only asks the native bridge for an invitation.
+        self.assertNotIn("device_token", mobile)
 
 
 if __name__ == "__main__":
