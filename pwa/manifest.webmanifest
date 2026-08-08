@@ -2,15 +2,21 @@
   "id": "/",
   "name": "Rainette Music",
   "short_name": "Rainette",
-  "description": "Rainette Music on iPhone, powered by your own computer.",
+  "description": "Rainette Music on your phone, playing from your own computer.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "display_override": ["window-controls-overlay", "standalone"],
+  "display_override": [
+    "window-controls-overlay",
+    "standalone"
+  ],
   "orientation": "portrait",
-  "background_color": "#080a09",
-  "theme_color": "#080a09",
-  "categories": ["music", "entertainment"],
+  "background_color": "#0a0d0b",
+  "theme_color": "#0a0d0b",
+  "categories": [
+    "music",
+    "entertainment"
+  ],
   "icons": [
     {
       "src": "/icon.svg",
