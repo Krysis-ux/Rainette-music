@@ -154,7 +154,7 @@ def _release_fixture(version_number="0.9.0", *, release_id=900, draft=False, pre
         _asset(901, INSTALLER_NAME, installer),
         _asset(903, MANIFEST_NAME, manifest),
         _asset(906, SIGNATURE_NAME, signature),
-        _asset(904, "rainette-music-android.apk", b"android"),
+        _asset(904, "Source code.zip", b"source"),
         _asset(905, "DefinitelyNotRainette.exe", b"unrelated executable"),
     ]
     release = {
@@ -241,7 +241,7 @@ class CheckForUpdatesTests(_SignedBuildTestCase):
         release["tag_name"] = "Rainette"
         release["assets"] = [
             _asset(476097444, INSTALLER_NAME, b"published Windows installer"),
-            _asset(476097564, "rainette-music-android.apk", b"published Android installer"),
+            _asset(476097564, "Source code.zip", b"published source archive"),
         ]
         with mock.patch.object(main.urllib.request, "urlopen",
                                return_value=_json_response([release])):
@@ -304,7 +304,7 @@ class CheckForUpdatesTests(_SignedBuildTestCase):
         unrelated = copy.deepcopy(higher)
         unrelated["id"] = 1000
         unrelated["tag_name"] = "v1.0.0"
-        unrelated["assets"] = [_asset(1001, "rainette-music-android.apk", b"android")]
+        unrelated["assets"] = [_asset(1001, "Source code.zip", b"source")]
         with mock.patch.object(main.urllib.request, "urlopen",
                                return_value=_json_response([unrelated, older, higher])):
             result = main.check_for_updates("0.2.2")

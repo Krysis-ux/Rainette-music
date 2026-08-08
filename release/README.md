@@ -20,9 +20,9 @@ committed in `version.py`.
 1. Bump `version.py` (`APP_VERSION`) — the workflow refuses a tag that does
    not match it.
 2. Commit, then tag and push: `git tag v0.2.3 && git push origin v0.2.3`
-3. CI runs tests, builds the Windows installer (`-Phase Release`) and the
-   Android APK, signs `latest.json` in an isolated job, and publishes
-   all assets to the GitHub release.
+3. CI runs tests, builds the Windows installer (`-Phase Release`), signs
+   `latest.json` in an isolated job, and publishes all assets to the GitHub
+   release.
 
 Installed apps poll GitHub every 6 hours (or via Settings → Check now), verify
 the manifest signature, the installer hash, and the release channel, then
@@ -43,9 +43,9 @@ Windows release build without CI (then sign the manifest yourself):
     $env:RAINETTE_UPDATE_SIGNING_KEY = '<base64 private key>'
     python release\sign_manifest.py release\out\latest.json
 
-Android release: set `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`,
-`ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`, then run
-`powershell -ExecutionPolicy Bypass -File .\mobile\build-release.ps1 -Version 0.2.3`.
+The phone client ships separately: `pwa/` is a static site deployed from
+`Krysis-ux/music-pwa-web`, so it has no build step and is never a release asset
+here.
 
 Artifacts land in `release\out` (git-ignored). The optional
 `SignAndPackage` phase adds Windows Authenticode on top if a code-signing
