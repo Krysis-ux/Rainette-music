@@ -331,6 +331,30 @@ class CompanionHttpTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(revoked.status, 404)
 
+    async def test_polling_while_someone_walks_to_the_computer_is_not_throttled(self):
+        """A phone polls every ~1.5s until a human approves it.
+
+        The attempt limiter is far tighter than that on purpose, so the poll
+        endpoint must have its own budget: otherwise a user who takes half a
+        minute to reach their computer is rate-limited out of their own pairing.
+        """
+        invitation = self.registry.create_invitation(ttl_s=300)
+        requested = await self.client.post(
+            "/pair/request",
+            headers={"Origin": ORIGIN},
+            json={"invitation": invitation["token"], "device_name": "Slow walker"},
+        )
+        request_id = (await requested.json())["request_id"]
+
+        body = {"request_id": request_id, "invitation": invitation["token"]}
+        # Two minutes of polling at the client's real cadence.
+        statuses = set()
+        for _ in range(80):
+            response = await self.client.post("/pair/result", headers={"Origin": ORIGIN}, json=body)
+            statuses.add(response.status)
+
+        self.assertEqual(statuses, {202})
+
     async def test_pairing_endpoints_are_rate_limited(self):
         limited = server.build_companion_app(
             CompanionRegistry(now=lambda: 1_000),

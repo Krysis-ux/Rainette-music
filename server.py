@@ -66,6 +66,14 @@ COMMAND_TIMEOUT_KEY = web.AppKey("rainette_companion_command_timeout", float)
 SYNC_BROKER_KEY = web.AppKey("rainette_companion_sync_broker", object)
 ALLOWED_ORIGINS_KEY = web.AppKey("rainette_companion_allowed_origins", frozenset)
 PAIR_LIMITER_KEY = web.AppKey("rainette_companion_pair_limiter", object)
+POLL_LIMITER_KEY = web.AppKey("rainette_companion_poll_limiter", object)
+
+# A phone polls /pair/result on a short cycle for as long as it takes somebody
+# to walk to the computer and approve it, so this budget has to cover minutes of
+# honest polling. It is deliberately far looser than the attempt limiter: the
+# poll already requires a valid request id *and* its matching invitation, so it
+# is not a blind guessing surface the way /pair/request is.
+PAIR_POLL_LIMIT_PER_MINUTE = 120
 
 # Identifies which paired phone caused the music_bridge handler that is running
 # right now to fan out.  Playback events are routed back to that device only, so
@@ -390,9 +398,21 @@ class Hub:
         (CRUD handlers) and from daemon threads (yt-dlp workers) alike.
 
         ``_origin_device`` is read here rather than threaded through every
-        handler signature: contextvars propagate into the daemon threads that
-        yt-dlp workers run on, so a search started by one phone still returns to
-        that phone alone without music_bridge needing to know phones exist.
+        handler signature, which keeps music_bridge unaware that phones exist.
+
+        This works because every session-scoped event is published synchronously
+        from the handler that the request thread is already running. A plain
+        ``threading.Thread`` does NOT inherit the calling context, so the yt-dlp
+        workers started by ``music_bridge._run_bg`` see an empty origin. That is
+        fine today: those workers only emit request-correlated results (search,
+        stream URL, lyrics, catalog), which are not session-scoped and are
+        returned to their caller by ``command_broker`` anyway.
+
+        If a session-scoped event is ever moved onto a background thread, it
+        will arrive here untagged and be delivered to no phone at all rather
+        than to the wrong one, so the failure is a missing update, not a leak.
+        Fixing it would mean passing ``contextvars.copy_context()`` into that
+        thread.
         """
         command_broker.receive(msg)
         companion_sync_broker.publish(msg, _origin_device.get(""))
@@ -756,7 +776,7 @@ async def companion_pair_request(request: web.Request) -> web.StreamResponse:
 
 
 async def companion_pair_result(request: web.Request) -> web.StreamResponse:
-    if not request.app[PAIR_LIMITER_KEY].allow(_client_key(request)):
+    if not request.app[POLL_LIMITER_KEY].allow(_client_key(request)):
         return _json_error(429, "too many pairing attempts; wait a moment and try again")
     try:
         payload = await request.json()
@@ -908,6 +928,7 @@ def build_companion_app(
     sync_broker: CompanionSyncBroker | None = None,
     allowed_origins: set[str] | frozenset[str] | None = None,
     pair_limiter: RateLimiter | None = None,
+    poll_limiter: RateLimiter | None = None,
 ) -> web.Application:
     """Build the companion API without exposing desktop web routes.
 
@@ -923,6 +944,7 @@ def build_companion_app(
         normalize_origin(origin) for origin in (allowed_origins or configured_pwa_origins())
     )
     app[PAIR_LIMITER_KEY] = pair_limiter or RateLimiter()
+    app[POLL_LIMITER_KEY] = poll_limiter or RateLimiter(limit=PAIR_POLL_LIMIT_PER_MINUTE)
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
     app.router.add_post("/pair/request", companion_pair_request)
