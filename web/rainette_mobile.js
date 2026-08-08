@@ -1,6 +1,12 @@
-const APK_URL = 'https://github.com/Krysis-ux/Rainette-music/releases/latest/download/rainette-music-android.apk';
-const APK_NAME = 'rainette-music-android.apk';
-const RELEASE_UNKNOWN = 'Release status unavailable here. Use the official GitHub link to check for the Android app.';
+/* Settings → Mobile: pair a phone with this desktop through the Rainette PWA.
+ *
+ * The desktop is the authority here. It mints a short-lived invitation, shows
+ * it as a QR code, and nothing is granted until the person sitting at this
+ * computer approves the request that appears below. Each approved phone gets
+ * its own credential and can be revoked on its own.
+ */
+
+const DEFAULT_PWA_URL = 'https://music-pwa-web.vercel.app';
 
 let mountedHost = null;
 let pollTimer = null;
@@ -33,14 +39,6 @@ function setStatus(message, tone, generation, host) {
 	if (!status) return;
 	status.textContent = message || '';
 	status.dataset.tone = tone || '';
-}
-
-function setPublication(message, published, generation, host) {
-	if (!isCurrentMount(generation, host)) return;
-	const publication = host.querySelector('#rwAndroidPublication');
-	if (!publication) return;
-	publication.textContent = message;
-	publication.dataset.published = published;
 }
 
 function showQr(slot, dataUrl, alt, generation, host) {
@@ -97,9 +95,23 @@ async function createInvitation(generation, host) {
 		if (!isCurrentMount(generation, host)) return;
 		if (!result?.ok) throw new Error(result?.msg || 'Rainette could not create a pairing code.');
 		invitation = result;
-		showQr(host.querySelector('#rwPairingQr'), result.pairing_qr_data_url, 'Secure Rainette pairing QR code', generation, host);
+		showQr(host.querySelector('#rwPairingQr'), result.pairing_qr_data_url, 'Rainette pairing QR code', generation, host);
 		startCountdown(generation, host);
-		setStatus('Scan this code in the Rainette Android app, then approve the phone below.', 'success', generation, host);
+		const link = host.querySelector('#rwPairingLink');
+		if (link) {
+			link.value = result.pairing_url || '';
+			link.hidden = false;
+		}
+		const copyButton = host.querySelector('#rwCopyPairingLink');
+		if (copyButton) copyButton.hidden = false;
+		setStatus(
+			result.tunnel_configured
+				? 'Scan this code with your phone camera, then approve it below.'
+				: 'No public address is set, so this code only works on this computer. Add one below to pair a phone.',
+			result.tunnel_configured ? 'success' : 'error',
+			generation,
+			host,
+		);
 	} catch (error) {
 		if (isCurrentMount(generation, host)) {
 			setStatus(error?.message || 'Rainette could not create a pairing code.', 'error', generation, host);
@@ -164,7 +176,7 @@ function renderManagement(state, generation, host) {
 		pendingHost.innerHTML = '<p class="rw-mobile-empty">No phones are waiting for approval.</p>';
 	} else {
 		for (const request of pending) {
-			pendingHost.appendChild(deviceRow(request.device_name, 'Waiting for desktop approval', [
+			pendingHost.appendChild(deviceRow(request.device_name, 'Waiting for your approval', [
 				{ label: 'Approve', primary: true, method: 'companion_approve_request', id: request.request_id, progress: 'Approving device', success: `${request.device_name || 'Device'} approved`, failure: 'Could not approve this device.' },
 				{ label: 'Reject', method: 'companion_reject_request', id: request.request_id, progress: 'Rejecting request', success: 'Pairing request rejected', failure: 'Could not reject this request.' },
 			], generation, host));
@@ -175,7 +187,7 @@ function renderManagement(state, generation, host) {
 		pairedHost.innerHTML = '<p class="rw-mobile-empty">No phones are paired yet.</p>';
 	} else {
 		for (const device of activeDevices) {
-			pairedHost.appendChild(deviceRow(device.name, 'Allowed on this desktop', [
+			pairedHost.appendChild(deviceRow(device.name, 'Has its own listening session', [
 				{ label: 'Revoke', method: 'companion_revoke_device', id: device.device_id, progress: 'Revoking device', success: `${device.name || 'Device'} revoked`, failure: 'Could not revoke this device.' },
 			], generation, host));
 		}
@@ -214,29 +226,39 @@ async function refreshManagementState(schedule, generation, host) {
 	}
 }
 
-async function loadDownloadInfo(generation, host) {
+async function loadConfig(generation, host) {
 	try {
-		const info = await nativeCall('android_download_info');
-		if (!isCurrentMount(generation, host)) return;
-		const anchor = host.querySelector('#rwAndroidDownload');
-		if (info?.url && anchor) anchor.href = info.url;
-		showQr(host.querySelector('#rwInstallQr'), info?.install_qr_data_url, 'QR code to download Rainette Music for Android', generation, host);
-		const releaseStatus = info?.status || (info?.published ? 'published' : 'unavailable');
-		setPublication(
-			releaseStatus === 'published'
-				? 'The signed Android release is ready to download.'
-				: releaseStatus === 'unavailable'
-					? 'The Android app is not published yet. This button will work after the first signed release.'
-					: 'Rainette could not check GitHub (network or certificate error). Open the official GitHub link to retry.',
-			releaseStatus === 'published' ? 'true' : releaseStatus === 'unavailable' ? 'false' : 'unknown',
-			generation,
-			host,
+		const config = await nativeCall('pwa_config_get');
+		if (!isCurrentMount(generation, host) || !config?.ok) return;
+		const pwaInput = host.querySelector('#rwPwaUrl');
+		const publicInput = host.querySelector('#rwPublicUrl');
+		if (pwaInput) pwaInput.value = config.pwa_url || DEFAULT_PWA_URL;
+		if (publicInput) publicInput.value = config.public_url || '';
+	} catch {
+		/* The desktop bridge is unavailable in a plain browser; inputs stay blank. */
+	}
+}
+
+async function saveConfig(generation, host) {
+	if (!isCurrentMount(generation, host)) return;
+	const button = host.querySelector('#rwSavePwaConfig');
+	if (button) button.disabled = true;
+	setStatus('Saving addresses…', '', generation, host);
+	try {
+		const result = await nativeCall(
+			'pwa_config_set',
+			host.querySelector('#rwPwaUrl')?.value || '',
+			host.querySelector('#rwPublicUrl')?.value || '',
 		);
+		if (!isCurrentMount(generation, host)) return;
+		if (!result?.ok) throw new Error(result?.msg || 'Could not save these addresses.');
+		setStatus('Addresses saved. Create a new pairing code to use them.', 'success', generation, host);
 	} catch (error) {
 		if (isCurrentMount(generation, host)) {
-			setPublication('Could not check the Android release. Use the official GitHub link to try again.', 'unknown', generation, host);
-			setStatus(error?.message || 'Could not check the Android release.', 'error', generation, host);
+			setStatus(error?.message || 'Could not save these addresses.', 'error', generation, host);
 		}
+	} finally {
+		if (isCurrentMount(generation, host) && button) button.disabled = false;
 	}
 }
 
@@ -247,8 +269,7 @@ function startNativeFeatures(generation, host) {
 	if (button) button.disabled = false;
 	const fallback = host.querySelector('#rwNativePairingFallback');
 	if (fallback) fallback.hidden = true;
-	setPublication('Checking whether the Android release is published…', 'checking', generation, host);
-	loadDownloadInfo(generation, host);
+	loadConfig(generation, host);
 	refreshManagementState(true, generation, host);
 }
 
@@ -260,23 +281,31 @@ export function renderMobile(host) {
 	managementInFlight = false;
 	host.innerHTML = `
 		<div class="rw-mobile-grid">
-			<section class="rw-mobile-card rw-bubble" data-mobile-step="download">
-				<div class="rw-mobile-step-title">1. Download</div>
-				<h2>Get Rainette for Android</h2>
-				<p>Download the signed APK from the official Rainette GitHub Release.</p>
-				<a id="rwAndroidDownload" class="rw-btn rw-mobile-download" href="${APK_URL}" download="${APK_NAME}" target="_blank" rel="noopener noreferrer">Download APK</a>
-				<p id="rwAndroidPublication" class="rw-mobile-note" data-published="unknown">${RELEASE_UNKNOWN}</p>
+			<section class="rw-mobile-card rw-bubble" data-mobile-step="open">
+				<div class="rw-mobile-step-title">1. Open</div>
+				<h2>Rainette on your phone</h2>
+				<p>Rainette runs on your phone as a web app — iPhone or Android, nothing to install from a store. Your music still plays from this computer.</p>
+				<a id="rwPwaLink" class="rw-btn rw-mobile-download" href="${DEFAULT_PWA_URL}" target="_blank" rel="noopener noreferrer">Open the Rainette PWA</a>
+				<p class="rw-mobile-note">On the phone, use your browser's <b>Share → Add to Home Screen</b> to keep it one tap away.</p>
 			</section>
-			<section class="rw-mobile-card rw-bubble" data-mobile-step="install">
-				<div class="rw-mobile-step-title">2. Install</div>
-				<h2>Install it on your phone</h2>
-				<div id="rwInstallQr" class="rw-mobile-qr-slot"><div class="rw-mobile-qr-placeholder">Open this page in Rainette desktop to show the install QR.</div></div>
-				<p>Scan the download QR, open the APK, and allow installs from your browser or GitHub if Android asks.</p>
+			<section class="rw-mobile-card rw-bubble" data-mobile-step="reach">
+				<div class="rw-mobile-step-title">2. Make this computer reachable</div>
+				<h2>Addresses</h2>
+				<p>Your phone talks straight to this computer. Put a trusted HTTPS tunnel in front of Rainette and paste its address here.</p>
+				<label class="rw-mobile-field">
+					<span>Rainette PWA address</span>
+					<input id="rwPwaUrl" type="url" inputmode="url" spellcheck="false" placeholder="${DEFAULT_PWA_URL}">
+				</label>
+				<label class="rw-mobile-field">
+					<span>Public address for this computer</span>
+					<input id="rwPublicUrl" type="url" inputmode="url" spellcheck="false" placeholder="https://music-pc.example.com">
+				</label>
+				<button id="rwSavePwaConfig" class="rw-btn" type="button">Save addresses</button>
 			</section>
 			<section class="rw-mobile-card rw-mobile-card-pair rw-bubble" data-mobile-step="pair">
 				<div class="rw-mobile-step-title">3. Pair</div>
 				<div class="rw-mobile-pair-head">
-					<div><h2>Connect to this desktop</h2><p>Keep the phone and desktop on the same Wi-Fi. Pairing codes last five minutes.</p></div>
+					<div><h2>Connect a phone</h2><p>Each phone gets its own listening session, so two people never interrupt each other. Pairing codes last five minutes.</p></div>
 					<button id="rwNewPairingCode" class="rw-btn" type="button" disabled>New pairing code</button>
 				</div>
 				<p id="rwNativePairingFallback" class="rw-mobile-native-fallback">Pairing requires the installed Rainette desktop app.</p>
@@ -284,6 +313,8 @@ export function renderMobile(host) {
 					<div>
 						<div id="rwPairingQr" class="rw-mobile-qr-slot"><div class="rw-mobile-qr-placeholder">Create a code when your phone is ready.</div></div>
 						<p id="rwPairingExpiry" class="rw-mobile-expiry">No active pairing code.</p>
+						<input id="rwPairingLink" class="rw-mobile-link" type="text" readonly hidden aria-label="Pairing link">
+						<button id="rwCopyPairingLink" class="rw-btn rw-btn-ghost" type="button" hidden>Copy pairing link</button>
 						<p id="rwMobileStatus" class="rw-mobile-status" role="status" aria-live="polite"></p>
 					</div>
 					<div class="rw-mobile-management">
@@ -294,6 +325,19 @@ export function renderMobile(host) {
 			</section>
 		</div>`;
 	host.querySelector('#rwNewPairingCode')?.addEventListener('click', () => createInvitation(generation, host));
+	host.querySelector('#rwSavePwaConfig')?.addEventListener('click', () => saveConfig(generation, host));
+	host.querySelector('#rwCopyPairingLink')?.addEventListener('click', async () => {
+		const field = host.querySelector('#rwPairingLink');
+		if (!field?.value) return;
+		try {
+			await navigator.clipboard.writeText(field.value);
+			setStatus('Pairing link copied.', 'success', generation, host);
+		} catch {
+			// Clipboard access can be denied; the link is selectable either way.
+			field.select();
+			setStatus('Press Ctrl+C to copy the selected link.', '', generation, host);
+		}
+	});
 	renderManagement({ pending: [], devices: [] }, generation, host);
 	pywebviewReadyHandler = () => startNativeFeatures(generation, host);
 	document.addEventListener('pywebviewready', pywebviewReadyHandler);

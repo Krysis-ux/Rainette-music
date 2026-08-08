@@ -1,32 +1,40 @@
-"""Pairing and authorization primitives for the Rainette LAN companion.
+"""Pairing and authorization primitives for the Rainette Music PWA companion.
 
 This module deliberately contains no HTTP or UI code.  The desktop listener
 uses it to turn a short-lived QR invitation into a revocable device credential
 and to mint opaque, device-bound audio-relay grants.
+
+Every paired phone receives its own unguessable device token and its own
+``device_id``.  That identity is what keeps two phones paired to the same
+computer from colliding, and it is what makes one phone revocable without
+disturbing the others.
+
+The credential is handed to the browser over the operator's own trusted HTTPS
+tunnel rather than being sealed to a device keypair.  A browser has no
+equivalent of Android's hardware-backed Keystore, so an asymmetric handshake
+would add ceremony without adding a boundary: the tunnel's TLS is the
+confidentiality boundary, and the short claim TTL bounds how long an
+approved-but-unclaimed token stays retrievable.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
-import base64
 import json
 import os
 import secrets
-import ssl
 import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
-from cryptography.x509.oid import NameOID
 from filelock import FileLock
+
+
+_MAX_DEVICE_NAME_LENGTH = 60
 
 
 def _digest(value: str) -> str:
@@ -44,11 +52,10 @@ class _PairingRequest:
     request_id: str
     invitation_hash: str
     device_name: str
-    public_key: str
     status: str
     created_at: float
     status_changed_at: float
-    encrypted_device_token: str | None = None
+    device_token: str | None = None
     device_id: str | None = None
     claim_expires_at: float | None = None
 
@@ -74,52 +81,8 @@ class _RelayGrant:
     expires_at: float
 
 
-@dataclass(frozen=True)
-class CompanionCertificate:
-    cert_path: Path
-    key_path: Path
-    fingerprint_sha256: str
-    ssl_context: ssl.SSLContext
-
-
-def ensure_tls_certificate(directory: Path) -> CompanionCertificate:
-    """Create (once) the self-signed LAN certificate pinned during QR pairing."""
-    directory.mkdir(parents=True, exist_ok=True)
-    cert_path = directory / "companion-cert.pem"
-    key_path = directory / "companion-key.pem"
-    if not cert_path.is_file() or not key_path.is_file():
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        now = datetime.now(UTC)
-        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Rainette Music Companion")])
-        certificate = (
-            x509.CertificateBuilder()
-            .subject_name(subject).issuer_name(subject).public_key(private_key.public_key())
-            .serial_number(x509.random_serial_number())
-            .not_valid_before(now - timedelta(minutes=1)).not_valid_after(now + timedelta(days=3650))
-            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-            .sign(private_key, hashes.SHA256())
-        )
-        key_path.write_bytes(private_key.private_bytes(
-            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
-        ))
-        cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
-        try:
-            key_path.chmod(0o600)
-        except OSError:
-            pass
-    certificate = x509.load_pem_x509_certificate(cert_path.read_bytes())
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
-    return CompanionCertificate(
-        cert_path=cert_path,
-        key_path=key_path,
-        fingerprint_sha256=certificate.fingerprint(hashes.SHA256()).hex(),
-        ssl_context=context,
-    )
-
-
 class CompanionRegistry:
-    """In-memory authorization registry used by the first companion listener.
+    """In-memory authorization registry used by the companion listener.
 
     Tokens are generated once and only their SHA-256 digests are retained.
     Persistence is intentionally injected by the server layer later; keeping
@@ -307,7 +270,7 @@ class CompanionRegistry:
                         if local is not None:
                             local.status = "expired"
                             local.status_changed_at = now
-                            local.encrypted_device_token = None
+                            local.device_token = None
                     self._write_state(devices, claims)
                 self._devices = devices
                 self._unclaimed = claims
@@ -322,21 +285,7 @@ class CompanionRegistry:
             if request is not None:
                 request.status = "expired"
                 request.status_changed_at = now
-                request.encrypted_device_token = None
-
-    @staticmethod
-    def _load_phone_public_key(value: str) -> rsa.RSAPublicKey:
-        encoded = str(value or "").strip().encode("ascii", "strict")
-        try:
-            if encoded.startswith(b"-----BEGIN"):
-                key = serialization.load_pem_public_key(encoded)
-            else:
-                key = serialization.load_der_public_key(base64.b64decode(encoded, validate=True))
-        except (ValueError, TypeError) as exc:
-            raise ValueError("a valid RSA public key is required") from exc
-        if not isinstance(key, rsa.RSAPublicKey) or key.key_size < 2048:
-            raise ValueError("a 2048-bit RSA public key is required")
-        return key
+                request.device_token = None
 
     def create_invitation(self, *, ttl_s: int = 300) -> dict[str, object]:
         with self._lock:
@@ -347,15 +296,18 @@ class CompanionRegistry:
             self._invitations[_digest(token)] = _Invitation(expires_at=expires_at)
             return {"token": token, "expires_at": expires_at}
 
-    def request_pairing(self, invitation_token: str, device_name: str, public_key: str) -> dict[str, str]:
+    def request_pairing(self, invitation_token: str, device_name: str) -> dict[str, str]:
         with self._lock:
             invitation_hash = _digest(invitation_token)
             invitation = self._invitations.get(invitation_hash)
             if invitation is None or invitation.used or invitation.expires_at <= self._now():
                 raise ValueError("pairing invitation is expired or invalid")
-            if not str(device_name).strip() or not str(public_key).strip():
-                raise ValueError("device name and public key are required")
-            self._load_phone_public_key(public_key)
+            name = str(device_name).strip()
+            if not name:
+                raise ValueError("a device name is required")
+            # The name is operator-facing text in the desktop approval list, so
+            # it is length-capped here rather than trusted from the browser.
+            name = name[:_MAX_DEVICE_NAME_LENGTH]
             # Reserve the invitation only after the complete request validates.
             invitation.used = True
             request_id = uuid.uuid4().hex
@@ -363,8 +315,7 @@ class CompanionRegistry:
             self._requests[request_id] = _PairingRequest(
                 request_id=request_id,
                 invitation_hash=invitation_hash,
-                device_name=str(device_name).strip(),
-                public_key=str(public_key).strip(),
+                device_name=name,
                 status="pending",
                 created_at=now,
                 status_changed_at=now,
@@ -421,20 +372,6 @@ class CompanionRegistry:
                 raise ValueError("pairing invitation is expired or invalid")
             device_id = uuid.uuid4().hex
             device_token = secrets.token_urlsafe(48)
-            public_key = self._load_phone_public_key(request.public_key)
-            encrypted = public_key.encrypt(
-                device_token.encode("utf-8"),
-                padding.OAEP(
-                    # Android Keystore uses SHA-1 for OAEP's MGF1 digest on
-                    # API levels below 35.  The OAEP message digest remains
-                    # SHA-256; using SHA-1 only for the mask-generation
-                    # function keeps the ciphertext interoperable with every
-                    # Android version Rainette supports (API 23+).
-                    mgf=padding.MGF1(algorithm=hashes.SHA1()),
-                    algorithm=hashes.SHA256(),
-                    label=None,
-                ),
-            )
             device = _Device(name=request.device_name, token_hash=_digest(device_token))
 
             def add_device(devices: dict[str, _Device]) -> None:
@@ -443,19 +380,22 @@ class CompanionRegistry:
             approved_at = self._now()
             previous = (
                 request.status, request.status_changed_at, request.device_id,
-                request.encrypted_device_token, request.claim_expires_at,
+                request.device_token, request.claim_expires_at,
             )
             request.status = "approved"
             request.status_changed_at = approved_at
             request.device_id = device_id
-            request.encrypted_device_token = base64.b64encode(encrypted).decode("ascii")
+            # Only the digest is persisted.  This plaintext copy lives in memory
+            # until the phone claims it or the claim TTL expires, whichever is
+            # first; it is never written to the devices file.
+            request.device_token = device_token
             request.claim_expires_at = approved_at + self._claim_ttl_s
             try:
                 self._mutate_devices(add_device)
             except Exception:
                 (
                     request.status, request.status_changed_at, request.device_id,
-                    request.encrypted_device_token, request.claim_expires_at,
+                    request.device_token, request.claim_expires_at,
                 ) = previous
                 raise
             return {"device_id": device_id, "device_name": request.device_name, "status": "approved"}
@@ -481,7 +421,7 @@ class CompanionRegistry:
                 return {
                     "status": "approved",
                     "device_id": str(request.device_id),
-                    "encrypted_device_token": str(request.encrypted_device_token),
+                    "device_token": str(request.device_token),
                 }
             return {"status": request.status}
 
@@ -573,10 +513,22 @@ class CompanionRegistry:
             self._relay_grants[_digest(token)] = _RelayGrant(device_id, str(upstream_url), expires_at)
             return {"token": token, "expires_at": expires_at}
 
-    def resolve_relay(self, grant_token: str, device_token: str) -> str | None:
+    def resolve_relay(self, grant_token: str) -> str | None:
+        """Redeem an audio grant.
+
+        A browser cannot attach an ``Authorization`` header to ``<audio src>``,
+        so the grant token itself has to be the capability.  It is 32 random
+        bytes, it expires quickly, and it stops resolving the moment its owning
+        device is revoked — revocation therefore cuts audio too, not just the
+        API.  Grants are per-device, so one phone's grant leaking never widens
+        into access to another phone's session or to the command surface.
+        """
         with self._lock:
-            device_id = self.device_id_for_token(device_token)
+            self._refresh_and_cleanup()
             grant = self._relay_grants.get(_digest(str(grant_token or "")))
-            if device_id is None or grant is None or grant.expires_at <= self._now() or grant.device_id != device_id:
+            if grant is None or grant.expires_at <= self._now():
+                return None
+            device = self._devices.get(grant.device_id)
+            if device is None or device.revoked:
                 return None
             return grant.upstream_url

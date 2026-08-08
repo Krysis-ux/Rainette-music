@@ -1,50 +1,32 @@
-import base64
 import json
 import unittest
 from pathlib import Path
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from companion import CompanionRegistry
 import server
 
 
-def phone_keypair():
-    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    public_pem = private.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("ascii")
-    return private, public_pem
-
-
-def decrypt_token(private, encrypted):
-    return private.decrypt(
-        base64.b64decode(encrypted),
-        padding.OAEP(mgf=padding.MGF1(hashes.SHA1()), algorithm=hashes.SHA256(), label=None),
-    ).decode("utf-8")
+ORIGIN = "https://music-pwa-web.vercel.app"
 
 
 def test_first_valid_pairing_request_consumes_invitation():
     registry = CompanionRegistry(now=lambda: 1_000)
-    _, public_key = phone_keypair()
     invitation = registry.create_invitation(ttl_s=60)
-    first = registry.request_pairing(invitation["token"], "Pixel", public_key)
+    first = registry.request_pairing(invitation["token"], "Pixel")
 
     with pytest.raises(ValueError, match="expired or invalid"):
-        registry.request_pairing(invitation["token"], "Other phone", public_key)
+        registry.request_pairing(invitation["token"], "Other phone")
 
     assert first["status"] == "pending"
 
 
 def test_rejection_is_visible_to_original_phone_only():
     registry = CompanionRegistry(now=lambda: 1_000)
-    _, public_key = phone_keypair()
     invitation = registry.create_invitation(ttl_s=60)
-    request = registry.request_pairing(invitation["token"], "Pixel", public_key)
+    request = registry.request_pairing(invitation["token"], "Pixel")
 
     assert registry.reject(request["request_id"])
     assert registry.pairing_result(request["request_id"], invitation["token"]) == {"status": "rejected"}
@@ -53,18 +35,17 @@ def test_rejection_is_visible_to_original_phone_only():
 
 def test_registry_persists_only_hashed_device_credentials_and_revocation(tmp_path):
     storage = tmp_path / "companion-devices.json"
-    private, public_key = phone_keypair()
     first = CompanionRegistry(now=lambda: 1_000, storage_path=storage)
     invitation = first.create_invitation(ttl_s=60)
-    request = first.request_pairing(invitation["token"], "Pixel", public_key)
+    request = first.request_pairing(invitation["token"], "Pixel")
     approved = first.approve(request["request_id"])
     result = first.pairing_result(request["request_id"], invitation["token"])
-    token = decrypt_token(private, result["encrypted_device_token"])
+    token = result["device_token"]
 
     persisted = storage.read_text(encoding="utf-8")
     assert token not in persisted
     assert invitation["token"] not in persisted
-    assert result["encrypted_device_token"] not in persisted
+    assert result["device_token"] not in persisted
     assert set(json.loads(persisted)["devices"][0]) == {"device_id", "name", "token_hash", "revoked"}
 
     restarted = CompanionRegistry(now=lambda: 1_000, storage_path=storage)
@@ -78,10 +59,9 @@ def test_registry_persists_only_hashed_device_credentials_and_revocation(tmp_pat
 def test_approved_claim_ttl_is_independent_and_expiry_removes_unclaimed_device(tmp_path):
     clock = [1_000.0]
     storage = tmp_path / "companion-devices.json"
-    private, public_key = phone_keypair()
     registry = CompanionRegistry(now=lambda: clock[0], storage_path=storage, claim_ttl_s=120)
     invitation = registry.create_invitation(ttl_s=10)
-    request = registry.request_pairing(invitation["token"], "Pixel", public_key)
+    request = registry.request_pairing(invitation["token"], "Pixel")
     clock[0] = 1_009
     approved = registry.approve(request["request_id"])
 
@@ -89,11 +69,11 @@ def test_approved_claim_ttl_is_independent_and_expiry_removes_unclaimed_device(t
     clock[0] = 1_011
     claim = registry.pairing_result(request["request_id"], invitation["token"])
     assert claim["status"] == "approved"
-    assert decrypt_token(private, claim["encrypted_device_token"])
+    assert claim["device_token"]
     assert registry.acknowledge_pairing(request["request_id"], approved["device_id"])
 
     invitation2 = registry.create_invitation(ttl_s=10)
-    request2 = registry.request_pairing(invitation2["token"], "Unclaimed", public_key)
+    request2 = registry.request_pairing(invitation2["token"], "Unclaimed")
     clock[0] = 1_020
     approved2 = registry.approve(request2["request_id"])
     clock[0] = 1_141
@@ -108,13 +88,12 @@ def test_approved_claim_ttl_is_independent_and_expiry_removes_unclaimed_device(t
 def test_authenticated_pairing_ack_survives_desktop_restart_and_cancels_claim_expiry(tmp_path):
     clock = [1_000.0]
     storage = tmp_path / "companion-devices.json"
-    private, public_key = phone_keypair()
     registry = CompanionRegistry(now=lambda: clock[0], storage_path=storage, claim_ttl_s=10)
     invitation = registry.create_invitation(ttl_s=60)
-    request = registry.request_pairing(invitation["token"], "Pixel", public_key)
+    request = registry.request_pairing(invitation["token"], "Pixel")
     approved = registry.approve(request["request_id"])
     result = registry.pairing_result(request["request_id"], invitation["token"])
-    token = decrypt_token(private, result["encrypted_device_token"])
+    token = result["device_token"]
 
     restarted = CompanionRegistry(now=lambda: clock[0], storage_path=storage, claim_ttl_s=10)
     authenticated_device = restarted.device_id_for_token(token)
@@ -134,12 +113,11 @@ def test_authenticated_pairing_ack_survives_desktop_restart_and_cancels_claim_ex
 def test_restarted_pairing_ack_rejects_wrong_request_and_authenticated_device(tmp_path):
     storage = tmp_path / "companion-devices.json"
     registry = CompanionRegistry(now=lambda: 1_000, storage_path=storage)
-    private, public_key = phone_keypair()
     invitation = registry.create_invitation(ttl_s=60)
-    request = registry.request_pairing(invitation["token"], "Pixel", public_key)
+    request = registry.request_pairing(invitation["token"], "Pixel")
     approved = registry.approve(request["request_id"])
     result = registry.pairing_result(request["request_id"], invitation["token"])
-    token = decrypt_token(private, result["encrypted_device_token"])
+    token = result["device_token"]
 
     restarted = CompanionRegistry(now=lambda: 1_000, storage_path=storage)
     assert not restarted.acknowledge_pairing("wrong-request", approved["device_id"])
@@ -150,9 +128,8 @@ def test_restarted_pairing_ack_rejects_wrong_request_and_authenticated_device(tm
 
 def test_approval_persist_failure_leaves_request_pending_and_device_unauthorized(tmp_path, monkeypatch):
     registry = CompanionRegistry(now=lambda: 1_000, storage_path=tmp_path / "devices.json")
-    private, public_key = phone_keypair()
     invitation = registry.create_invitation(ttl_s=60)
-    request = registry.request_pairing(invitation["token"], "Pixel", public_key)
+    request = registry.request_pairing(invitation["token"], "Pixel")
 
     def fail(_devices=None):
         raise OSError("disk full")
@@ -167,13 +144,12 @@ def test_approval_persist_failure_leaves_request_pending_and_device_unauthorized
 
 def test_revoke_persist_failure_keeps_existing_device_authorized(tmp_path, monkeypatch):
     storage = tmp_path / "devices.json"
-    private, public_key = phone_keypair()
     registry = CompanionRegistry(now=lambda: 1_000, storage_path=storage)
     invitation = registry.create_invitation(ttl_s=60)
-    request = registry.request_pairing(invitation["token"], "Pixel", public_key)
+    request = registry.request_pairing(invitation["token"], "Pixel")
     approved = registry.approve(request["request_id"])
     claim = registry.pairing_result(request["request_id"], invitation["token"])
-    token = decrypt_token(private, claim["encrypted_device_token"])
+    token = claim["device_token"]
 
     def fail(_devices=None):
         raise OSError("read only")
@@ -190,12 +166,10 @@ def test_two_registry_instances_merge_mutations_without_lost_updates(tmp_path):
     storage = tmp_path / "devices.json"
     first = CompanionRegistry(now=lambda: 1_000, storage_path=storage)
     second = CompanionRegistry(now=lambda: 1_000, storage_path=storage)
-    _, first_public = phone_keypair()
-    _, second_public = phone_keypair()
     first_invite = first.create_invitation(ttl_s=60)
     second_invite = second.create_invitation(ttl_s=60)
-    first_request = first.request_pairing(first_invite["token"], "Pixel", first_public)
-    second_request = second.request_pairing(second_invite["token"], "iPhone", second_public)
+    first_request = first.request_pairing(first_invite["token"], "Pixel")
+    second_request = second.request_pairing(second_invite["token"], "iPhone")
 
     first_device = first.approve(first_request["request_id"])
     second_device = second.approve(second_request["request_id"])
@@ -212,10 +186,9 @@ class CompanionPairingHttpSecurityTests(unittest.IsolatedAsyncioTestCase):
     client = TestClient(TestServer(server.build_companion_app(registry)))
     await client.start_server()
     try:
-        private, public_key = phone_keypair()
         invitation = registry.create_invitation(ttl_s=60)
         requested = await client.post("/pair/request", json={
-            "invitation": invitation["token"], "device_name": "Pixel", "public_key": public_key,
+            "invitation": invitation["token"], "device_name": "Pixel",
         })
         request_id = (await requested.json())["request_id"]
 
@@ -231,7 +204,7 @@ class CompanionPairingHttpSecurityTests(unittest.IsolatedAsyncioTestCase):
             "request_id": request_id, "invitation": invitation["token"],
         })
         payload = await claimed.json()
-        token = decrypt_token(private, payload["encrypted_device_token"])
+        token = payload["device_token"]
         status = await client.get("/status", headers={"Authorization": "Bearer " + token})
         assert status.status == 200
         assert (await status.json())["device_id"] == server_approval["device_id"]
@@ -240,7 +213,7 @@ class CompanionPairingHttpSecurityTests(unittest.IsolatedAsyncioTestCase):
             "request_id": request_id, "invitation": invitation["token"],
         })
         assert second.status == 200
-        assert (await second.json())["encrypted_device_token"] == payload["encrypted_device_token"]
+        assert (await second.json())["device_token"] == payload["device_token"]
         acknowledged = await client.post(
             "/pair/ack",
             headers={"Authorization": "Bearer " + token},
@@ -260,10 +233,9 @@ class CompanionPairingHttpSecurityTests(unittest.IsolatedAsyncioTestCase):
     client = TestClient(TestServer(server.build_companion_app(registry)))
     await client.start_server()
     try:
-        _, public_key = phone_keypair()
         invitation = registry.create_invitation(ttl_s=60)
         response = await client.post("/pair/request", json={
-            "invitation": invitation["token"], "device_name": "Pixel", "public_key": public_key,
+            "invitation": invitation["token"], "device_name": "Pixel",
         })
         request_id = (await response.json())["request_id"]
         registry.approve(request_id)
