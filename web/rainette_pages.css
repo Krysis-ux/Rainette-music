@@ -2523,6 +2523,23 @@ html.rw-reduced-motion .rw-now-btn:hover, html.rw-reduced-motion .rw-now-output:
 .rw-mobile-device-actions { display: flex; flex: 0 0 auto; gap: 7px; }
 .rw-mobile-device-actions .rw-btn { min-height: 32px; padding: 6px 10px; font-size: 12px; }
 .rw-mobile-empty { margin: 0; color: var(--rw-text-muted); font-size: 12px; }
+.rw-mobile-tunnel-steps {
+	display: grid;
+	gap: 8px;
+	margin: 0 0 16px;
+	border-radius: 10px;
+	background: var(--rw-surface-sunken, rgba(0, 0, 0, 0.04));
+	padding: 13px;
+}
+.rw-mobile-tunnel-steps .rw-btn { width: 100%; }
+.rw-mobile-tunnel-steps .rw-mobile-status { margin: 0 0 4px; }
+.rw-mobile-tunnel-steps .rw-mobile-status:last-child { margin-bottom: 0; }
+.rw-mobile-card code {
+	border-radius: 4px;
+	background: var(--rw-surface-sunken, rgba(0, 0, 0, 0.05));
+	padding: 1px 5px;
+	font-size: 11.5px;
+}
 
 @media (max-width: 620px) {
 	.rw-mobile-grid { grid-template-columns: 1fr; }

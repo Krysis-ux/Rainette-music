@@ -484,6 +484,8 @@ def test_companion_invitation_returns_local_qr_without_launch_token(monkeypatch)
         "invitation": "invite",
         "expires_at": 1300,
         "tunnel_configured": True,
+        "endpoint_is_local": False,
+        "companion_port": 47811,
     })
 
     result = main.WindowApi().companion_create_invitation()
@@ -492,6 +494,8 @@ def test_companion_invitation_returns_local_qr_without_launch_token(monkeypatch)
     assert result["pairing_qr_data_url"].startswith("data:image/png;base64,")
     assert result["expires_at"] == 1300
     assert result["tunnel_configured"] is True
+    assert result["endpoint_is_local"] is False
+    assert result["companion_port"] == 47811
 
     # The invitation rides in the fragment, so the static PWA host never
     # receives it, and the desktop's own launch token is never exposed.

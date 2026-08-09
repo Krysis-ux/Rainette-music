@@ -1,7 +1,7 @@
 /* Bump this whenever the pairing protocol changes. A returning phone that
  * kept a cached app.js would otherwise keep speaking the old handshake to a
  * computer that no longer understands it. */
-const CACHE = 'rainette-pwa-v2';
+const CACHE = 'rainette-pwa-v3';
 const SHELL = [
   './',
   './index.html',

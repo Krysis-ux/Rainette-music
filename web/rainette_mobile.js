@@ -16,6 +16,14 @@ let nativeStarted = false;
 let managementInFlight = false;
 let mountGeneration = 0;
 let pywebviewReadyHandler = null;
+let tunnelTimer = null;
+let tunnelPhase = '';
+let helperReady = false;
+
+// The first run downloads a helper binary, so the poll has to stay patient
+// while the phase is "downloading" or "starting" and go quiet once it settles.
+const TUNNEL_BUSY_POLL_MS = 1200;
+const TUNNEL_IDLE_POLL_MS = 15000;
 
 function isCurrentMount(generation, host) {
 	return generation === mountGeneration && !!host && mountedHost === host;
@@ -104,11 +112,14 @@ async function createInvitation(generation, host) {
 		}
 		const copyButton = host.querySelector('#rwCopyPairingLink');
 		if (copyButton) copyButton.hidden = false;
+		// A loopback endpoint means the phone would be told to call itself.
+		// Saying so here is the difference between a message the user can act
+		// on and the browser's bare "Failed to fetch" on the phone.
 		setStatus(
-			result.tunnel_configured
-				? 'Scan this code with your phone camera, then approve it below.'
-				: 'No public address is set, so this code only works on this computer. Add one below to pair a phone.',
-			result.tunnel_configured ? 'success' : 'error',
+			result.endpoint_is_local
+				? 'This computer has no secure address yet, so this code only works in a browser on this computer. Generate an HTTPS tunnel in step 2, then create the code again.'
+				: 'Scan this code with your phone camera, then approve it below.',
+			result.endpoint_is_local ? 'error' : 'success',
 			generation,
 			host,
 		);
@@ -226,6 +237,154 @@ async function refreshManagementState(schedule, generation, host) {
 	}
 }
 
+function setTunnelStatus(message, tone, generation, host) {
+	if (!isCurrentMount(generation, host)) return;
+	const status = host.querySelector('#rwTunnelStatus');
+	if (!status) return;
+	status.textContent = message || '';
+	status.dataset.tone = tone || '';
+}
+
+function setHelperStatus(message, tone, generation, host) {
+	if (!isCurrentMount(generation, host)) return;
+	const status = host.querySelector('#rwHelperStatus');
+	if (!status) return;
+	status.textContent = message || '';
+	status.dataset.tone = tone || '';
+}
+
+function tunnelTone(phase) {
+	if (phase === 'running') return 'success';
+	if (phase === 'error') return 'error';
+	return '';
+}
+
+function helperMessage(helper) {
+	if (helper.phase === 'ready') return 'cloudflared is ready on this computer.';
+	if (helper.phase === 'error') return helper.message || 'cloudflared could not be downloaded.';
+	if (helper.busy) return helper.message || 'Downloading cloudflared…';
+	return 'cloudflared is not here yet. Download it once, then generate a tunnel.';
+}
+
+function tunnelMessage(status) {
+	if (status.phase === 'running') return `Tunnel is live at ${status.url} — your phone can reach this computer.`;
+	if (status.phase === 'error') return status.message || 'The tunnel could not be started.';
+	if (status.busy) return status.message || 'Opening the tunnel…';
+	if (!status.helper?.ready) return 'Download cloudflared first.';
+	if (status.public_url && !status.public_url_is_managed) return `Using your own address: ${status.public_url}`;
+	return 'Ready to generate a tunnel for this computer.';
+}
+
+function renderTunnel(status, generation, host) {
+	if (!isCurrentMount(generation, host)) return;
+	tunnelPhase = status.phase || '';
+	const helper = status.helper || { phase: 'missing', ready: false, busy: false };
+	helperReady = !!helper.ready;
+
+	const download = host.querySelector('#rwDownloadHelper');
+	if (download) {
+		download.disabled = !!helper.busy || helper.ready;
+		download.textContent = helper.busy
+			? 'Downloading…'
+			: helper.ready
+				? 'cloudflared installed'
+				: helper.phase === 'error'
+					? 'Retry the download'
+					: 'Download cloudflared';
+	}
+
+	const toggle = host.querySelector('#rwTunnelToggle');
+	if (toggle) {
+		toggle.disabled = !!status.busy || (!helper.ready && !status.running);
+		toggle.textContent = status.running
+			? 'Stop the HTTPS tunnel'
+			: status.busy
+				? 'Generating…'
+				: 'Generate HTTPS tunnel';
+	}
+
+	// The generated address lands in the same field somebody would paste their
+	// own address into, so what pairing will actually use is always on screen.
+	const publicInput = host.querySelector('#rwPublicUrl');
+	if (publicInput && document.activeElement !== publicInput) {
+		publicInput.value = status.url || status.public_url || '';
+	}
+
+	setHelperStatus(
+		helperMessage(helper),
+		helper.phase === 'error' ? 'error' : helper.ready ? 'success' : '',
+		generation,
+		host,
+	);
+	setTunnelStatus(tunnelMessage(status), tunnelTone(status.phase), generation, host);
+}
+
+function scheduleTunnelPoll(generation, host, delayMs) {
+	if (!isCurrentMount(generation, host)) return;
+	if (tunnelTimer) clearTimeout(tunnelTimer);
+	tunnelTimer = setTimeout(() => {
+		tunnelTimer = null;
+		refreshTunnel(generation, host);
+	}, delayMs);
+}
+
+async function refreshTunnel(generation, host) {
+	if (!isCurrentMount(generation, host) || !nativeApi()) return;
+	try {
+		const status = await nativeCall('tunnel_status');
+		if (!isCurrentMount(generation, host)) return;
+		if (!status?.ok) throw new Error(status?.msg || 'The tunnel status is unavailable.');
+		renderTunnel(status, generation, host);
+		const working = status.busy || status.helper?.busy;
+		scheduleTunnelPoll(generation, host, working ? TUNNEL_BUSY_POLL_MS : TUNNEL_IDLE_POLL_MS);
+	} catch (error) {
+		if (!isCurrentMount(generation, host)) return;
+		setTunnelStatus(error?.message || 'The tunnel status is unavailable.', 'error', generation, host);
+		scheduleTunnelPoll(generation, host, TUNNEL_IDLE_POLL_MS);
+	}
+}
+
+async function downloadHelper(generation, host) {
+	if (!isCurrentMount(generation, host)) return;
+	const button = host.querySelector('#rwDownloadHelper');
+	if (button) button.disabled = true;
+	setHelperStatus('Starting the download…', '', generation, host);
+	try {
+		const result = await nativeCall('tunnel_helper_download');
+		if (!isCurrentMount(generation, host)) return;
+		if (!result?.ok) throw new Error(result?.msg || 'cloudflared could not be downloaded.');
+		// The download runs on the desktop side, so switch to the fast poll and
+		// let its progress stream back instead of blocking this call on it.
+		scheduleTunnelPoll(generation, host, TUNNEL_BUSY_POLL_MS);
+	} catch (error) {
+		if (!isCurrentMount(generation, host)) return;
+		setHelperStatus(error?.message || 'cloudflared could not be downloaded.', 'error', generation, host);
+		if (button) button.disabled = false;
+	}
+}
+
+async function toggleTunnel(generation, host) {
+	if (!isCurrentMount(generation, host)) return;
+	const toggle = host.querySelector('#rwTunnelToggle');
+	const stopping = tunnelPhase === 'running';
+	if (!stopping && !helperReady) {
+		setTunnelStatus('Download cloudflared first.', 'error', generation, host);
+		return;
+	}
+	if (toggle) toggle.disabled = true;
+	setTunnelStatus(stopping ? 'Closing the tunnel…' : 'Opening the tunnel…', '', generation, host);
+	try {
+		const result = await nativeCall(stopping ? 'tunnel_stop' : 'tunnel_start');
+		if (!isCurrentMount(generation, host)) return;
+		if (!result?.ok) throw new Error(result?.msg || 'The tunnel could not be started.');
+		scheduleTunnelPoll(generation, host, TUNNEL_BUSY_POLL_MS);
+	} catch (error) {
+		if (!isCurrentMount(generation, host)) return;
+		setTunnelStatus(error?.message || 'The tunnel could not be started.', 'error', generation, host);
+		if (toggle) toggle.disabled = false;
+	}
+}
+
 async function loadConfig(generation, host) {
 	try {
 		const config = await nativeCall('pwa_config_get');
@@ -253,6 +412,7 @@ async function saveConfig(generation, host) {
 		if (!isCurrentMount(generation, host)) return;
 		if (!result?.ok) throw new Error(result?.msg || 'Could not save these addresses.');
 		setStatus('Addresses saved. Create a new pairing code to use them.', 'success', generation, host);
+		refreshTunnel(generation, host);
 	} catch (error) {
 		if (isCurrentMount(generation, host)) {
 			setStatus(error?.message || 'Could not save these addresses.', 'error', generation, host);
@@ -270,6 +430,7 @@ function startNativeFeatures(generation, host) {
 	const fallback = host.querySelector('#rwNativePairingFallback');
 	if (fallback) fallback.hidden = true;
 	loadConfig(generation, host);
+	refreshTunnel(generation, host);
 	refreshManagementState(true, generation, host);
 }
 
@@ -290,17 +451,24 @@ export function renderMobile(host) {
 			</section>
 			<section class="rw-mobile-card rw-bubble" data-mobile-step="reach">
 				<div class="rw-mobile-step-title">2. Make this computer reachable</div>
-				<h2>Addresses</h2>
-				<p>Your phone talks straight to this computer. Put a trusted HTTPS tunnel in front of Rainette and paste its address here.</p>
-				<label class="rw-mobile-field">
-					<span>Rainette PWA address</span>
-					<input id="rwPwaUrl" type="url" inputmode="url" spellcheck="false" placeholder="${DEFAULT_PWA_URL}">
-				</label>
+				<h2>Secure address</h2>
+				<p>Your phone talks straight to this computer, so this computer needs an address on the internet that uses HTTPS. Rainette can make one for you in two steps.</p>
+				<div class="rw-mobile-tunnel-steps">
+					<button id="rwDownloadHelper" class="rw-btn" type="button" disabled>Download cloudflared</button>
+					<p id="rwHelperStatus" class="rw-mobile-status" role="status" aria-live="polite">Checking for cloudflared…</p>
+					<button id="rwTunnelToggle" class="rw-btn" type="button" disabled>Generate HTTPS tunnel</button>
+					<p id="rwTunnelStatus" class="rw-mobile-status" role="status" aria-live="polite">Checking the secure address…</p>
+				</div>
 				<label class="rw-mobile-field">
 					<span>Public address for this computer</span>
 					<input id="rwPublicUrl" type="url" inputmode="url" spellcheck="false" placeholder="https://music-pc.example.com">
 				</label>
-				<button id="rwSavePwaConfig" class="rw-btn" type="button">Save addresses</button>
+				<label class="rw-mobile-field">
+					<span>Rainette PWA address</span>
+					<input id="rwPwaUrl" type="url" inputmode="url" spellcheck="false" placeholder="${DEFAULT_PWA_URL}">
+				</label>
+				<button id="rwSavePwaConfig" class="rw-btn rw-btn-ghost" type="button">Save addresses</button>
+				<p class="rw-mobile-note">Generating a tunnel fills the public address in for you and saves it. Paste your own here instead if you already run a named Cloudflare tunnel, Tailscale Funnel, or a reverse proxy. Never port-forward the companion port on your router.</p>
 			</section>
 			<section class="rw-mobile-card rw-mobile-card-pair rw-bubble" data-mobile-step="pair">
 				<div class="rw-mobile-step-title">3. Pair</div>
@@ -326,6 +494,8 @@ export function renderMobile(host) {
 		</div>`;
 	host.querySelector('#rwNewPairingCode')?.addEventListener('click', () => createInvitation(generation, host));
 	host.querySelector('#rwSavePwaConfig')?.addEventListener('click', () => saveConfig(generation, host));
+	host.querySelector('#rwDownloadHelper')?.addEventListener('click', () => downloadHelper(generation, host));
+	host.querySelector('#rwTunnelToggle')?.addEventListener('click', () => toggleTunnel(generation, host));
 	host.querySelector('#rwCopyPairingLink')?.addEventListener('click', async () => {
 		const field = host.querySelector('#rwPairingLink');
 		if (!field?.value) return;
@@ -348,9 +518,13 @@ export function unmountMobile() {
 	mountGeneration += 1;
 	if (pollTimer) clearTimeout(pollTimer);
 	if (countdownTimer) clearInterval(countdownTimer);
+	if (tunnelTimer) clearTimeout(tunnelTimer);
 	if (pywebviewReadyHandler) document.removeEventListener('pywebviewready', pywebviewReadyHandler);
 	pollTimer = null;
 	countdownTimer = null;
+	tunnelTimer = null;
+	tunnelPhase = '';
+	helperReady = false;
 	invitation = null;
 	nativeStarted = false;
 	managementInFlight = false;

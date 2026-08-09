@@ -31,6 +31,7 @@ from aiohttp import WSMsgType, web
 
 import shared
 import music_bridge
+import tunnel
 from companion import CompanionRegistry
 from state import MusicState
 
@@ -429,6 +430,8 @@ class Hub:
 
 hub = Hub()
 command_broker = CommandBroker()
+_tunnel_manager: tunnel.TunnelManager | None = None
+_tunnel_manager_lock = threading.Lock()
 companion_registry = CompanionRegistry(storage_path=APP_DATA_DIR / "companion-devices.json")
 companion_sync_broker = CompanionSyncBroker()
 _companion_runtime: dict = {}
@@ -810,8 +813,12 @@ async def companion_pair_ack(request: web.Request) -> web.StreamResponse:
 
 
 async def companion_status(request: web.Request) -> web.StreamResponse:
+    # ``name`` is what the phone shows as "Playing from …", so a paired device
+    # can tell which computer it is driving without the operator configuring
+    # anything.
     return web.json_response({
         "ok": True,
+        "name": socket.gethostname(),
         "device_id": request["companion_device_id"],
         "capabilities": ["pairing", "library", "events", "output-transfer"],
     })
@@ -1104,6 +1111,79 @@ def configured_pwa_origins() -> frozenset[str]:
     return frozenset(origins)
 
 
+def set_public_url(public_url: str) -> dict:
+    """Update only the public companion address, keeping the PWA address."""
+    return write_pwa_config(read_pwa_config().get("pwa_url") or DEFAULT_PWA_URL, public_url)
+
+
+def is_managed_tunnel_url(value: str) -> bool:
+    """True for an address Rainette itself minted through a Quick Tunnel.
+
+    Only these are cleared automatically.  A user who pointed Rainette at their
+    own named tunnel or reverse proxy keeps that address across restarts.
+    """
+    host = (urlparse(str(value or "")).hostname or "").lower()
+    return host.endswith(".trycloudflare.com")
+
+
+def _remember_tunnel_url(url: str) -> None:
+    """Persist a freshly minted tunnel address so pairing links use it."""
+    try:
+        set_public_url(url)
+    except (ValueError, OSError):
+        # Losing the address only means the next pairing link is built from the
+        # previous one; it must never take the tunnel itself down.
+        pass
+
+
+def tunnel_manager() -> tunnel.TunnelManager:
+    global _tunnel_manager
+    with _tunnel_manager_lock:
+        if _tunnel_manager is None:
+            _tunnel_manager = tunnel.TunnelManager(APP_DATA_DIR, on_url=_remember_tunnel_url)
+        return _tunnel_manager
+
+
+def tunnel_status() -> dict:
+    """Current tunnel phase, the helper's state, and the address pairing uses."""
+    manager = tunnel_manager()
+    status = manager.status()
+    config = read_pwa_config()
+    public_url = config.get("public_url") or ""
+    status["public_url"] = public_url
+    status["public_url_is_managed"] = is_managed_tunnel_url(public_url)
+    status["helper"] = manager.helper_status()
+    return status
+
+
+def download_tunnel_helper() -> dict:
+    """Fetch cloudflared as its own step, before any tunnel is generated."""
+    return tunnel_manager().download_helper()
+
+
+def start_tunnel() -> dict:
+    """Bring up an HTTPS tunnel in front of the companion gateway.
+
+    The companion listener is started first because its port is what the tunnel
+    has to point at, and that port is only knowable once it is bound.
+    """
+    runtime = start_companion()
+    return tunnel_manager().start(int(runtime["port"]))
+
+
+def stop_tunnel() -> dict:
+    """Stop the tunnel and forget the address it minted."""
+    status = tunnel_manager().stop()
+    if is_managed_tunnel_url(read_pwa_config().get("public_url") or ""):
+        # A dead Quick Tunnel address would otherwise keep being baked into new
+        # pairing links, which is exactly the failure this release removes.
+        try:
+            set_public_url("")
+        except (ValueError, OSError):
+            pass
+    return status
+
+
 def _companion_port_path() -> Path:
     return APP_DATA_DIR / COMPANION_PORT_FILENAME
 
@@ -1322,6 +1402,7 @@ def create_companion_invitation(*, ttl_s: int = 300) -> dict:
     config = read_pwa_config()
     invitation = companion_registry.create_invitation(ttl_s=ttl_s)
     endpoint = config.get("public_url") or f"http://127.0.0.1:{runtime['port']}"
+    endpoint_is_local = (urlparse(endpoint).hostname or "") in {"localhost", "127.0.0.1", "::1"}
     pairing_url = (
         config["pwa_url"].rstrip("/")
         + "/#"
@@ -1338,6 +1419,12 @@ def create_companion_invitation(*, ttl_s: int = 300) -> dict:
         "invitation": invitation["token"],
         "expires_at": invitation["expires_at"],
         "tunnel_configured": bool(config.get("public_url")),
+        # A loopback endpoint is only useful for testing on this same machine.
+        # Surfacing it explicitly lets the UI refuse to present a QR code that
+        # a phone can never act on, instead of leaving the browser to report an
+        # unexplained "Failed to fetch".
+        "endpoint_is_local": endpoint_is_local,
+        "companion_port": int(runtime["port"]),
     }
 
 

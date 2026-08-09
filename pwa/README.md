@@ -30,11 +30,25 @@ Rainette running and its tunnel up.
 Pairing is deliberately two-sided. Possessing a link is not enough; somebody at
 the computer has to approve the phone.
 
-1. On the computer, open Rainette → **Settings → Mobile**, set the two addresses
-   once, then create a pairing code.
-2. Scan the QR with the phone, or paste the pairing link into this app.
-3. The phone appears in the computer's **Waiting for approval** list. Approve it.
-4. The phone receives its own device token and connects.
+1. On the computer, open Rainette → **Settings → Mobile**. Press **Download
+   cloudflared** once, then **Generate HTTPS tunnel**. The desktop app runs the
+   tunnel in front of its phone gateway, waits until that address actually
+   answers, and fills it into *Public address for this computer*.
+2. Create a pairing code there.
+3. Scan the QR with the phone, or paste the pairing link into this app.
+4. The phone appears in the computer's **Waiting for approval** list. Approve it.
+5. The phone receives its own device token and connects.
+
+Step 1 is what makes step 3 work. A pairing code created before the computer has
+a public address carries `http://127.0.0.1:<port>`, which on a phone means the
+phone itself — an HTTPS page is not permitted to call it, so the request never
+leaves the device. Browsers report that only as "Failed to fetch" or "Load
+failed", so this app detects it and says what to do instead.
+
+A generated tunnel gets a fresh hostname on every start. A phone that already
+holds a device credential only needs the new address, not another approval, so
+re-scanning the current QR reconnects it without appearing in the waiting list
+again.
 
 Each approved phone gets a distinct credential and its own listening session, so
 two people can search and play independently without interrupting each other.

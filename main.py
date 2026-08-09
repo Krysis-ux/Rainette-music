@@ -11,6 +11,7 @@ Rainette Music application-data directory.
 
 from __future__ import annotations
 
+import atexit
 import base64
 import hashlib
 import io
@@ -780,9 +781,45 @@ class WindowApi:
                 "expires_at": invitation["expires_at"],
                 "endpoint": invitation["endpoint"],
                 "tunnel_configured": invitation["tunnel_configured"],
+                "endpoint_is_local": invitation["endpoint_is_local"],
+                "companion_port": invitation["companion_port"],
             }
         except Exception as exc:
             log(f"companion invitation failed: {exc}")
+            return {"ok": False, "msg": str(exc)}
+
+    def tunnel_status(self):
+        """Report the managed HTTPS tunnel so the UI can poll it."""
+        try:
+            return {"ok": True, **server.tunnel_status()}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+    def tunnel_helper_download(self):
+        """Download cloudflared as its own explicit, one-time step."""
+        try:
+            return {"ok": True, **server.download_tunnel_helper()}
+        except Exception as exc:
+            log(f"tunnel helper download failed: {exc}")
+            return {"ok": False, "msg": str(exc)}
+
+    def tunnel_start(self):
+        """Generate the HTTPS tunnel and publish its address.
+
+        Returns as soon as the work is scheduled; the settings page polls
+        ``tunnel_status`` for the address Cloudflare hands out.
+        """
+        try:
+            return {"ok": True, **server.start_tunnel()}
+        except Exception as exc:
+            log(f"tunnel start failed: {exc}")
+            return {"ok": False, "msg": str(exc)}
+
+    def tunnel_stop(self):
+        try:
+            return {"ok": True, **server.stop_tunnel()}
+        except Exception as exc:
+            log(f"tunnel stop failed: {exc}")
             return {"ok": False, "msg": str(exc)}
 
     def pwa_config_get(self):
@@ -1268,6 +1305,32 @@ def _try_edge_app(url: str) -> bool:
         return False
 
 
+def _restore_tunnel() -> None:
+    """Reopen the HTTPS tunnel on launch when Rainette was the one running it.
+
+    A Cloudflare Quick Tunnel address does not survive a restart, so a paired
+    phone would otherwise point at a hostname that stopped existing when the
+    computer was last shut down.  Bringing it back up here — and only when the
+    stored address is one Rainette minted — means the operator's own named
+    tunnel or reverse proxy is never touched.
+    """
+    if not server.is_managed_tunnel_url(server.read_pwa_config().get("public_url") or ""):
+        return
+    try:
+        server.start_tunnel()
+        log("reopening the managed HTTPS tunnel for paired phones")
+    except Exception:
+        log("managed tunnel failed to reopen:\n" + traceback.format_exc())
+
+
+def _shutdown_tunnel() -> None:
+    """Stop cloudflared so it does not outlive the app that started it."""
+    try:
+        server.tunnel_manager().stop(timeout_s=5.0)
+    except Exception:
+        pass
+
+
 def main() -> int:
     try:
         port = server.start()
@@ -1284,8 +1347,11 @@ def main() -> int:
         companion_runtime = server.start_paired_companion()
         if companion_runtime:
             log(f"companion listener restored on port {companion_runtime['port']}")
+            _restore_tunnel()
     except Exception:
         log("paired companion listener failed to restart:\n" + traceback.format_exc())
+
+    atexit.register(_shutdown_tunnel)
 
     url = f"http://127.0.0.1:{port}/"
     log(f"server up at {url}")

@@ -24,15 +24,28 @@ Your music still lives on your computer. The phone is a remote: search, library,
 and audio all come from the machine you paired with, so nothing is uploaded
 anywhere and there is no account to make.
 
-Pairing is two-sided on purpose. In the desktop app open **Settings → Mobile**,
-create a pairing code, then scan it. The phone shows up in a waiting list and
-gets access only once you approve it there. Each approved phone has its own
-listening session, so two people can search and play at the same time without
-interrupting each other, and you can revoke one phone without touching the rest.
+Setting it up is two steps, both in the desktop app's **Settings → Mobile**:
 
-Because the phone talks directly to your computer, that computer needs a trusted
-HTTPS address. A managed tunnel (Cloudflare Tunnel, Tailscale Funnel) is the
-right tool. Do not port-forward the companion port on your router.
+1. **Download cloudflared**, then **Generate HTTPS tunnel**. Your phone talks
+   directly to your computer, so the computer needs an address on the internet
+   that uses HTTPS. The first button fetches Cloudflare's `cloudflared` helper
+   once, from Cloudflare's own release page; the second runs it, waits until the
+   address actually answers, and fills that address into *Public address for
+   this computer* for you. The tunnel carries Rainette's phone gateway and
+   nothing else, and it closes when you close Rainette.
+   If you already run a named Cloudflare tunnel, Tailscale Funnel, or your own
+   reverse proxy, paste its address into that field instead and skip both
+   buttons. Never port-forward the companion port on your router.
+2. **Create a pairing code** and scan it with the phone.
+
+Pairing is two-sided on purpose. The phone shows up in a waiting list and gets
+access only once you approve it there. Each approved phone has its own listening
+session, so two people can search and play at the same time without interrupting
+each other, and you can revoke one phone without touching the rest.
+
+A generated tunnel gets a fresh address every time it starts. An already-paired
+phone just needs the new address, not a new approval, so re-scanning the current
+QR code reconnects it in one step.
 
 The phone client's source lives in [`pwa/`](pwa/) and is mirrored to
 [`Krysis-ux/music-pwa-web`](https://github.com/Krysis-ux/music-pwa-web), which is

@@ -129,11 +129,50 @@ class FrontendReleaseContractTests(unittest.TestCase):
         self.assertIn("isCurrentMount", mobile)
         self.assertIn("pwa_config_get", mobile)
         self.assertIn("pwa_config_set", mobile)
-        self.assertIn("tunnel_configured", mobile)
+        self.assertIn("tunnel_status", mobile)
+        self.assertIn("tunnel_helper_download", mobile)
+        self.assertIn("tunnel_start", mobile)
+        self.assertIn("tunnel_stop", mobile)
+        self.assertIn("Download cloudflared", mobile)
+        self.assertIn("Generate HTTPS tunnel", mobile)
+        # The generated address has to land in the field pairing actually reads,
+        # so what the phone will be told is always visible on screen.
+        self.assertIn("rwPublicUrl", mobile)
+        # A loopback endpoint is the one failure the phone cannot explain for
+        # itself, so the desktop panel has to name it.
+        self.assertIn("endpoint_is_local", mobile)
         self.assertIn("pairing_url", mobile)
         # Pairing must stay desktop-approved: the panel never mints a credential
         # on its own, it only asks the native bridge for an invitation.
         self.assertNotIn("device_token", mobile)
+
+    def test_phone_client_contract(self):
+        """The phone client must explain a failed connection, not relay a TypeError.
+
+        `fetch` collapses mixed-content blocking, DNS failure, refused
+        connections and rejected CORS into one message — "Failed to fetch" or
+        "Load failed" — so every one of those paths has to go through the
+        client's own diagnosis instead of surfacing the browser's wording.
+        """
+        client = (ROOT / "pwa" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("describeTransportFailure", client)
+        self.assertIn("unusableEndpointReason", client)
+        self.assertIn("isLoopbackHost", client)
+        # A phone that already holds a credential only needs the new address
+        # when a Quick Tunnel hostname rotates; it must not re-ask for approval.
+        self.assertIn("adoptEndpoint", client)
+        # Every request has to go through the wrapper, or the raw TypeError
+        # reaches the user again.
+        self.assertNotIn("await fetch(", client.replace("return await fetch(url, options);", ""))
+
+    def test_phone_client_cache_is_versioned_with_the_pairing_client(self):
+        """A returning phone must not keep serving the previous app.js.
+
+        The service worker answers same-origin GETs cache-first, so a client
+        change only reaches an installed phone when the cache name changes.
+        """
+        worker = (ROOT / "pwa" / "sw.js").read_text(encoding="utf-8")
+        self.assertRegex(worker, r"const CACHE = 'rainette-pwa-v(?:[3-9]|\d{2,})'")
 
 
 if __name__ == "__main__":

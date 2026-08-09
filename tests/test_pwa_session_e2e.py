@@ -76,6 +76,18 @@ class TwoPhonesOnOneComputerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         return await response.json()
 
+    async def test_status_names_the_computer_the_phone_is_driving(self):
+        # The phone shows this as "Playing from …", so it has to come back from
+        # the gateway rather than being configured by hand.
+        phone = await self.pair_phone("Studio iPhone")
+
+        response = await self.client.get("/status", headers=phone["headers"])
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertTrue(payload["name"])
+        self.assertIn("pairing", payload["capabilities"])
+
     async def test_two_phones_pair_independently_and_do_not_share_playback(self):
         alice = await self.pair_phone("Alice's phone")
         bob = await self.pair_phone("Bob's phone")

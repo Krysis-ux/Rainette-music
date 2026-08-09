@@ -54,16 +54,67 @@ function defaultDeviceName() {
   return 'Phone';
 }
 
+const LOCAL_HOSTNAMES = ['localhost', '127.0.0.1', '[::1]', '::1'];
+
+function isLoopbackHost(hostname) {
+  return LOCAL_HOSTNAMES.includes(String(hostname || '').toLowerCase());
+}
+
+/* True only when this page is itself being served from the computer, which is
+ * the one situation where a loopback companion address is the right answer. */
+function pageIsLoopback() {
+  return isLoopbackHost(location.hostname);
+}
+
+function endpointHost(value) {
+  try {
+    return new URL(String(value || '')).hostname;
+  } catch {
+    return '';
+  }
+}
+
 function normalizeEndpoint(value) {
   const url = new URL(String(value || '').trim());
-  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) {
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
     throw new Error('The companion address must use trusted HTTPS.');
   }
   url.pathname = url.pathname.replace(/\/$/, '');
   url.search = '';
   url.hash = '';
   return url.toString().replace(/\/$/, '');
+}
+
+/* A pairing code minted before the computer had a public address carries
+ * `http://127.0.0.1:<port>`. On a phone that is the phone itself, and an HTTPS
+ * page is not permitted to call it at all, so the request never leaves the
+ * device. Catching it here turns a dead end into an instruction. */
+function unusableEndpointReason(endpoint) {
+  if (pageIsLoopback()) return '';
+  if (!isLoopbackHost(endpointHost(endpoint))) return '';
+  return 'This pairing code points at 127.0.0.1, which on a phone means the phone itself. On the computer open Rainette → Settings → Mobile, choose “Generate & use HTTPS tunnel”, then create a new pairing code.';
+}
+
+/* Browsers collapse DNS failure, refused connections, TLS problems, blocked
+ * mixed content and rejected CORS into one TypeError whose whole message is
+ * "Failed to fetch" (Chromium) or "Load failed" (WebKit). Anything useful about
+ * the cause has to be reconstructed from what we already know. */
+function describeTransportFailure(endpoint) {
+  const unusable = unusableEndpointReason(endpoint);
+  if (unusable) return unusable;
+  const host = endpointHost(endpoint);
+  return `Could not reach ${host || 'your computer'}. Check that Rainette is open there and its HTTPS tunnel is running, then create a new pairing code.`;
+}
+
+async function transport(url, options = {}) {
+  try {
+    return await fetch(url, options);
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error;
+    const failure = new Error(describeTransportFailure(url));
+    failure.transport = true;
+    throw failure;
+  }
 }
 
 /* The pairing link carries the endpoint and a short-lived invitation in the
@@ -113,7 +164,7 @@ async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set('Authorization', `Bearer ${state.token}`);
   if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const response = await fetch(state.endpoint + path, { ...options, headers, cache: 'no-store' });
+  const response = await transport(state.endpoint + path, { ...options, headers, cache: 'no-store' });
   let payload;
   try {
     payload = await response.json();
@@ -156,7 +207,7 @@ async function command(type, payload = {}, timeoutMs = 35000) {
  */
 
 async function pairPost(endpoint, path, body) {
-  const response = await fetch(endpoint + path, {
+  const response = await transport(endpoint + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -169,11 +220,41 @@ async function pairPost(endpoint, path, body) {
   return { status: response.status, payload };
 }
 
+/* A computer that runs a Quick Tunnel gets a new hostname every time it starts,
+ * so an already-paired phone mostly needs a new *address*, not a new identity.
+ * The device credential it already holds is what proves the pairing, so if that
+ * credential still authenticates at the new address there is nothing for anyone
+ * to approve a second time. */
+async function adoptEndpoint(endpoint) {
+  if (!state.token || endpoint === state.endpoint) return false;
+  const previous = state.endpoint;
+  state.endpoint = endpoint;
+  try {
+    await api('/status');
+    localStorage.setItem(STORAGE.endpoint, endpoint);
+    return true;
+  } catch {
+    state.endpoint = previous;
+    return false;
+  }
+}
+
 async function startPairing(endpoint, invitation, deviceName) {
   const normalized = normalizeEndpoint(endpoint);
   setupError.textContent = '';
-  setStatus('busy', 'Asking to pair…');
 
+  // Refuse a code that cannot work before spending a doomed request on it.
+  const unusable = unusableEndpointReason(normalized);
+  if (unusable) throw new Error(unusable);
+
+  setStatus('busy', 'Connecting…');
+  if (await adoptEndpoint(normalized)) {
+    pairWaiting.hidden = true;
+    if (await testConnection()) refreshLibrary();
+    return;
+  }
+
+  setStatus('busy', 'Asking to pair…');
   const requested = await pairPost(normalized, '/pair/request', {
     invitation,
     device_name: deviceName || defaultDeviceName(),
