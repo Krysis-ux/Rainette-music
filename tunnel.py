@@ -65,13 +65,27 @@ _ALLOWED_DOWNLOAD_HOSTS = (
 _MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
 _DOWNLOAD_CHUNK_BYTES = 256 * 1024
 _QUICK_TUNNEL_RE = re.compile(r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com")
+_REGISTERED_MARKER = "registered tunnel connection"
 # cloudflared prints the assigned hostname within a few seconds; the generous
 # ceiling covers a cold start on a slow connection before we call it a failure.
 _URL_DISCOVERY_TIMEOUT_S = 60.0
 # Cloudflare's edge returns 502/530 for a few seconds after the hostname is
 # printed but before the route is live, so the URL alone is not proof of reach.
-_REACHABLE_TIMEOUT_S = 75.0
-_PROBE_INTERVAL_S = 2.0
+_REACHABLE_TIMEOUT_S = 180.0
+_REGISTRATION_TIMEOUT_S = 45.0
+
+# `trycloudflare.com` has no wildcard record: the hostname cloudflared just
+# printed does not exist in DNS for another ten seconds or so.  Resolving it
+# too early does lasting damage, because the resolver caches the NXDOMAIN for
+# the zone's negative TTL and then answers every later attempt from that cache
+# without asking again — measured behaviour is that an immediate first lookup
+# makes the name stay unresolvable for the entire startup window, while waiting
+# first resolves in about 17s.  So: hold off before the first probe, and back
+# off between probes rather than re-asking a resolver that is already saying no.
+_REACHABLE_GRACE_S = 12.0
+_PROBE_INTERVAL_S = 5.0
+_PROBE_INTERVAL_MAX_S = 20.0
+_PROBE_BACKOFF = 1.5
 _PROBE_TIMEOUT_S = 10.0
 _SUPERVISOR_POLL_S = 2.0
 _RESTART_BACKOFF_S = 5.0
@@ -570,8 +584,11 @@ class TunnelManager:
             raise TunnelError("Cloudflare did not hand out a tunnel address")
 
         self._set_status(message="Waiting for the tunnel to come online…")
+        self._wait_registered(process, generation)
         if not self._wait_reachable(url, process, generation):
-            raise TunnelError("the tunnel address never answered")
+            raise TunnelError(
+                "the tunnel address never answered; check that this computer can reach Cloudflare"
+            )
         return url
 
     def _read_url(self, process: subprocess.Popen, generation: int) -> str:
@@ -603,8 +620,42 @@ class TunnelManager:
             time.sleep(0.25)
         return found.get("url", "")
 
+    def _wait_registered(self, process: subprocess.Popen, generation: int) -> None:
+        """Wait for cloudflared to report an edge connection, if it says so.
+
+        This is a better starting gun than a bare sleep, but it is advisory:
+        the log wording is not a stable interface, so a miss just falls through
+        to the grace period below rather than failing the launch.
+        """
+        deadline = time.monotonic() + _REGISTRATION_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if not self._is_current(generation) or process.poll() is not None:
+                return
+            with self._lock:
+                if any(_REGISTERED_MARKER in line.lower() for line in self._log):
+                    return
+            time.sleep(0.5)
+
+    def _sleep_watching(self, seconds: float, process: subprocess.Popen, generation: int) -> bool:
+        """Sleep in short slices so a stop or a dead helper is noticed promptly."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if not self._is_current(generation) or process.poll() is not None:
+                return False
+            time.sleep(min(0.5, max(0.05, deadline - time.monotonic())))
+        return True
+
     def _wait_reachable(self, url: str, process: subprocess.Popen, generation: int) -> bool:
+        # Never probe before the grace period: the first lookup of a name that
+        # does not exist yet is what makes it stay unresolvable (see
+        # _REACHABLE_GRACE_S).
+        if not self._sleep_watching(_REACHABLE_GRACE_S, process, generation):
+            if process.poll() is not None:
+                raise TunnelError("the tunnel helper stopped while the address was warming up")
+            return False
+
         deadline = time.monotonic() + _REACHABLE_TIMEOUT_S
+        interval = _PROBE_INTERVAL_S
         while time.monotonic() < deadline:
             if not self._is_current(generation):
                 return False
@@ -612,7 +663,11 @@ class TunnelManager:
                 raise TunnelError("the tunnel helper stopped while the address was warming up")
             if self._reachable_probe(url):
                 return True
-            time.sleep(_PROBE_INTERVAL_S)
+            if not self._sleep_watching(interval, process, generation):
+                if process.poll() is not None:
+                    raise TunnelError("the tunnel helper stopped while the address was warming up")
+                return False
+            interval = min(interval * _PROBE_BACKOFF, _PROBE_INTERVAL_MAX_S)
         return False
 
     # ── supervision ───────────────────────────────────────────────────────

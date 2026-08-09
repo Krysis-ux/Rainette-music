@@ -60,7 +60,10 @@ def fast_tunnel(monkeypatch):
     """Collapse the real-world waits so the state machine can be exercised."""
     monkeypatch.setattr(tunnel, "_URL_DISCOVERY_TIMEOUT_S", 3.0)
     monkeypatch.setattr(tunnel, "_REACHABLE_TIMEOUT_S", 2.0)
+    monkeypatch.setattr(tunnel, "_REGISTRATION_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(tunnel, "_REACHABLE_GRACE_S", 0.1)
     monkeypatch.setattr(tunnel, "_PROBE_INTERVAL_S", 0.05)
+    monkeypatch.setattr(tunnel, "_PROBE_INTERVAL_MAX_S", 0.1)
 
 
 def settle(manager: tunnel.TunnelManager, *, timeout_s: float = 10.0) -> dict:
@@ -113,6 +116,69 @@ def test_quick_tunnel_address_is_discovered_and_published(tmp_path, monkeypatch,
     assert status["port"] == 47811
     assert published == ["https://calm-frog-mixes.trycloudflare.com"]
     manager.stop()
+
+
+def test_no_probe_is_sent_before_the_dns_grace_period(tmp_path, monkeypatch):
+    """The first lookup must not happen while the hostname still has no record.
+
+    `trycloudflare.com` has no wildcard, so probing the moment cloudflared
+    prints the name teaches the resolver an NXDOMAIN it then serves from cache
+    for the rest of the startup window — measured: the name never resolves at
+    all, instead of resolving in ~17s.
+    """
+    # Arrange
+    monkeypatch.setattr(tunnel, "_URL_DISCOVERY_TIMEOUT_S", 3.0)
+    monkeypatch.setattr(tunnel, "_REGISTRATION_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(tunnel, "_REACHABLE_GRACE_S", 1.0)
+    monkeypatch.setattr(tunnel, "_REACHABLE_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(tunnel, "_PROBE_INTERVAL_S", 0.05)
+
+    started = time.monotonic()
+    probed_at: list[float] = []
+
+    def probe(url):
+        probed_at.append(time.monotonic() - started)
+        return True
+
+    manager = build_manager(tmp_path, monkeypatch, FakeProcess(QUICK_TUNNEL_LOG), reachable=probe)
+
+    # Act
+    manager.start(47811)
+    settle(manager)
+
+    # Assert
+    assert probed_at, "the tunnel was never probed"
+    assert probed_at[0] >= 1.0, f"first probe fired after only {probed_at[0]:.2f}s"
+    manager.stop()
+
+
+def test_probe_interval_backs_off_between_attempts(tmp_path, monkeypatch):
+    # Arrange: re-asking a resolver that is already answering NXDOMAIN just
+    # refreshes the negative entry, so the gap has to widen.
+    monkeypatch.setattr(tunnel, "_URL_DISCOVERY_TIMEOUT_S", 3.0)
+    monkeypatch.setattr(tunnel, "_REGISTRATION_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(tunnel, "_REACHABLE_GRACE_S", 0.05)
+    monkeypatch.setattr(tunnel, "_REACHABLE_TIMEOUT_S", 3.0)
+    monkeypatch.setattr(tunnel, "_PROBE_INTERVAL_S", 0.2)
+    monkeypatch.setattr(tunnel, "_PROBE_INTERVAL_MAX_S", 2.0)
+
+    started = time.monotonic()
+    probed_at: list[float] = []
+    manager = build_manager(
+        tmp_path,
+        monkeypatch,
+        FakeProcess(QUICK_TUNNEL_LOG),
+        reachable=lambda url: (probed_at.append(time.monotonic() - started), False)[1],
+    )
+
+    # Act
+    manager.start(47811)
+    settle(manager)
+
+    # Assert
+    assert len(probed_at) >= 3
+    gaps = [b - a for a, b in zip(probed_at, probed_at[1:])]
+    assert gaps[-1] > gaps[0], f"probe interval did not widen: {gaps}"
 
 
 def test_missing_tunnel_address_is_reported_as_an_error(tmp_path, monkeypatch, fast_tunnel):
