@@ -180,12 +180,13 @@ def test_helper_status_reports_a_missing_binary(tmp_path, monkeypatch):
 
 def test_downloading_the_helper_reports_ready_when_it_lands(tmp_path, monkeypatch):
     # Arrange
+    installed = tmp_path / "tools" / "cloudflared"
     manager = build_manager(
         tmp_path,
         monkeypatch,
         FakeProcess([]),
         helper=None,
-        installer=lambda progress: Path("/tmp/cloudflared"),
+        installer=lambda progress: installed,
     )
 
     # Act
@@ -198,7 +199,7 @@ def test_downloading_the_helper_reports_ready_when_it_lands(tmp_path, monkeypatc
     helper = manager.helper_status()
     assert helper["phase"] == "ready"
     assert helper["ready"] is True
-    assert helper["path"] == "/tmp/cloudflared"
+    assert helper["path"] == str(installed)
 
 
 def test_a_failed_helper_download_is_reported_rather_than_raised(tmp_path, monkeypatch):
