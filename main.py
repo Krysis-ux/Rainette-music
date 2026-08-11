@@ -30,7 +30,6 @@ import urllib.request
 import urllib.error
 import webbrowser
 import ctypes
-from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -39,8 +38,29 @@ import qrcode
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+import audio_outputs
 import server
 import version
+
+# Which desktop integration applies. Everything platform-specific in this file
+# branches on exactly these two, so a third platform has one obvious seam to
+# fill rather than a scattering of os.name checks.
+IS_WINDOWS = os.name == "nt"
+IS_MACOS = sys.platform == "darwin"
+
+# ``ctypes.wintypes`` is only meaningful on Windows, and ``ctypes.windll`` does
+# not exist elsewhere at all. Import it conditionally so the module stays
+# importable everywhere; the Authenticode helpers that use it already refuse to
+# run off Windows before they touch either name.
+if IS_WINDOWS:
+    from ctypes import wintypes
+else:  # pragma: no cover - exercised by the macOS/Linux import path
+    wintypes = None
+
+if IS_MACOS:
+    import macos_support
+else:
+    macos_support = None
 
 WINDOW_TITLE = "Rainette Music"
 PLAYER_WINDOW_TITLE = "Rainette Music Player"
@@ -71,14 +91,41 @@ PYWEBVIEW_BROWSER_ARGS = "--disable-features=ElasticOverscroll"
 # but positioned far outside any real monitor avoids the throttling entirely
 # while remaining fully invisible to the user. See show_player()/_park_player().
 PLAYER_PARK_POS = (-32000, -32000)
+# macOS refuses that coordinate. Cocoa reports no containing screen for a window
+# placed entirely outside every display, and pywebview's windowDidMove_ handler
+# dereferences window.screen() unconditionally, so creating the player there
+# raises before it is ever shown -- which dropped the whole app into browser
+# fallback and left it silent. None of the parking is needed here either:
+# WKWebView does not throttle media for a hidden page (macos_support explains
+# the measurements), so the player is simply created hidden and shown on demand.
+PLAYER_MACOS_INITIAL_POS = (120, 120)
 
-APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path(__file__).resolve().parent) / "Rainette Music"
+# One writable per-user location, shared with the server. Deriving it here
+# instead of re-deriving from LOCALAPPDATA matters off Windows: that variable is
+# unset, so the old expression put this log beside the source tree -- or inside
+# a read-only .app bundle -- while server.py used the real platform directory.
+APP_DATA_DIR = server.APP_DATA_DIR
 LOG_PATH = APP_DATA_DIR / "rainette-music.log"
 # PyInstaller exposes bundled data under _MEIPASS.  Source runs continue to use
 # the repository root, while a self-contained --onedir build uses its internal
 # resource directory instead of relying on Python being installed on PATH.
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 ICON_PATH = RESOURCE_DIR / "web" / "assets" / "rainette-icon.ico"
+# AppKit loads a window/app icon through NSImage, which reads .icns and .png but
+# not Windows .ico. Prefer a real .icns when the build ships one, then the PNG
+# that already exists for the web UI, so a macOS run gets Rainette's icon in the
+# Dock instead of the bare Python rocket.
+MACOS_ICON_CANDIDATES = (
+    RESOURCE_DIR / "web" / "assets" / "rainette-icon.icns",
+    RESOURCE_DIR / "web" / "assets" / "rainette-icon-256.png",
+)
+
+
+def _window_icon_path() -> Path | None:
+    """The icon file the running platform's toolkit can actually display."""
+    if IS_MACOS:
+        return next((path for path in MACOS_ICON_CANDIDATES if path.is_file()), None)
+    return ICON_PATH if ICON_PATH.is_file() else None
 GITHUB_REPO = "Krysis-ux/Rainette-music"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=20"
 GITHUB_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
@@ -97,6 +144,10 @@ _CERT_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SOURCE_RUN_UPDATE_MSG = (
     "Updates apply to the installed Rainette Music app, not a source run. "
     "Install the latest release from the Rainette repository instead."
+)
+UNSUPPORTED_PLATFORM_UPDATE_MSG = (
+    "Rainette's built-in updater installs the signed Windows release, so it "
+    "cannot update this build. Reinstall from the Rainette repository instead."
 )
 UNCONFIGURED_KEY_UPDATE_MSG = (
     "This build has no pinned release signing key, so Rainette cannot verify an "
@@ -839,6 +890,14 @@ class WindowApi:
             log(f"pwa config update failed: {exc}")
             return {"ok": False, "msg": str(exc)}
 
+    def open_sound_settings(self):
+        """Hand the user the OS control that can actually move system audio.
+
+        Deliberately a desktop-only bridge call rather than a companion command:
+        a paired phone has no business opening panels on someone's computer.
+        """
+        return {"ok": audio_outputs.open_sound_settings()}
+
     def companion_management_state(self):
         return server.companion_management_state()
 
@@ -892,6 +951,12 @@ class WindowApi:
         """
         if not getattr(sys, "frozen", False):
             return {"status": "unsupported", "msg": SOURCE_RUN_UPDATE_MSG}
+        # The only artifact Rainette knows how to install is the signed Windows
+        # installer, driven with Inno Setup's silent switches and verified with
+        # Authenticode. Refuse here with an explanation rather than downloading
+        # an .exe no other platform can run.
+        if not IS_WINDOWS:
+            return {"status": "unsupported", "msg": UNSUPPORTED_PLATFORM_UPDATE_MSG}
         if not self._update_apply_lock.acquire(blocking=False):
             return {"status": "busy", "msg": "An update is already being installed."}
         worker_started = False
@@ -995,6 +1060,13 @@ class WindowApi:
     def show_player(self):
         if not (self._player_window and self._player_can_show):
             return
+        if IS_MACOS:
+            # Nothing to un-park positionally: the macOS player is faded rather
+            # than moved off-screen, so it reappears exactly where it was left.
+            self._player_window.move(*self._player_onscreen_pos)
+            macos_support.unpark_player(self._player_window, log)
+            self._shape_player()
+            return
         self._player_window.move(*self._player_onscreen_pos)
         self._player_window.show()
         self._player_window.restore()
@@ -1045,6 +1117,12 @@ class WindowApi:
                 self._player_onscreen_pos = (x, y)
         except Exception:
             pass
+        if IS_MACOS:
+            # Fades to transparent but stays ordered in. Hiding it would suspend
+            # requestAnimationFrame, and Rainette's pause is a rAF-driven volume
+            # ramp -- a hidden player plays on with a dead pause button.
+            macos_support.park_player(self._player_window, log)
+            return
         self._player_window.move(*PLAYER_PARK_POS)
 
     def player_toggle_pin(self):
@@ -1061,6 +1139,9 @@ class WindowApi:
 
     def _apply_player_on_top(self, enabled: bool) -> None:
         """Set WinForms TopMost on its UI thread; fall back for other backends."""
+        if IS_MACOS and self._player_window:
+            macos_support.apply_player_on_top(self._player_window, enabled, log)
+            return
         if os.name == "nt" and self._player_window and hasattr(self._player_window, "uid"):
             try:
                 from webview.platforms import winforms  # type: ignore
@@ -1093,9 +1174,16 @@ class WindowApi:
             self._player_window.destroy()
 
     def _hide_player_from_taskbar(self) -> None:
-        """The player window is now created "shown" rather than hidden=True (see
+        """Keep the player out of the OS window switcher.
+
+        On Windows the player is created "shown" rather than hidden=True (see
         PLAYER_PARK_POS), so without this it would get its own taskbar button and
-        Alt+Tab entry even while parked off-screen and invisible to the user."""
+        Alt+Tab entry even while parked off-screen and invisible to the user.
+        macOS has the same need for its Window menu and window cycling.
+        """
+        if IS_MACOS and self._player_window:
+            macos_support.hide_player_from_window_list(self._player_window, log)
+            return
         if os.name != "nt" or not self._player_window:
             return
         try:
@@ -1118,6 +1206,9 @@ class WindowApi:
             log(f"player taskbar suppression failed: {exc}")
 
     def _shape_player(self):
+        if IS_MACOS and self._player_window:
+            macos_support.shape_player(self._player_window, self._player_collapsed, log)
+            return
         if os.name != "nt" or not self._player_window:
             return
         try:
@@ -1206,6 +1297,44 @@ def _patch_webview2_autoplay() -> bool:
     return True
 
 
+def _enable_gestureless_playback() -> bool:
+    """Make sure the player window may start audio without a user gesture.
+
+    The player owns the only <audio> element and is driven over the socket, so
+    its play() never carries user activation. Each engine gates that
+    differently: WebView2 needs AUTOPLAY_FLAG injected (see
+    :func:`_patch_webview2_autoplay`), while WKWebView already permits it and
+    only needs verifying. Returns True when gesture-less playback is expected to
+    work.
+    """
+    if IS_MACOS:
+        return macos_support.autoplay_needs_no_patch(log)
+    return _patch_webview2_autoplay()
+
+
+def _player_placement_kwargs() -> dict:
+    """Where and how the player window is first created.
+
+    Windows parks it far off-screen while leaving it "shown", because a hidden
+    or minimized WebView2 window reports document.hidden and Chromium then
+    throttles media loading indefinitely (see PLAYER_PARK_POS).
+
+    macOS must not use that coordinate at all: Cocoa finds no screen for it and
+    pywebview crashes creating the window. It needs the same *effect* though --
+    an ordered-out window there suspends requestAnimationFrame and throttles
+    timers to ~1Hz, which breaks pause (see macos_support.park_player). So the
+    player starts hidden purely to avoid a flash on launch, at an ordinary
+    on-screen position, and is immediately faded to transparent-but-shown.
+    """
+    if IS_MACOS:
+        return {
+            "x": PLAYER_MACOS_INITIAL_POS[0],
+            "y": PLAYER_MACOS_INITIAL_POS[1],
+            "hidden": True,
+        }
+    return {"x": PLAYER_PARK_POS[0], "y": PLAYER_PARK_POS[1]}
+
+
 def _try_pywebview(url: str) -> bool:
     try:
         import webview  # type: ignore
@@ -1219,7 +1348,7 @@ def _try_pywebview(url: str) -> bool:
         # bundled pywebview does not, so the patch below is what actually delivers
         # the flag today.
         os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", AUTOPLAY_FLAG)
-        _patch_webview2_autoplay()
+        _enable_gestureless_playback()
         api = WindowApi()
         token = urllib.parse.quote(server.APP_TOKEN, safe="")
         main_window = webview.create_window(
@@ -1229,12 +1358,9 @@ def _try_pywebview(url: str) -> bool:
         player_window = webview.create_window(
             PLAYER_WINDOW_TITLE, f"{url}miniplayer.html?token={token}", js_api=api,
             width=PLAYER_SIZE[0], height=PLAYER_SIZE[1], min_size=PLAYER_SIZE,
-            # Created "shown" (not hidden=True) but positioned off-screen: see
-            # PLAYER_PARK_POS for why a truly hidden window silently starves the
-            # audio engine of any autoplay-flag benefit.
-            x=PLAYER_PARK_POS[0], y=PLAYER_PARK_POS[1],
             frameless=True, easy_drag=False, resizable=False,
             shadow=False, background_color="#FFFFFF",
+            **_player_placement_kwargs(),
         )
         api.bind_main(main_window)
         api.bind_player(player_window)
@@ -1264,13 +1390,19 @@ def _try_pywebview(url: str) -> bool:
         def on_started():
             api.player_hide()
             api._shape_player()
+            if IS_MACOS:
+                # A python process launched from a terminal starts as a
+                # background app, which would open the main window behind
+                # whatever the user was already looking at.
+                macos_support.activate_app(log)
 
         # icon= is honored by the winforms (Windows) backend too, despite the
         # docstring saying GTK/QT only - it sets each form's .Icon from
         # _state['icon'] (see webview/platforms/winforms.py).
         start_kwargs = {}
-        if ICON_PATH.is_file():
-            start_kwargs["icon"] = str(ICON_PATH)
+        icon = _window_icon_path()
+        if icon is not None:
+            start_kwargs["icon"] = str(icon)
         webview.start(on_started, **start_kwargs)   # blocks until the window is closed
         return True
     except Exception:
@@ -1278,10 +1410,24 @@ def _try_pywebview(url: str) -> bool:
         return False
 
 
+#: Chromium browsers that support --app, in preference order. Any of them gives
+#: the fallback a real app window rather than a tab in the user's main browser.
+_MACOS_CHROMIUM_APPS = (
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+)
+
+
 def _find_edge() -> str | None:
-    found = shutil.which("msedge")
-    if found:
-        return found
+    """A Chromium browser that can host the UI in --app mode, if one exists."""
+    for command in ("msedge", "google-chrome", "chromium"):
+        found = shutil.which(command)
+        if found:
+            return found
+    if IS_MACOS:
+        return next((path for path in _MACOS_CHROMIUM_APPS if os.path.isfile(path)), None)
     for path in (
         os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
         os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
@@ -1296,7 +1442,9 @@ def _try_edge_app(url: str) -> bool:
     edge = _find_edge()
     if not edge:
         return False
-    profile = os.path.join(os.environ.get("LocalAppData", os.getcwd()), "RainetteMusic", "edge-profile")
+    # Keep the throwaway profile beside the app's own data instead of guessing at
+    # a Windows-shaped environment variable that is unset everywhere else.
+    profile = str(APP_DATA_DIR / "edge-profile")
     try:
         subprocess.Popen([edge, f"--app={url}", f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check"])
         return True

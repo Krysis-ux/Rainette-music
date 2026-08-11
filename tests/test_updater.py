@@ -101,13 +101,29 @@ def _frozen(flag: bool = True):
     return mock.patch.object(main.sys, "frozen", flag, create=True)
 
 
+def _windows_host():
+    """Pin the updater's Windows branch.
+
+    The only artifact Rainette can install is the signed Windows installer, so
+    ``apply_update`` refuses outright anywhere else. These cases describe that
+    Windows behaviour and must keep asserting it wherever the suite runs --
+    including on macOS, where the port would otherwise silently stop covering
+    the install path.
+
+    Deliberately narrow: it flips only the install gate, leaving ``os.name``
+    alone so the Authenticode helpers keep refusing to run off Windows exactly
+    as they do in production.
+    """
+    return mock.patch.object(main, "IS_WINDOWS", True)
+
+
 class _SignedBuildTestCase(unittest.TestCase):
     """Base for tests that need the updater to behave as it does in a release
     build: frozen, with the Ed25519 release key pinned and (by default) no
     Authenticode certificate."""
 
     def setUp(self):
-        for patcher in (_pinned_public_key(), _frozen(True)):
+        for patcher in (_pinned_public_key(), _frozen(True), _windows_host()):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -434,7 +450,7 @@ class SourceRunAndKeylessUpdateTests(unittest.TestCase):
                                side_effect=AssertionError("must not ask GitHub")):
             checked = api.check_for_updates()
         self.assertEqual(checked["status"], "unavailable")
-        with _frozen(True), \
+        with _frozen(True), _windows_host(), \
              mock.patch.object(main.urllib.request, "urlopen",
                                side_effect=AssertionError("an unoffered update must not reach GitHub")):
             self.assertEqual(api.apply_update("")["status"], "no_update")
