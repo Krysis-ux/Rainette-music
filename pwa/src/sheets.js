@@ -1,15 +1,8 @@
-/* Sheets: the phone client's one modal surface.
+/* The one modal surface: now-playing, queue, action menus.
  *
- * Three things use it — the now-playing card, the queue, and action menus — and
- * they share the behaviour people already expect of a sheet on a phone: it
- * rises from the bottom, it can be dragged back down, and letting go part-way
- * either settles it back or throws it closed depending on how hard it was
- * moving. That last part matters more than the distance travelled: a short fast
- * flick is a dismissal, a long slow drag that stopped is a change of mind.
- *
- * Sheets stack. Opening the queue from the now-playing card must not destroy
- * the card underneath, so each sheet keeps its own element and the topmost one
- * owns Escape and the back gesture.
+ * Drag to dismiss, judged on velocity rather than distance — a fast flick is a
+ * dismissal, a long drag that stopped is a change of mind. Sheets stack, and the
+ * topmost owns Escape and the back gesture.
  */
 
 import { el, icon, motionOff, tap } from './dom.js';

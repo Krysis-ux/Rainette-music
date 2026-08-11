@@ -1,15 +1,10 @@
 /**
- * Rainette Music mini-player — the persistent liquid-glass "now playing" bubble.
+ * The in-page "now playing" bubble, used in the browser fallback.
  *
- * Boots once at load (independent of the router, so it survives page nav) and
- * owns the single global <audio> element + playback queue. Exposes a small
- * window.RainetteMusic API the Music page drives:
- *   RainetteMusic.playTrack(track), .playQueue(tracks, i), .toggle(), .next(), .prev()
- *
- * The bubble stays hidden until a track is actually loaded (no empty "playing
- * nothing" chrome). Drag logic is a lightweight local port of the pointer-
- * capture pattern in rainette_router_shell.js — the player only needs drag,
- * not resize, and can't reach index.html's inline makeDraggablePanel from a module.
+ * Boots once at load so it survives page nav, and owns the global <audio> and
+ * queue behind window.RainetteMusic (playTrack, playQueue, toggle, next, prev).
+ * Stays hidden until a track loads. Drag is a local port of the pointer-capture
+ * pattern, since a module cannot reach index.html's makeDraggablePanel.
  */
 
 import { sendHelper, helperRequest, app } from './music_shell.js';

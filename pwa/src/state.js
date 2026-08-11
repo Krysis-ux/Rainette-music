@@ -1,13 +1,8 @@
-/* The phone client's shared state, and the small pure helpers that read it.
+/* Shared state, and the pure helpers that read it.
  *
- * Deliberately a plain mutable object rather than a store: this app has exactly
- * one instance of everything, no server rendering, and no time travel to
- * support. What it does need is a single place to answer "what is playing?" from
- * three different surfaces (the mini bar, the now-playing sheet, the queue),
- * which is what this module is.
- *
- * Nothing here imports anything. Every other module may depend on it, so it has
- * to stay a leaf or the graph turns into a cycle.
+ * A plain object rather than a store: one instance of everything, no SSR. Its
+ * job is one place to answer "what is playing?" for the mini bar, the sheet and
+ * the queue. Imports nothing — it must stay a leaf or the graph cycles.
  */
 
 export const STORAGE = {

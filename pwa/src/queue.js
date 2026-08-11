@@ -1,17 +1,8 @@
-/* The queue sheet.
+/* The queue sheet: what is playing, what is next, and reordering.
  *
- * Mirrors the desktop's queue page: what is playing, what is next, and direct
- * editing of the order. Two things it does that the desktop does not have to:
- *
- * - Reordering is a long-press-and-drag on a grip, not a mouse drag anywhere on
- *   the row, because on a phone "drag from anywhere" and "scroll" are the same
- *   gesture.
- * - Removing is a swipe, with the row collapsing rather than blinking out, so
- *   the list visibly closes over the gap.
- *
- * The list re-renders on every playback change while open. FLIP keeps that from
- * teleporting rows: a track that moved is animated from where it was, so the
- * queue reads as one list being rearranged rather than a series of new lists.
+ * Reorder is long-press-drag on a grip, because "drag from anywhere" and
+ * "scroll" are the same gesture on a phone. Remove is a swipe. FLIP animates
+ * moved rows so the list reads as rearranged rather than replaced.
  */
 
 import { el, icon, iconButton, tap, toast, flip, collapseAway } from './dom.js';

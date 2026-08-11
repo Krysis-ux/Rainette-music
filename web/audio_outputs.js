@@ -1,23 +1,10 @@
 /**
- * Where Rainette's audio is actually coming out of.
+ * Where Rainette's audio actually comes out.
  *
- * Two half-answers have to be joined to get a whole one, and neither is
- * sufficient alone:
- *
- *   The operating system (via the desktop bridge) knows the *names* — including
- *   the one the user gave their Bluetooth speaker — and which device is the
- *   system default. It cannot route this app's audio.
- *
- *   The browser (via enumerateDevices) knows the *sink ids* that setSinkId
- *   accepts, which is the only way to send one page's audio somewhere specific.
- *   But it withholds the labels until the page holds a media permission, so on
- *   its own it can offer nothing but "default" and a list of opaque hashes.
- *
- * So this module merges them: OS names for the list the user reads, browser ids
- * for the routing that list performs. When the two cannot be matched — no
- * labels, or an engine without setSinkId, which is every WKWebView — selecting a
- * device falls back to opening the system sound panel. That is a real answer
- * rather than a control that silently does nothing.
+ * The OS knows device names but cannot route this app; the browser knows the
+ * sink ids setSinkId needs but hides labels without a media permission. This
+ * merges them: OS names to read, browser ids to route. With neither available
+ * (any WKWebView), selecting a device opens the system sound panel instead.
  */
 
 /** setSinkId exists on Chromium/WebView2 and is absent on WKWebView. */

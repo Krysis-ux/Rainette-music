@@ -357,28 +357,19 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
           body: |
-            ## Downloads
+            **Windows** — get `RainetteMusicSetup.exe` and run it.
 
-            - **Windows:** download **`RainetteMusicSetup.exe`** and run it — that's the installer.
-            - **macOS:** download **`RainetteMusic-macOS.dmg`**, open it, and drag
-              **Rainette Music** onto the **Applications** shortcut inside.
-            - **Phone (any OS):** open **[Rainette Music PWA](https://music-pwa-web.vercel.app)**
-              and pair it with this desktop app — nothing to install from here.
-
-            ### macOS: first launch
-
-            This build is signed but not yet notarized by Apple, so macOS quarantines
-            it after download and reports it as damaged. It is not. Clear the
-            quarantine flag once, then open it normally:
+            **macOS** — get `RainetteMusic-macOS.dmg` and drag Rainette Music into Applications.
+            It's not yet notarized, so macOS will call it damaged on first launch. It isn't.
+            Run this once:
 
             ```
             xattr -dr com.apple.quarantine "/Applications/Rainette Music.app"
             ```
 
-            macOS also has no automatic updates for Rainette — the built-in updater
-            installs the signed Windows installer only. Download a newer release from
-            this page when one appears.
+            There are no automatic updates on macOS — grab new versions from this page.
 
-            The `latest.json` files are used by Rainette's automatic updater to verify
-            this release is authentic — you don't need to download them.
+            **Phone** — open the [PWA](https://music-pwa-web.vercel.app) and pair it. Nothing to install.
+
+            `latest.json` is for the updater. You don't need it.
           files: release-assets/*

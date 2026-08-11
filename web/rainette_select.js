@@ -1,14 +1,9 @@
 /**
- * Custom dropdown wired to the .rh-selectx CSS (rainette_pages.css) — that
- * CSS was fully built and styled but never connected to any JS, ported from
- * an old template. Native <select> popups can't be restyled to match the
- * app's theme (no way to reach the OS-drawn option list), which is why the
- * default-tab/sort/smart-playlist dropdowns looked out of place.
+ * Custom dropdown for the .rh-selectx CSS. A native <select> popup is drawn by
+ * the OS and cannot be themed, which is why those dropdowns looked out of place.
  *
- * createSelect() returns a root node with a live `.value` property and a
- * dispatched 'change' Event, so existing call sites built around a native
- * <select> (`el.value`, `el.addEventListener('change', ...)`) swap in with
- * minimal changes.
+ * createSelect() returns a node with a live `.value` and a dispatched 'change',
+ * so call sites written against a native <select> swap in unchanged.
  */
 
 let _closeOpenInstance = null;

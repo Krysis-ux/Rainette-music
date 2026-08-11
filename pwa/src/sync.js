@@ -1,23 +1,10 @@
-/* Staying in step with the computer.
+/* One long-poll loop, and what it does with each event.
  *
- * One long-poll loop, and what it does with each kind of event. Three of them
- * matter enough to explain:
- *
- * **music_output_transfer** — the computer handing its session to this phone
- * ("Play on → my phone"). The desktop deliberately does *not* pause itself
- * until this phone confirms the track actually loaded, so the acknowledgement
- * has to come after the load and has to be honest about failure. A phone that
- * never answered is exactly why that button used to sit on "Connecting" until
- * it timed out.
- *
- * **music_now_playing / music_progress** — the computer's own playback. These
- * only arrive when this phone has asked to be linked (`follow=1` on the poll);
- * an unlinked phone keeps its independent session and never sees them, which is
- * what lets two people use one computer's library at once without fighting.
- *
- * **reset_required** — the desktop restarted and its in-memory log is gone. The
- * revision is re-based and the catalog re-fetched rather than the phone sitting
- * on a revision that will never come back.
+ * `music_output_transfer` is only acknowledged after the track actually loads,
+ * because the desktop waits on that answer before pausing itself.
+ * `music_now_playing` / `music_progress` arrive only for a linked phone, so two
+ * people can share one library without fighting. `reset_required` means the
+ * desktop restarted and the revision has to be re-based.
  */
 
 import { state } from './state.js';

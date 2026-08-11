@@ -1,14 +1,9 @@
 /* Rainette Music — phone client.
  *
- * This app holds no music. It is a remote for one specific computer: the one
- * that approved this phone. Pairing therefore has a real waiting state (the
- * person at that computer has to say yes), and connection state is the most
- * important thing on screen at any moment.
- *
- * This file owns the parts that must not be guessed at: the transport and its
- * diagnosis, pairing, and connection lifecycle. Everything visual lives in
- * ./src — see src/player.js for playback and src/sync.js for how this phone and
- * the computer stay in step.
+ * Holds no music: it is a remote for the one computer that approved this phone,
+ * so pairing has a real waiting state and connection status always matters.
+ * This file owns the transport, pairing and connection lifecycle; everything
+ * visual lives in ./src.
  */
 
 import { state, STORAGE, artworkUrl, artistName, formatTime, readRecent, rememberRecent } from './src/state.js';

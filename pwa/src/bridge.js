@@ -1,12 +1,7 @@
 /* The one way this app talks to the computer.
  *
- * `app.js` owns the transport — the endpoint, the credential, and the careful
- * diagnosis of what a bare "Failed to fetch" actually meant — and installs it
- * here at boot. Everything else imports `command` from this module.
- *
- * The indirection exists to keep the import graph acyclic: the UI modules need
- * to send commands, `app.js` needs to render UI, and without a leaf like this
- * one in between, those two facts form a cycle.
+ * `app.js` owns the transport and installs it here at boot. The indirection
+ * keeps the import graph acyclic: UI modules send commands, app.js renders UI.
  */
 
 let sendCommand = async () => { throw new Error('Rainette is not connected to a computer.'); };

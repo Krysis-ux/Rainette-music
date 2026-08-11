@@ -1,14 +1,8 @@
-/* DOM, icon and motion primitives for the phone client.
+/* DOM, icon and motion primitives.
  *
- * The motion here is not decoration. On a phone the screen is small enough that
- * a state change with no transition reads as a different screen rather than the
- * same screen changed, so movement is what carries continuity: a sheet rises
- * from the bar it belongs to, a reordered row travels to its new position, a
- * removed row collapses instead of vanishing.
- *
- * All of it is opt-out. `prefers-reduced-motion` is respected at the source
- * rather than only by the stylesheet, because several of these helpers animate
- * from JavaScript where a CSS media query would not reach.
+ * Motion carries continuity here: on a small screen an untransitioned change
+ * reads as a different screen. `prefers-reduced-motion` is honoured in JS as
+ * well as CSS, since several of these animate where a media query cannot reach.
  */
 
 export const $ = selector => document.querySelector(selector);

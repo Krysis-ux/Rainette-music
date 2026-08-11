@@ -1,16 +1,7 @@
-/* Track rows, and the swipe gestures that act on them.
+/* Track rows. Tap plays; swipe right queues next, swipe left queues last.
  *
- * Tapping a row plays it. Everything else a row can do is reached by swiping,
- * because a phone row has no room for buttons and a long-press menu hides the
- * two actions people actually want:
- *
- *     swipe right →  Play next     (put it after the current track)
- *     swipe left  →  Add to queue  (put it at the end)
- *
- * The gesture is axis-locked on first movement. Without that, a list is
- * unscrollable: every slightly-diagonal flick down the page catches a row and
- * drags it sideways. The lock is decided once per gesture and never revisited,
- * which is what makes a fast scroll feel like a scroll.
+ * The gesture axis-locks on first movement and never revisits it, or every
+ * slightly-diagonal scroll catches a row and drags it sideways.
  */
 
 import { el, icon, tap, toast, stagger, collapseAway } from './dom.js';

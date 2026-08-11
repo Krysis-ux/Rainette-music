@@ -1,19 +1,9 @@
-/* The now-playing card.
+/* The now-playing card: what the mini bar expands into.
  *
- * The phone's equivalent of the desktop's Now Playing view, and the thing the
- * mini bar expands into. Same contents in the same order — artwork, title,
- * artist, scrubber, transport, volume, actions — so moving between the two
- * devices does not mean learning a second layout.
- *
- * Two details are phone-specific rather than ports:
- *
- * - The artwork tints the sheet behind it. Sampling one average colour from the
- *   cover and using it as a low-opacity wash makes each track's card feel like
- *   that track's card, which on a screen this size does more for a sense of
- *   place than any amount of chrome.
- * - The scrubber is a real range input, not a thin bar. A 2px target is fine
- *   for a cursor and useless for a thumb, so the visible bar is thin and the
- *   touch target around it is not.
+ * Same contents in the same order as the desktop's Now Playing view, so the two
+ * devices are not two layouts. Phone-specific: the artwork tints the sheet, and
+ * the scrubber is a real range input, because 2px is a fine cursor target and a
+ * useless thumb one.
  */
 
 import { $, el, icon, iconButton, tap, toast, motionOff } from './dom.js';

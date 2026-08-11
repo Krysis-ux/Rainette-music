@@ -1,16 +1,13 @@
 /**
  * Rainette Music — detached player window.
  *
- * Runs in its own borderless native pywebview window (movable across monitors).
- * Owns the single <audio> element, the playback queue, transport, and the Web
- * Audio graph (volume gain + 5-band equalizer). The browser window sends it
- * `music_remote_play` / `music_remote_control` over the socket; it broadcasts
- * `music_now_playing_set` back so the browser reflects the current track.
+ * Owns the <audio> element, the queue, transport, and the Web Audio graph.
+ * Driven over the socket by `music_remote_play` / `music_remote_control`, and
+ * broadcasts `music_now_playing_set` back.
  *
- * EQ + cross-origin audio: Web Audio's MediaElementSource outputs silence for
- * cross-origin media, so plain playback uses the direct googlevideo URL (robust,
- * no bytes through Python). The first time the EQ is enabled we build the audio
- * graph and switch to the same-origin `/audio` proxy for the rest of the session.
+ * MediaElementSource outputs silence for cross-origin media, so playback uses
+ * the direct URL until the EQ is first enabled, then the same-origin /audio
+ * proxy for the rest of the session.
  */
 
 import { sendHelper, helperRequest } from './music_shell.js';

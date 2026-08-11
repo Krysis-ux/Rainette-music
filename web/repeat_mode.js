@@ -1,17 +1,11 @@
 /**
- * Shared three-state repeat model: off -> loop the queue -> repeat this song.
+ * Shared three-state repeat: off -> loop the queue -> repeat this song.
  *
- * There are two playback engines and each owns its own queue: miniplayer.js in
- * the detached player window (the packaged app), and rainette_music_player.js's
- * in-page bubble (the browser / Edge fallback, which launches without ?remote=1).
- * They can't share state, but the modes, cycle order, labels, and the migration
- * off the old boolean key have to stay identical or the two surfaces disagree
- * about what the same button means.
+ * The two playback engines own separate queues but must agree on modes, cycle
+ * order and labels, or the same button means different things on each surface.
  *
- * Wire format: broadcasts carry `repeat` (this string) plus a derived boolean
- * `loop` for consumers predating three-state repeat -- including the Python relay,
- * which coerces that field with bool(). Note bool("off") is True, so `repeat` must
- * never be sent through the old boolean field.
+ * Broadcasts carry `repeat` plus a derived boolean `loop` for older consumers.
+ * bool("off") is True, so `repeat` must never go through that boolean field.
  */
 
 export const REPEAT_MODES = ['off', 'all', 'one'];

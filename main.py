@@ -79,17 +79,10 @@ PLAYER_EXPANDED_HEIGHT = 184
 AUTOPLAY_FLAG = "--autoplay-policy=no-user-gesture-required"
 # The exact arguments pywebview 6.2.1 hardcodes onto every WebView2 it creates.
 PYWEBVIEW_BROWSER_ARGS = "--disable-features=ElasticOverscroll"
-# Position used to "park" the player window instead of hiding/minimizing it.
-# Confirmed empirically: a .hide()'d or .minimize()'d window reports
-# document.hidden === true via the Page Visibility API, and WebView2/Chromium
-# throttles media RESOURCE LOADING (not just the play() gesture check) for such
-# a document indefinitely - audio.play() gets called, but its promise never
-# even settles, because the underlying media never finishes loading. This is a
-# separate mechanism from the autoplay-gesture policy AUTOPLAY_FLAG addresses,
-# and is the actual reason playback previously never started until the mini
-# player was opened. Keeping the window "shown" (document.hidden stays false)
-# but positioned far outside any real monitor avoids the throttling entirely
-# while remaining fully invisible to the user. See show_player()/_park_player().
+# Park the player window off-screen rather than hiding it. A hidden or
+# minimized window reports document.hidden, and WebView2 then throttles media
+# *loading* indefinitely -- play() is called but its promise never settles.
+# Measured, and separate from the autoplay-gesture policy.
 PLAYER_PARK_POS = (-32000, -32000)
 # macOS refuses that coordinate. Cocoa reports no containing screen for a window
 # placed entirely outside every display, and pywebview's windowDidMove_ handler

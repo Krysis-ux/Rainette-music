@@ -1,24 +1,8 @@
-/* The phone's playback engine.
+/* The phone's playback engine: the one <audio> element, the queue, the transport.
  *
- * Owns the single <audio> element, the queue, and the transport. Everything on
- * screen is a view of this module; nothing else touches the element.
- *
- * Two things make it more than a wrapper around <audio>:
- *
- * 1. **It reports upward.** Every state change is published to the computer as
- *    `music_now_playing_set` / `music_progress`, which is what lets the desktop
- *    show what the phone is playing. Without it the two are separate players
- *    that happen to share a library.
- *
- * 2. **It can be a remote instead of a player.** In linked mode the phone is
- *    watching the computer's session, so the transport has to drive *that*
- *    audio rather than this element. Every control routes through
- *    `commandTransport`, which picks the right target, so no caller has to know
- *    which mode it is in.
- *
- * The computer resolves stream URLs and they expire, so a failed load is a
- * normal event with a defined recovery (re-resolve once, resume at the same
- * position) rather than an error to show the user.
+ * It also reports every state change up to the computer, and in linked mode it
+ * drives the computer's audio instead of this element. Stream URLs expire, so a
+ * failed load re-resolves once and resumes rather than surfacing an error.
  */
 
 import { state, STORAGE, persist, trackKey, artworkUrl, artistName, nextRepeat, rememberRecent, trackDuration } from './state.js';
