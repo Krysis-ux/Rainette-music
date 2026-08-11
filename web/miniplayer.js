@@ -17,11 +17,12 @@ import { sendHelper, helperRequest } from './music_shell.js';
 import { iconMarkup } from './rainette_icons.js';
 import { PlaybackLoadGuard, MediaEventGate, settleWithin } from './playback_load_guard.mjs';
 import { REPEAT_MODES, REPEAT_LABEL, normalizeRepeat, nextRepeat, loopFlagFor, repeatFromMessage } from './repeat_mode.js';
+import { routeElementTo } from './audio_outputs.js';
 
 // ── Persistence keys ─────────────────────────────────────────────────────────
 // `loop` is the superseded boolean key, still read once by loadRepeat() so an
 // existing user's loop-on setting survives the upgrade to three-state repeat.
-const LS = { vol: 'rw.mp.volume', eq: 'rw.mp.eqGains', eqOn: 'rw.mp.eqOn', loop: 'rw.mp.loop', repeat: 'rw.mp.repeat' };
+const LS = { vol: 'rw.mp.volume', eq: 'rw.mp.eqGains', eqOn: 'rw.mp.eqOn', loop: 'rw.mp.loop', repeat: 'rw.mp.repeat', sink: 'rw.mp.sink' };
 const LOCAL_STREAM_TTL_MS = 50 * 60 * 1000;
 const PREFETCH_AHEAD = 3;
 const PLAY_START_TIMEOUT_MS = 12_000;
@@ -64,6 +65,9 @@ const state = {
 	volume: loadVolume(),
 	pendingSeek: null,
 	collapsed: true,
+	// The chosen output sink, remembered so a rebuilt <audio> lands on the same
+	// speaker instead of silently reverting to the system default mid-queue.
+	sinkId: lsGet(LS.sink) || '',
 };
 
 function loadEqGains() {
@@ -1151,6 +1155,28 @@ function initAudio() {
 	audio = new Audio();
 	audio.preload = 'auto';
 	audio.volume = Math.min(1, state.volume);
+	// A remembered speaker has to be re-asserted on a fresh element, or the
+	// window reopens playing through the built-in output with the picker still
+	// claiming otherwise. Failure is silent and harmless: the device may simply
+	// have been unplugged since, and the system default is the right fallback.
+	if (state.sinkId) routeElementTo(audio, state.sinkId).catch(() => {});
+}
+
+/* Point this window's <audio> at one output sink and report back.
+ *
+ * Only this window can do it — it owns the element — and only it can know
+ * whether the engine supports setSinkId at all (Chromium/WebView2 does,
+ * WKWebView does not). The main window turns a false answer into an offer to
+ * open the system sound settings, so an honest failure here is useful. */
+async function applyOutputSink(sinkId, requestId) {
+	const routed = await routeElementTo(audio, sinkId);
+	// A sink survives a track change on the same element, but the window can be
+	// reloaded; persisting it means the speaker choice outlives that.
+	if (routed) {
+		state.sinkId = String(sinkId || '');
+		lsSet(LS.sink, state.sinkId);
+	}
+	sendHelper({ type: 'music_output_sink_result', id: requestId, routed, sink_id: sinkId || '' });
 }
 
 // ── Remote commands from the browser window ──────────────────────────────────
@@ -1185,6 +1211,7 @@ function wireRemote() {
 			else if (a === 'eq_apply_preset') applyPreset(msg.preset);
 			else if (a === 'eq_request_state') _broadcastEq();
 			else if (a === 'set_volume') applyVolume(Number(msg.value));
+			else if (a === 'set_sink') applyOutputSink(msg.sink_id, msg.id);
 			// Repeat is a standing preference, not a transport action, so it sits
 			// above the empty-queue guard: arming it before pressing play used to
 			// be silently dropped, which read as "loop doesn't stick".

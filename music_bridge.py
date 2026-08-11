@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import audio_outputs
 import shared
 
 # yt-dlp normally prefers certifi.  ``no-certifi`` asks its own request layer to
@@ -74,7 +75,19 @@ _STREAM_OPTS = {
     "skip_download": True,
     # Bias toward broadly HTML5-<audio>-compatible containers over a bare
     # bestaudio (which can hand back formats Chrome/Edge won't play).
-    "format": "bestaudio[ext=m4a]/bestaudio/best",
+    #
+    # The middle two rungs matter most on macOS. WebKit -- unlike Chromium --
+    # cannot decode Opus in WebM at all, so a source with no m4a would drop
+    # straight to `bestaudio` and hand the player a stream that fails with a
+    # bare "no supported source" instead of playing. Asking for an AAC codec or
+    # an MP4 container first keeps that case audible; on Windows it changes
+    # nothing, since Chromium plays every one of these.
+    "format": (
+        "bestaudio[ext=m4a]"
+        "/bestaudio[acodec^=mp4a]"
+        "/bestaudio[ext=mp4]"
+        "/bestaudio/best"
+    ),
     "compat_opts": _SYSTEM_TRUST_COMPAT,
 }
 
@@ -895,6 +908,49 @@ def cmd_music_output_transfer_result(msg):
     shared.notify_browsers(payload)
 
 
+def cmd_music_output_sink_result(msg):
+    """Relay the player window's answer to a set_sink request.
+
+    Whether audio could be re-routed is only knowable inside the window that
+    owns the <audio> element, and the window that asked is a different one, so
+    the answer needs its own fan-out message rather than riding on the
+    relayed request (whose echo would arrive first and mean nothing).
+    """
+    shared.notify_browsers({
+        "type": "music_output_sink_result",
+        "id": msg.get("id"),
+        "routed": bool(msg.get("routed")),
+        "sink_id": str(msg.get("sink_id") or ""),
+    })
+
+
+def cmd_music_output_devices(msg):
+    """List the audio outputs this computer can play through.
+
+    Shelling out to the OS takes long enough to stutter a picker's opening
+    animation, so the probe runs on a daemon thread and the answer arrives as a
+    normal id-correlated result. Callers render the system default immediately
+    and fill the rest in when this lands.
+    """
+    req_id = msg.get("id")
+
+    def worker():
+        try:
+            devices = audio_outputs.list_outputs()
+        except Exception as exc:  # pragma: no cover - probe is already defensive
+            shared.notify_browsers({
+                "type": "music_output_devices_result", "id": req_id,
+                "ok": False, "devices": [], "msg": str(exc),
+            })
+            return
+        shared.notify_browsers({
+            "type": "music_output_devices_result", "id": req_id,
+            "ok": True, "devices": devices,
+        })
+
+    _run_bg(worker)
+
+
 def cmd_music_request_state(msg):
     """Relay the player window's 'what's the current queue?' request to the
     browser window (which answers with a fresh music_remote_play). Covers the
@@ -1365,6 +1421,8 @@ DISPATCH = {
     "music_remote_control":         cmd_music_remote_control,
     "music_output_transfer":        cmd_music_output_transfer,
     "music_output_transfer_result": cmd_music_output_transfer_result,
+    "music_output_devices":         cmd_music_output_devices,
+    "music_output_sink_result":     cmd_music_output_sink_result,
     "music_request_state":          cmd_music_request_state,
     "music_open_artist":            cmd_music_open_artist,
     "music_theme_set":              cmd_music_theme_set,

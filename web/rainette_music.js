@@ -15,6 +15,7 @@ import { renderSettings, syncUpdateSettings, defaultLandingTab, shouldAutoOpenQu
 import { renderMobile, unmountMobile } from './rainette_mobile.js';
 import { createRainetteLoader } from './rainette_loading.js';
 import { REPEAT_LABEL, repeatFromMessage, loopFlagFor, normalizeRepeat } from './repeat_mode.js';
+import { browserSinks, mergeOutputs, outputIcon } from './audio_outputs.js';
 
 const LAYOUT_KEY = 'rainette.musicLayout';
 const QUEUE_SUPPORTED = typeof window !== 'undefined' && !!window.RW_REMOTE;
@@ -81,7 +82,10 @@ const pageState = {
 	insights: { days: 7, data: null, loading: false },
 	progress: { current_time: 0, duration: 0, playing: false, source_id: '' },
 	playbackStarted: false,
-	output: { device: 'desktop', transferPending: false, status: '' },
+	// `name` is the human-readable output the picker last selected (a speaker, a
+	// headset, a phone). It is what the docked bar shows, so "Play on" can say
+	// where the music is actually going instead of only that it is going.
+	output: { device: 'desktop', name: '', transferPending: false, status: '' },
 	lyrics: { source_id: '', reqId: '', loading: false, text: '', notFound: false, instrumental: false, error: '', open: false, synced: false, lines: [], activeIndex: -1, userScrollUntil: 0 },
 	_autoplayOnLoad: false,
 };
@@ -2711,11 +2715,13 @@ function renderDockedOutputControl(bar = _host?.querySelector('#rwDockedBar')) {
 	const output = pageState.output;
 	button.disabled = !!output.transferPending;
 	button.classList.toggle('on-phone', output.device === 'phone');
-	const current = output.device === 'phone' ? 'This phone' : 'This desktop';
-	button.setAttribute('aria-label', output.transferPending ? 'Play on, connecting to phone' : `Play on, currently ${current}`);
+	// Naming the destination is the point of the control: "Play on" alone never
+	// told anyone that their Bluetooth headphones were the thing playing.
+	const current = output.name || (output.device === 'phone' ? 'This phone' : 'This desktop');
+	button.setAttribute('aria-label', output.transferPending ? 'Play on, connecting' : `Play on, currently ${current}`);
 	button.title = output.status || `Play on - currently ${current}`;
 	const label = button.querySelector('.rw-now-output-label');
-	if (label) label.textContent = output.transferPending ? 'Connecting' : 'Play on';
+	if (label) label.textContent = output.transferPending ? 'Connecting' : (output.name || 'Play on');
 	const live = bar?.querySelector('.rw-now-output-status');
 	if (live && live.textContent !== output.status) live.textContent = output.status;
 }
@@ -2729,6 +2735,15 @@ async function transferPlaybackToPhone(phone) {
 		await infoDialog({ title: 'Nothing is playing', message: 'Start a song before moving playback to your phone.' });
 		return;
 	}
+	// The broker routes a transfer by looking its target up among the *paired
+	// device ids*. Addressing it to the literal string 'phone' therefore reached
+	// a log no device owns, and the request sat unanswered until the 35s timeout
+	// - which is the "Play on phone just says Connecting forever" bug.
+	const targetId = String(phone?.device_id || '');
+	if (!targetId) {
+		await infoDialog({ title: 'No paired phone', message: 'Pair a phone from the Mobile page before moving playback to it.' });
+		return;
+	}
 	const phoneName = phone?.name || 'This phone';
 	const wasPlaying = !!queue.playing;
 	pageState.output.transferPending = true;
@@ -2737,7 +2752,7 @@ async function transferPlaybackToPhone(phone) {
 	try {
 		const result = await requestOutputTransfer({
 			source_device_id: 'desktop',
-			target_device_id: 'phone',
+			target_device_id: targetId,
 			queue: tracks,
 			index,
 			current_time: Math.max(0, Number(pageState.progress.current_time) || 0),
@@ -2752,6 +2767,7 @@ async function transferPlaybackToPhone(phone) {
 		// positive load acknowledgement above, then issue an idempotent pause.
 		if (wasPlaying) sendHelper({ type: 'music_remote_control', action: 'pause', reason: 'output_transfer' });
 		pageState.output.device = 'phone';
+		pageState.output.name = phoneName;
 		pageState.output.status = `Playing on ${phoneName}.`;
 	} catch (error) {
 		pageState.output.device = 'desktop';
@@ -2763,28 +2779,86 @@ async function transferPlaybackToPhone(phone) {
 	}
 }
 
+/* The audio outputs this computer has, merged from the two sources that each
+ * only know half of it (see web/audio_outputs.js). Cached briefly because the
+ * OS probe shells out and the picker must not feel slow on a second open. */
+let _outputDeviceCache = { at: 0, devices: [] };
+
+async function systemOutputDevices() {
+	if (Date.now() - _outputDeviceCache.at < 5000) return _outputDeviceCache.devices;
+	const [result, sinks] = await Promise.all([
+		helperRequest('music_output_devices', {}, 6000),
+		browserSinks(),
+	]);
+	const devices = mergeOutputs(result?.ok ? result.devices : [], sinks);
+	_outputDeviceCache = { at: Date.now(), devices };
+	return devices;
+}
+
+/* Routing this app's audio needs a sink id that only Chromium-family engines
+ * accept. Where that is unavailable the honest move is to hand over the system
+ * control that does work, rather than to offer a button that changes nothing. */
+async function selectSystemOutput(device) {
+	const routed = await window.RainetteMusic?.setOutputSink?.(device.sinkId);
+	if (routed) {
+		pageState.output.device = 'desktop';
+		pageState.output.name = device.name;
+		pageState.output.status = `Playing on ${device.name}.`;
+		renderDockedOutputControl();
+		return;
+	}
+	const opened = await Promise.resolve(window.pywebview?.api?.open_sound_settings?.()).catch(() => null);
+	if (!opened?.ok) {
+		await infoDialog({
+			title: `Switch to ${device.name}`,
+			message: 'This computer routes audio for every app at the system level. Choose it in the system sound settings and Rainette follows automatically.',
+		});
+	}
+}
+
 async function openOutputPicker() {
 	if (pageState.output.transferPending) return;
-	const paired = await pairedPhoneState();
-	const phone = paired.devices[0] || null;
-	await actionSheet({
-		title: 'Play on',
-		items: [
-			{
-				id: 'desktop',
-				label: 'This desktop',
-				hint: pageState.output.device === 'desktop' ? 'Playing here' : 'Available from your phone',
-			},
-			{
-				id: 'phone',
-				label: 'This phone',
-				hint: phone ? (phone.name || 'Paired and available') : (paired.available ? 'No paired phone' : 'Pair from the Mobile page'),
-				run: phone
-					? () => { transferPlaybackToPhone(phone).catch(() => {}); }
-					: () => { pageState.tab = 'mobile'; pageState.view = null; applyTab(); },
-			},
-		],
-	});
+	const [paired, outputs] = await Promise.all([pairedPhoneState(), systemOutputDevices()]);
+	const activeName = pageState.output.name || '';
+
+	const outputItems = outputs.map(device => ({
+		id: device.id,
+		label: device.name,
+		icon: outputIcon(device.kind),
+		hint: device.is_default && pageState.output.device === 'desktop'
+			? 'Playing here'
+			: (device.kind === 'bluetooth' ? 'Bluetooth' : ''),
+		run: () => { selectSystemOutput(device).catch(() => {}); },
+	}));
+	// A probe that found nothing (an unsupported platform, or a blocked shell)
+	// must still leave the desktop selectable.
+	if (!outputItems.length) {
+		outputItems.push({
+			id: 'desktop',
+			label: 'This desktop',
+			icon: 'laptop',
+			hint: pageState.output.device === 'desktop' ? 'Playing here' : '',
+		});
+	}
+
+	const phoneItems = paired.devices.map(phone => ({
+		id: `phone:${phone.device_id}`,
+		label: phone.name || 'Paired phone',
+		icon: 'phone',
+		hint: activeName === phone.name && pageState.output.device === 'phone' ? 'Playing here' : 'Paired phone',
+		run: () => { transferPlaybackToPhone(phone).catch(() => {}); },
+	}));
+	if (!phoneItems.length) {
+		phoneItems.push({
+			id: 'pair',
+			label: 'Pair a phone',
+			icon: 'phone',
+			hint: paired.available ? 'No phone paired yet' : 'Open the Mobile page',
+			run: () => { pageState.tab = 'mobile'; pageState.view = null; applyTab(); },
+		});
+	}
+
+	await actionSheet({ title: 'Play on', items: [...outputItems, ...phoneItems] });
 }
 
 function ensureDockedBar() {

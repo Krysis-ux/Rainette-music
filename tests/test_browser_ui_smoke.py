@@ -8,7 +8,15 @@ from urllib.parse import urlparse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+import pytest
+
+# Playwright is an optional developer dependency, not part of requirements.txt.
+# Importing it unguarded made the whole suite fail to *collect* on any machine
+# without it -- including a fresh macOS checkout -- which hid every other test.
+sync_playwright = pytest.importorskip(
+    "playwright.sync_api",
+    reason="playwright is not installed; run `pip install playwright && playwright install chromium`",
+).sync_playwright
 
 import main
 
