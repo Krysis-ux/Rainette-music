@@ -196,6 +196,34 @@ if (typeof window !== 'undefined' && window.RW_REMOTE) {
 		queueShuffle() { _queueControl({ action: 'queue_shuffle' }); },
 		queueDedupe() { _queueControl({ action: 'queue_dedupe' }); },
 		queueClearUpNext() { _queueControl({ action: 'queue_clear_up_next' }); },
+		/* Route audio to one output sink. The <audio> lives in the player
+		 * window, so this asks that window to do it and waits for the answer:
+		 * a false result is meaningful (this engine cannot route, so the caller
+		 * offers the system sound panel instead) and must not be assumed.
+		 *
+		 * helperRequest is unusable here. The bridge relays a remote-control
+		 * message to every window including this one, so its echo carries the
+		 * request's own id and would resolve the promise before the player had
+		 * touched anything. Only the player's explicit result counts. */
+		setOutputSink(sinkId) {
+			if (!sinkId) return Promise.resolve(false);
+			const id = 'sink_' + Math.random().toString(36).slice(2);
+			return new Promise(resolve => {
+				const onMessage = event => {
+					const msg = event.detail || {};
+					if (msg.type !== 'music_output_sink_result' || msg.id !== id) return;
+					clearTimeout(timer);
+					document.removeEventListener('rainette:helper-message', onMessage);
+					resolve(!!msg.routed);
+				};
+				const timer = setTimeout(() => {
+					document.removeEventListener('rainette:helper-message', onMessage);
+					resolve(false);
+				}, 4000);
+				document.addEventListener('rainette:helper-message', onMessage);
+				sendHelper({ type: 'music_remote_control', action: 'set_sink', sink_id: sinkId, id });
+			});
+		},
 	};
 
 	document.addEventListener('rainette:helper-message', e => {

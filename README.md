@@ -2,16 +2,67 @@
 
 (currently in beta — please report anything broken on the issues page)
 
-A self-contained desktop music player for Windows, with a companion web app that
-puts the same library on your phone.
+A self-contained desktop music player for Windows and macOS, with a companion
+web app that puts the same library on your phone.
 
 ## Install
+
+### Windows
 
 Download **RainetteMusicSetup.exe** from the
 [latest release](https://github.com/Krysis-ux/Rainette-music/releases/latest)
 and run it. The app keeps itself up to date: releases are signed, and the app
 verifies each update's signature before installing it silently in the
 background.
+
+### macOS
+
+There is no prebuilt download yet — run it from this folder (macOS 13+, Apple
+Silicon or Intel).
+
+**Easiest:** double-click **`Start Rainette Music.command`** in Finder. It opens
+a Terminal window, sets everything up on first run, and starts the app. Keep
+that window open while you listen; closing it stops the app.
+
+The first launch takes a few minutes while it downloads dependencies. Later
+launches are immediate.
+
+Equivalently, from a terminal:
+
+```bash
+./run-macos.sh
+```
+
+If something doesn't work, this prints a setup check and the last lines of the
+log instead of failing silently:
+
+```bash
+./run-macos.sh --doctor
+```
+
+And if playback looks like it is working but you hear nothing, this plays a test
+tone through the exact same path Rainette uses, then asks macOS whether the
+sound really reached your output device — which separates "the app is broken"
+from "the audio is going to a device you aren't listening to":
+
+```bash
+./run-macos.sh --test-audio
+```
+
+To build a double-clickable `Rainette Music.app` instead:
+
+```bash
+./release/build-macos-release.sh
+```
+
+The bundle lands in `release/out-macos/`. It is ad-hoc signed, which is enough
+to run it on your own machine; shipping it to other people needs an Apple
+Developer ID and notarization. See
+[release/README-macos.md](release/README-macos.md) for the details, including
+exactly which steps need a paid Apple account and which don't.
+
+The built-in updater only installs the signed Windows release, so a macOS build
+updates by rebuilding rather than in place.
 
 ## Rainette on your phone
 
@@ -63,9 +114,16 @@ what deploys to Vercel.
 
 ```
 pip install -r requirements.txt
-pythonw main.py   # run from source (windowed)
+pythonw main.py   # Windows: run from source (windowed)
 python main.py    # run with a console for errors
 python -m pytest  # test suite
 ```
 
-Releases are built by CI from `v*` tags — see [release/README.md](release/README.md).
+On macOS use `./run-macos.sh` (there is no `pythonw`); `requirements.txt` already
+pulls in the pyobjc frameworks pywebview needs there. The suite runs the same
+way on both platforms — the Windows-specific window and updater tests pin their
+own platform branch so they keep guarding the Windows build when run on a Mac,
+and `tests/test_macos_desktop.py` covers the macOS branch.
+
+Releases are built by CI from `v*` tags — see [release/README.md](release/README.md)
+for Windows and [release/README-macos.md](release/README-macos.md) for macOS.

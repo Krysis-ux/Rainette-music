@@ -160,6 +160,7 @@ def test_github_release_pipeline_splits_tests_platform_builds_and_publish_permis
     workflow = _release_workflow()
     test_job = _workflow_job(workflow, "test")
     windows_build_job = _workflow_job(workflow, "windows-build")
+    macos_build_job = _workflow_job(workflow, "macos-build")
     windows_sign_job = _workflow_job(workflow, "windows-sign")
     publish_job = _workflow_job(workflow, "publish")
 
@@ -169,11 +170,57 @@ def test_github_release_pipeline_splits_tests_platform_builds_and_publish_permis
     assert "node --check" in test_job
     assert "needs: test" in windows_build_job
     assert "runs-on: windows-latest" in windows_build_job
+    # macOS builds on a real macOS runner: the bundle is produced by PyInstaller
+    # via AppKit and packaged with ditto, neither of which cross-compiles.
+    assert "needs: test" in macos_build_job
+    assert "runs-on: macos-14" in macos_build_job
+    assert "release/build-macos-release.sh --version \"${RELEASE_VERSION}\" --dmg" in macos_build_job
     assert "needs: [test, windows-build]" in windows_sign_job
     assert "environment: release-signing" in windows_sign_job
-    assert "needs: windows-sign" in publish_job
+    # Publishing waits on both platforms, so a half-built release is never cut.
+    assert "needs: [windows-sign, macos-build]" in publish_job
     assert re.search(r"(?m)^    permissions:\s*\n      contents: write$", publish_job)
     assert workflow.count("contents: write") == 1
+
+
+def test_macos_release_carries_no_update_manifest_and_is_never_signed_for_updates():
+    """macOS gets no manifest, because nothing on macOS consumes one.
+
+    Rainette's updater installs the signed Windows installer and refuses to run
+    anywhere else, so a macOS manifest would be an unverified file that only
+    looked meaningful.  It must also never reach the signing job, which is
+    deliberately kept to one small reviewed script.
+    """
+    workflow = _release_workflow()
+    macos_build_job = _workflow_job(workflow, "macos-build")
+    windows_sign_job = _workflow_job(workflow, "windows-sign")
+
+    assert "latest.json" not in macos_build_job
+    assert "macos" not in windows_sign_job.lower()
+    # The bundle is verified as the artifact users actually receive.
+    assert "codesign --verify" in macos_build_job
+    assert "CFBundleShortVersionString" in macos_build_job
+    # The image is mounted and inspected, because a .dmg that builds but mounts
+    # empty -- or without the Applications symlink users drag onto -- is a
+    # failure nothing else in this job would catch.
+    assert "hdiutil attach" in macos_build_job
+    assert 'codesign --verify --deep --strict "$MOUNT/Rainette Music.app"' in macos_build_job
+    assert 'drag-to-install target' in macos_build_job
+
+
+def test_macos_download_states_the_gatekeeper_step_it_requires():
+    """An unnotarized build is reported as damaged, which needs explaining.
+
+    Shipping it without the one command that clears quarantine leaves a user
+    with an app that appears broken and no way to tell that it is not.
+    """
+    publish_job = _workflow_job(_release_workflow(), "publish")
+
+    assert "xattr -dr com.apple.quarantine" in publish_job
+    assert "not yet notarized" in publish_job
+    # macOS has no in-app updater, so the release notes have to say where
+    # updates come from instead.
+    assert "no automatic updates" in publish_job
 
 
 def test_github_windows_release_is_built_signed_and_verified_from_the_tagged_checkout():
@@ -231,8 +278,9 @@ def test_github_publish_job_downloads_only_platform_job_artifacts():
     workflow = _release_workflow()
     publish_job = _workflow_job(workflow, "publish")
 
-    # windows-build uploads the installer; windows-sign uploads its signature.
-    assert workflow.count("actions/upload-artifact@") == 2
+    # windows-build uploads the installer, macos-build the app bundle, and
+    # windows-sign the installer manifest's signature.
+    assert workflow.count("actions/upload-artifact@") == 3
     assert "actions/download-artifact@" in publish_job
     assert "merge-multiple: true" in publish_job
     assert "softprops/action-gh-release@" in publish_job
@@ -243,6 +291,7 @@ def test_github_publish_job_downloads_only_platform_job_artifacts():
     # be accounted for in the expected-set check.
     for filename in (
         "RainetteMusicSetup.exe",
+        "RainetteMusic-macOS.dmg",
         "latest.json",
         "latest.json.sig",
     ):

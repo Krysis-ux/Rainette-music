@@ -5,6 +5,8 @@
  * removes the modal from the DOM once it settles.
  */
 
+import { iconMarkup } from './rainette_icons.js';
+
 function _button(label, className, onClick) {
 	const b = document.createElement('button');
 	b.type = 'button';
@@ -160,6 +162,15 @@ export function actionSheet({ title = 'Actions', items = [], cancelLabel = 'Canc
 					close(item.id || item.label);
 					if (typeof item.run === 'function') item.run();
 				});
+				// A leading glyph, for lists where the kind of thing matters as
+				// much as its name — output devices, mainly, where a Bluetooth
+				// speaker should be identifiable without reading the label.
+				if (item.icon) {
+					const glyph = document.createElement('span');
+					glyph.className = 'rw-modal-action-icon';
+					glyph.innerHTML = iconMarkup(item.icon, 17);
+					b.prepend(glyph);
+				}
 				if (item.hint) {
 					const hint = document.createElement('span');
 					hint.textContent = item.hint;

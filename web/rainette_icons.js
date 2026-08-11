@@ -37,6 +37,16 @@ const PATHS = {
 	moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
 	chart: '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M8 17v-6"/><path d="M13 17V7"/><path d="M18 17v-3"/>',
 	keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01"/><path d="M10 10h.01"/><path d="M14 10h.01"/><path d="M18 10h.01"/><path d="M7 14h10"/>',
+	// Output-device icons for the "Play on" picker. Each transport gets its own
+	// glyph so a Bluetooth speaker is distinguishable from the built-in one at a
+	// glance, without having to read the label.
+	speaker: '<rect x="5" y="2" width="14" height="20" rx="2"/><circle cx="12" cy="15" r="3.2"/><path d="M12 6h.01"/>',
+	bluetooth: '<path d="m7 7 10 10-5 4V3l5 4L7 17"/>',
+	headphones: '<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><path d="M4 15a2 2 0 0 1 2-2h1v7H6a2 2 0 0 1-2-2z"/><path d="M20 15a2 2 0 0 0-2-2h-1v7h1a2 2 0 0 0 2-2z"/>',
+	laptop: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/>',
+	phone: '<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M10.5 18.5h3"/>',
+	hdmi: '<path d="M4 8h16v5l-2 3H6l-2-3z"/><path d="M8 8V5h8v3"/>',
+	airplay: '<path d="M6 17H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1"/><path d="m12 15 4 6H8z" fill="currentColor" stroke="none"/>',
 };
 
 export function iconMarkup(name, size = 16) {

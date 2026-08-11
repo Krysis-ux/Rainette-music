@@ -9,6 +9,24 @@ import main
 import server
 
 
+def _force_windows_desktop(test_case):
+    """Pin the Windows desktop branch for the duration of one test.
+
+    These cases describe WinForms behaviour -- off-screen parking, show/restore
+    ordering, TopMost and taskbar marshalling -- which ``main`` now selects per
+    platform. Without this they would quietly stop exercising Windows the moment
+    the suite runs on the macOS port, which is exactly the coverage that keeps
+    the Windows build honest. The macOS branch has its own tests.
+    """
+    for patcher in (
+        patch.object(main, "IS_MACOS", False),
+        patch.object(main, "IS_WINDOWS", True),
+        patch.object(main.os, "name", "nt"),
+    ):
+        patcher.start()
+        test_case.addCleanup(patcher.stop)
+
+
 class _FakeEvent:
     def __init__(self):
         self.handlers = []
@@ -150,6 +168,8 @@ class PlayerTaskbarThreadingTests(unittest.TestCase):
         properties must therefore be changed through Invoke, just like the
         rounded-region and TopMost paths, or WebView2 startup can deadlock.
         """
+        _force_windows_desktop(self)
+
         class Form:
             InvokeRequired = True
 
@@ -203,6 +223,7 @@ class WindowApiGatingTests(unittest.TestCase):
     the fixed, single-call contract."""
 
     def setUp(self):
+        _force_windows_desktop(self)
         self.api = main.WindowApi()
         self.player = FakePlayerWindow()
         self.api.bind_player(self.player)
@@ -329,6 +350,7 @@ class PlayerShapeOrderingTests(unittest.TestCase):
     bug. player_resize() always had the right order; show_player() did not."""
 
     def setUp(self):
+        _force_windows_desktop(self)
         self.api = main.WindowApi()
         self.player = FakePlayerWindow()
         self.api.bind_player(self.player)

@@ -2302,18 +2302,29 @@ html.rw-reduced-motion .rw-insights-bar { animation: none; }
 	color: var(--rw-text);
 	cursor: pointer;
 	display: flex;
-	justify-content: space-between;
-	gap: 14px;
+	align-items: center;
+	/* The hint claims the free space itself (below), so a row reads
+	   icon - label - hint whether or not it has an icon. */
+	justify-content: flex-start;
+	gap: 12px;
 	width: 100%;
 	padding: 10px 12px;
 	text-align: left;
 	font: 600 13px/1.25 var(--rw-font);
 }
 .rw-modal-action-item span {
+	margin-left: auto;
 	color: var(--rw-text-muted);
 	font-size: 12px;
 	font-weight: 500;
 }
+.rw-modal-action-icon {
+	flex: none;
+	display: inline-flex;
+	margin-left: 0 !important;
+	color: var(--rw-text-muted);
+}
+.rw-modal-action-item:hover .rw-modal-action-icon { color: var(--rw-accent); }
 .rw-modal-action-item:hover { background: var(--rw-bg-sunken); }
 .rw-modal-action-item.danger { color: var(--rw-danger); }
 .rw-smart-form { display: flex; flex-direction: column; gap: 12px; }

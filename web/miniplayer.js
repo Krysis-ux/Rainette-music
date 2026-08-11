@@ -17,11 +17,12 @@ import { sendHelper, helperRequest } from './music_shell.js';
 import { iconMarkup } from './rainette_icons.js';
 import { PlaybackLoadGuard, MediaEventGate, settleWithin } from './playback_load_guard.mjs';
 import { REPEAT_MODES, REPEAT_LABEL, normalizeRepeat, nextRepeat, loopFlagFor, repeatFromMessage } from './repeat_mode.js';
+import { routeElementTo } from './audio_outputs.js';
 
 // ── Persistence keys ─────────────────────────────────────────────────────────
 // `loop` is the superseded boolean key, still read once by loadRepeat() so an
 // existing user's loop-on setting survives the upgrade to three-state repeat.
-const LS = { vol: 'rw.mp.volume', eq: 'rw.mp.eqGains', eqOn: 'rw.mp.eqOn', loop: 'rw.mp.loop', repeat: 'rw.mp.repeat' };
+const LS = { vol: 'rw.mp.volume', eq: 'rw.mp.eqGains', eqOn: 'rw.mp.eqOn', loop: 'rw.mp.loop', repeat: 'rw.mp.repeat', sink: 'rw.mp.sink' };
 const LOCAL_STREAM_TTL_MS = 50 * 60 * 1000;
 const PREFETCH_AHEAD = 3;
 const PLAY_START_TIMEOUT_MS = 12_000;
@@ -64,6 +65,9 @@ const state = {
 	volume: loadVolume(),
 	pendingSeek: null,
 	collapsed: true,
+	// The chosen output sink, remembered so a rebuilt <audio> lands on the same
+	// speaker instead of silently reverting to the system default mid-queue.
+	sinkId: lsGet(LS.sink) || '',
 };
 
 function loadEqGains() {
@@ -539,12 +543,15 @@ function _bindMediaLifecycle(binding, owner) {
 	});
 	on('pause', () => { state.playing = false; _renderPlay(); _broadcast('paused', false); });
 	on('timeupdate', () => {
-		if (audio.duration) _setSeek(audio.currentTime / audio.duration);
-		if (els.cur) els.cur.textContent = fmt(audio.currentTime);
+		const total = trueDuration();
+		if (total) _setSeek(trueTime() / total);
+		if (els.cur) els.cur.textContent = fmt(trueTime());
+		if (els.dur) els.dur.textContent = fmt(total);
+		_guardStretchedEnd();
 		_broadcastProgress();
 	});
 	on('seeked', () => _broadcastProgress(true));
-	on('durationchange', () => { if (els.dur) els.dur.textContent = fmt(audio.duration); });
+	on('durationchange', () => { if (els.dur) els.dur.textContent = fmt(trueDuration()); });
 	on('ended', () => _next(true));
 	on('error', () => _retryOrFail(binding.token));
 }
@@ -922,8 +929,8 @@ function _broadcast(mode, playing) {
 		// Derived compatibility field: every consumer that predates three-state
 		// repeat (and the Python relay's bool coercion) still reads `loop`.
 		loop: loopFlagFor(state.repeat),
-		current_time: audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
-		duration: audio && Number.isFinite(audio.duration) ? audio.duration : (track?.duration_s || 0),
+		current_time: trueTime(),
+		duration: trueDuration(),
 		queue: cleanQueue,
 		index: state.index,
 		queue_count: cleanQueue.length,
@@ -942,11 +949,44 @@ function _broadcastProgress(force = false) {
 	const track = state.queue[state.index] || null;
 	sendHelper({
 		type: 'music_progress',
-		current_time: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
-		duration: Number.isFinite(audio.duration) ? audio.duration : (track?.duration_s || 0),
+		current_time: trueTime(),
+		duration: trueDuration(),
 		playing: state.playing,
 		source_id: track?.source_id || '',
 	});
+}
+
+/* AVFoundation reads some YouTube m4a streams as exactly twice their real
+ * length: 261.04s for a file AudioToolbox reads as 130.52s. It renders the
+ * frames the file actually has and then plays silence for the remainder, so the
+ * clock stays honest but the total is wrong and `ended` arrives minutes late.
+ * WebKit decodes through it, which is why macOS and iOS see this and Chromium
+ * does not. duration_s from the library is the authority. */
+function trueDuration() {
+	const known = Number(state.queue[state.index]?.duration_s || 0);
+	if (known) return known;
+	return audio && Number.isFinite(audio.duration) ? audio.duration : 0;
+}
+
+function trueTime() {
+	return audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+}
+
+function _isStretched() {
+	const known = Number(state.queue[state.index]?.duration_s || 0);
+	const raw = audio && Number.isFinite(audio.duration) ? audio.duration : 0;
+	return known > 0 && raw > known + Math.max(1, known * 0.05);
+}
+
+// Finish on the real duration rather than waiting out the silent tail.
+let _endGuardKey = '';
+
+function _guardStretchedEnd() {
+	if (!_isStretched()) return;
+	const key = trackKey(state.queue[state.index]);
+	if (_endGuardKey === key || trueTime() < trueDuration() - 0.35) return;
+	_endGuardKey = key;
+	_next(true);
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────
@@ -1151,6 +1191,28 @@ function initAudio() {
 	audio = new Audio();
 	audio.preload = 'auto';
 	audio.volume = Math.min(1, state.volume);
+	// A remembered speaker has to be re-asserted on a fresh element, or the
+	// window reopens playing through the built-in output with the picker still
+	// claiming otherwise. Failure is silent and harmless: the device may simply
+	// have been unplugged since, and the system default is the right fallback.
+	if (state.sinkId) routeElementTo(audio, state.sinkId).catch(() => {});
+}
+
+/* Point this window's <audio> at one output sink and report back.
+ *
+ * Only this window can do it — it owns the element — and only it can know
+ * whether the engine supports setSinkId at all (Chromium/WebView2 does,
+ * WKWebView does not). The main window turns a false answer into an offer to
+ * open the system sound settings, so an honest failure here is useful. */
+async function applyOutputSink(sinkId, requestId) {
+	const routed = await routeElementTo(audio, sinkId);
+	// A sink survives a track change on the same element, but the window can be
+	// reloaded; persisting it means the speaker choice outlives that.
+	if (routed) {
+		state.sinkId = String(sinkId || '');
+		lsSet(LS.sink, state.sinkId);
+	}
+	sendHelper({ type: 'music_output_sink_result', id: requestId, routed, sink_id: sinkId || '' });
 }
 
 // ── Remote commands from the browser window ──────────────────────────────────
@@ -1185,6 +1247,7 @@ function wireRemote() {
 			else if (a === 'eq_apply_preset') applyPreset(msg.preset);
 			else if (a === 'eq_request_state') _broadcastEq();
 			else if (a === 'set_volume') applyVolume(Number(msg.value));
+			else if (a === 'set_sink') applyOutputSink(msg.sink_id, msg.id);
 			// Repeat is a standing preference, not a transport action, so it sits
 			// above the empty-queue guard: arming it before pressing play used to
 			// be silently dropped, which read as "loop doesn't stick".
