@@ -21,7 +21,7 @@
  * position) rather than an error to show the user.
  */
 
-import { state, STORAGE, persist, trackKey, artworkUrl, artistName, nextRepeat, rememberRecent } from './state.js';
+import { state, STORAGE, persist, trackKey, artworkUrl, artistName, nextRepeat, rememberRecent, trackDuration } from './state.js';
 import { command, mediaUrl } from './bridge.js';
 
 const audio = new Audio();
@@ -68,14 +68,25 @@ export function isLoading() {
 	return !isLinked() && state.loading;
 }
 
+/* AVFoundation reads some YouTube m4a streams as exactly twice their real
+ * length: 261.04s for a file AudioToolbox reads as 130.52s. It renders the
+ * frames the file actually has and then plays silence for the remainder, so the
+ * clock stays honest but the total is wrong and `ended` arrives minutes late.
+ * iOS decodes through it, so the computer's duration_s is the authority. */
+function isStretched() {
+	const known = trackDuration(state.currentTrack);
+	const raw = Number.isFinite(audio.duration) ? audio.duration : 0;
+	return known > 0 && raw > known + Math.max(1, known * 0.05);
+}
+
 export function currentTime() {
-	return isLinked() ? (Number(state.remote.current_time) || 0) : (audio.currentTime || 0);
+	if (isLinked()) return Number(state.remote.current_time) || 0;
+	return audio.currentTime || 0;
 }
 
 export function duration() {
 	if (isLinked()) return Number(state.remote.duration) || 0;
-	if (Number.isFinite(audio.duration)) return audio.duration;
-	return Number(state.currentTrack?.duration) || 0;
+	return trackDuration(state.currentTrack) || (Number.isFinite(audio.duration) ? audio.duration : 0);
 }
 
 export function activeQueue() {
@@ -101,8 +112,8 @@ function publishNowPlaying(playbackState) {
 		playing: !audio.paused,
 		repeat: state.repeat,
 		loop: state.repeat !== 'off',
-		current_time: audio.currentTime || 0,
-		duration: Number.isFinite(audio.duration) ? audio.duration : 0,
+		current_time: currentTime(),
+		duration: duration(),
 		queue: state.queue,
 		index: state.queueIndex,
 		queue_count: state.queue.length,
@@ -120,8 +131,8 @@ function publishProgress() {
 	if (now - lastProgressAt < 1000) return;
 	lastProgressAt = now;
 	command('music_progress', {
-		current_time: audio.currentTime || 0,
-		duration: Number.isFinite(audio.duration) ? audio.duration : 0,
+		current_time: currentTime(),
+		duration: duration(),
 		playing: !audio.paused,
 		source_id: state.currentTrack?.source_id || '',
 	}).catch(() => {});
@@ -144,6 +155,7 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 	state.queueIndex = Math.max(0, Math.min(index, state.queue.length - 1));
 	state.currentTrack = track;
 	state.loading = true;
+	endGuardKey = '';
 	state.streamRefreshAttempted = !!options.forceRefresh;
 	emit();
 
@@ -206,7 +218,7 @@ export async function skip(offset) {
 	if (index < 0) {
 		// Pressing previous mid-track restarts it first, as every other player
 		// does, and only steps back when already near the start.
-		if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+		if (currentTime() > 3) { audio.currentTime = 0; return; }
 		if (state.repeat !== 'all') return;
 		await playTrack(state.queue[state.queue.length - 1], state.queue, state.queue.length - 1);
 		return;
@@ -225,7 +237,8 @@ export function seekTo(seconds) {
 		if (total > 0) remoteControl('seek', { ratio: Math.max(0, Math.min(1, seconds / total)) });
 		return;
 	}
-	if (Number.isFinite(audio.duration)) audio.currentTime = Math.max(0, Math.min(seconds, audio.duration));
+	if (!Number.isFinite(audio.duration)) return;
+	audio.currentTime = Math.max(0, Math.min(seconds, duration()));
 }
 
 export function setVolume(value) {
@@ -398,16 +411,31 @@ for (const event of ['play', 'pause']) {
 }
 
 audio.addEventListener('loadedmetadata', emit);
-audio.addEventListener('timeupdate', () => { publishProgress(); emit(); });
+audio.addEventListener('timeupdate', () => { guardTrueEnd(); publishProgress(); emit(); });
 
-audio.addEventListener('ended', () => {
+function finishTrack() {
 	if (state.repeat === 'one') {
 		audio.currentTime = 0;
 		audio.play().catch(reportError);
 		return;
 	}
 	skip(1).catch(reportError);
-});
+}
+
+/* Past the real end the element is still playing the silent tail, so `ended`
+ * would not arrive for minutes. Finish on the real duration instead. */
+let endGuardKey = '';
+
+function guardTrueEnd() {
+	if (isLinked() || audio.paused || !state.currentTrack || !isStretched()) return;
+	if (currentTime() < duration() - 0.35) return;
+	const key = trackKey(state.currentTrack);
+	if (endGuardKey === key) return;
+	endGuardKey = key;
+	finishTrack();
+}
+
+audio.addEventListener('ended', finishTrack);
 
 audio.addEventListener('error', async () => {
 	// A stream URL the computer resolved earlier can expire mid-session. That is
@@ -421,7 +449,7 @@ audio.addEventListener('error', async () => {
 	try {
 		await playTrack(state.currentTrack, state.queue, state.queueIndex, {
 			forceRefresh: true,
-			resumeAt: audio.currentTime || 0,
+			resumeAt: currentTime(),
 		});
 	} catch {
 		reportError(new Error('The audio stream expired or became unavailable.'));

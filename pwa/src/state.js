@@ -104,6 +104,16 @@ export function artistName(track) {
 	return track?.artist || track?.uploader || track?.metadata?.artist_name || '';
 }
 
+/* The computer calls this `duration_s` everywhere; the other spellings only turn
+ * up on raw search results. Seconds in every case. */
+export function trackDuration(track) {
+	for (const value of [track?.duration_s, track?.duration, track?.duration_seconds]) {
+		const seconds = Number(value);
+		if (Number.isFinite(seconds) && seconds > 0) return seconds;
+	}
+	return 0;
+}
+
 export function formatTime(seconds) {
 	if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
 	const whole = Math.floor(seconds);
@@ -114,7 +124,7 @@ export function formatTime(seconds) {
 
 /** Total run time of a track list, formatted for a queue summary. */
 export function totalDuration(tracks) {
-	const seconds = tracks.reduce((sum, track) => sum + (Number(track?.duration) || 0), 0);
+	const seconds = tracks.reduce((sum, track) => sum + trackDuration(track), 0);
 	if (!seconds) return '';
 	const minutes = Math.round(seconds / 60);
 	if (minutes < 60) return `${minutes} min`;

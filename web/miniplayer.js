@@ -543,12 +543,15 @@ function _bindMediaLifecycle(binding, owner) {
 	});
 	on('pause', () => { state.playing = false; _renderPlay(); _broadcast('paused', false); });
 	on('timeupdate', () => {
-		if (audio.duration) _setSeek(audio.currentTime / audio.duration);
-		if (els.cur) els.cur.textContent = fmt(audio.currentTime);
+		const total = trueDuration();
+		if (total) _setSeek(trueTime() / total);
+		if (els.cur) els.cur.textContent = fmt(trueTime());
+		if (els.dur) els.dur.textContent = fmt(total);
+		_guardStretchedEnd();
 		_broadcastProgress();
 	});
 	on('seeked', () => _broadcastProgress(true));
-	on('durationchange', () => { if (els.dur) els.dur.textContent = fmt(audio.duration); });
+	on('durationchange', () => { if (els.dur) els.dur.textContent = fmt(trueDuration()); });
 	on('ended', () => _next(true));
 	on('error', () => _retryOrFail(binding.token));
 }
@@ -926,8 +929,8 @@ function _broadcast(mode, playing) {
 		// Derived compatibility field: every consumer that predates three-state
 		// repeat (and the Python relay's bool coercion) still reads `loop`.
 		loop: loopFlagFor(state.repeat),
-		current_time: audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
-		duration: audio && Number.isFinite(audio.duration) ? audio.duration : (track?.duration_s || 0),
+		current_time: trueTime(),
+		duration: trueDuration(),
 		queue: cleanQueue,
 		index: state.index,
 		queue_count: cleanQueue.length,
@@ -946,11 +949,44 @@ function _broadcastProgress(force = false) {
 	const track = state.queue[state.index] || null;
 	sendHelper({
 		type: 'music_progress',
-		current_time: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
-		duration: Number.isFinite(audio.duration) ? audio.duration : (track?.duration_s || 0),
+		current_time: trueTime(),
+		duration: trueDuration(),
 		playing: state.playing,
 		source_id: track?.source_id || '',
 	});
+}
+
+/* AVFoundation reads some YouTube m4a streams as exactly twice their real
+ * length: 261.04s for a file AudioToolbox reads as 130.52s. It renders the
+ * frames the file actually has and then plays silence for the remainder, so the
+ * clock stays honest but the total is wrong and `ended` arrives minutes late.
+ * WebKit decodes through it, which is why macOS and iOS see this and Chromium
+ * does not. duration_s from the library is the authority. */
+function trueDuration() {
+	const known = Number(state.queue[state.index]?.duration_s || 0);
+	if (known) return known;
+	return audio && Number.isFinite(audio.duration) ? audio.duration : 0;
+}
+
+function trueTime() {
+	return audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+}
+
+function _isStretched() {
+	const known = Number(state.queue[state.index]?.duration_s || 0);
+	const raw = audio && Number.isFinite(audio.duration) ? audio.duration : 0;
+	return known > 0 && raw > known + Math.max(1, known * 0.05);
+}
+
+// Finish on the real duration rather than waiting out the silent tail.
+let _endGuardKey = '';
+
+function _guardStretchedEnd() {
+	if (!_isStretched()) return;
+	const key = trackKey(state.queue[state.index]);
+	if (_endGuardKey === key || trueTime() < trueDuration() - 0.35) return;
+	_endGuardKey = key;
+	_next(true);
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────

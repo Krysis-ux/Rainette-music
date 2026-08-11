@@ -14,7 +14,7 @@
  */
 
 import { el, icon, tap, toast, stagger, collapseAway } from './dom.js';
-import { trackKey, artworkUrl, artistName, formatTime } from './state.js';
+import { trackKey, artworkUrl, artistName, formatTime, trackDuration } from './state.js';
 import { queueAddNext, queueAddEnd, currentTrack, isPlaying } from './player.js';
 
 /* Past this many pixels sideways the action commits on release. Below it the
@@ -84,9 +84,8 @@ export function trackRow(track, { onPlay, swipe = true, showDuration = true, tra
 	bars.innerHTML = '<i></i><i></i><i></i>';
 
 	row.append(art, copy, bars);
-	if (showDuration && Number(track.duration)) {
-		row.append(el('span', 'track-time', formatTime(Number(track.duration))));
-	}
+	const length = trackDuration(track);
+	if (showDuration && length) row.append(el('span', 'track-time', formatTime(length)));
 	if (trailing) row.append(trailing);
 	row.addEventListener('click', () => onPlay?.());
 
