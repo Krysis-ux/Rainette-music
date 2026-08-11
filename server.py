@@ -165,8 +165,10 @@ COMPANION_COMMAND_TYPES = frozenset({
     "music_remote_control",
     "music_output_transfer",
     "music_output_transfer_result",
+    "music_output_devices",
     "music_request_state",
     "music_open_artist",
+    "music_lyrics",
     "music_status",
 })
 
@@ -194,6 +196,11 @@ class _DeviceEventLog:
         self._revision = 0
         self._events: list[dict] = []
         self.last_read_at = time.monotonic()
+        # Whether this phone has asked to mirror the desktop's own session.  Off
+        # by default, so an unmodified phone keeps the independent session the
+        # rest of this class describes.  The phone re-asserts it on every poll,
+        # which is what makes the choice survive a desktop restart.
+        self.follows_desktop = False
         self.condition = threading.Condition()
 
     def publish_locked(self, message: dict) -> None:
@@ -304,8 +311,12 @@ class CompanionSyncBroker:
                 return [log] if log is not None else []
             if message_type in self._SESSION_TYPES:
                 if not origin_device_id:
-                    # Desktop-originated playback: no phone session owns it.
-                    return []
+                    # Desktop-originated playback.  No phone session *owns* it,
+                    # so it still reaches nobody by default — but a phone that
+                    # asked to mirror this computer is explicitly opting in to
+                    # watching a session it did not cause, which is the whole
+                    # point of the linked mode.
+                    return [log for log in self._logs.values() if log.follows_desktop]
                 log = self._logs.get(origin_device_id)
                 return [log] if log is not None else []
             return list(self._logs.values())
@@ -317,16 +328,31 @@ class CompanionSyncBroker:
             with log.condition:
                 log.publish_locked(message)
 
-    def read_after(self, device_id: str, after: int, wait_s: float) -> dict:
+    def read_after(
+        self,
+        device_id: str,
+        after: int,
+        wait_s: float,
+        follow_desktop: bool | None = None,
+    ) -> dict:
+        """Read one device's events, optionally re-asserting its linked mode.
+
+        ``follow_desktop`` is carried on the poll rather than stored through a
+        separate endpoint so that it is re-established automatically after a
+        desktop restart drops these in-memory logs — the phone would otherwise
+        sit in a mode the computer had forgotten.
+        """
         log = self._log_for(str(device_id))
         with log.condition:
             log.last_read_at = time.monotonic()
+            if follow_desktop is not None:
+                log.follows_desktop = bool(follow_desktop)
             result = log.read_after_locked(after)
             if result["events"] or result["reset_required"] or wait_s <= 0:
-                return result
+                return {**result, "follows_desktop": log.follows_desktop}
             log.condition.wait(timeout=min(max(wait_s, 0), 25))
             log.last_read_at = time.monotonic()
-            return log.read_after_locked(after)
+            return {**log.read_after_locked(after), "follows_desktop": log.follows_desktop}
 
 
 class CommandBroker:
@@ -831,9 +857,13 @@ async def companion_events(request: web.Request) -> web.StreamResponse:
         wait_s = min(25.0, max(0.0, float(request.query.get("wait", "25"))))
     except ValueError:
         return _json_error(400, "after and wait must be numeric")
+    # Absent means "don't change it", so a phone that never sends the parameter
+    # keeps whatever mode it last chose instead of being silently unlinked.
+    follow_raw = request.query.get("follow")
+    follow = None if follow_raw is None else follow_raw not in ("0", "false", "")
     broker = request.app[SYNC_BROKER_KEY]
     device_id = request["companion_device_id"]
-    payload = await asyncio.to_thread(broker.read_after, device_id, after, wait_s)
+    payload = await asyncio.to_thread(broker.read_after, device_id, after, wait_s, follow)
     payload.update({"ok": True, "device_id": device_id})
     return web.json_response(payload)
 

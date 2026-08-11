@@ -80,7 +80,14 @@ body {
 }
 
 button, input { font: inherit; color: inherit; }
-button { cursor: pointer; }
+button {
+	cursor: pointer;
+	/* A press that starts a swipe must not also select the label under it, and
+	   the tap highlight rectangle fights every rounded surface in this app. */
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-tap-highlight-color: transparent;
+}
 
 :focus-visible {
 	outline: 2px solid var(--accent);
@@ -364,62 +371,12 @@ h2 {
 	to   { transform: scale(4.5); opacity: 0; }
 }
 
-/* ── Track lists ──────────────────────────────────────────────────────── */
+/* ── Track lists ──────────────────────────────────────────────────────────
+   The row itself is styled beside the swipe machinery further down, because the
+   two are one component: the padding, the columns and the sliding surface all
+   have to agree or the action underneath shows through the wrong edge. */
 
 .track-list { display: grid; }
-
-.track {
-	display: grid;
-	grid-template-columns: 46px minmax(0, 1fr);
-	align-items: center;
-	gap: 13px;
-	width: 100%;
-	padding: 9px 8px 9px 0;
-	border: 0;
-	border-bottom: 1px solid var(--line);
-	border-radius: var(--r-sm);
-	background: none;
-	text-align: left;
-	transition: background var(--fast) var(--ease);
-}
-
-.track:last-child { border-bottom: 0; }
-.track:active { background: var(--bg-lift); }
-
-.track img {
-	width: 46px;
-	height: 46px;
-	border-radius: 9px;
-	object-fit: cover;
-	background: var(--surface);
-}
-
-.track-copy { display: grid; gap: 3px; min-width: 0; }
-
-.track-copy b {
-	overflow: hidden;
-	font-size: 14.5px;
-	font-weight: 560;
-	letter-spacing: -0.012em;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.track-copy span {
-	overflow: hidden;
-	color: var(--text-muted);
-	font-size: 12.5px;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-/* The row that is currently playing is marked by the accent, matching the
-   status dot: the same green always means "this is live right now". */
-.track.is-playing .track-copy b { color: var(--accent); }
-
-.track.is-playing img {
-	box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--accent);
-}
 
 .empty {
 	margin: 18px 2px;
@@ -492,9 +449,9 @@ h2 {
 	left: 10px;
 	z-index: 40;
 	display: grid;
-	grid-template-columns: auto minmax(0, 1fr) auto;
+	grid-template-columns: minmax(0, 1fr) auto;
 	align-items: center;
-	gap: 12px;
+	gap: 8px;
 	max-width: 600px;
 	margin: 0 auto;
 	padding: 11px 13px;
@@ -533,27 +490,24 @@ h2 {
 	transform-origin: left;
 }
 
-/* The scrubber covers the hairline so the thin bar is still draggable. */
-.scrubber {
-	position: absolute;
-	top: -9px;
-	right: 8px;
-	left: 8px;
-	width: auto;
-	height: 22px;
-	margin: 0;
+/* The whole left side of the bar is one button. Anything smaller turns "open
+   the player" into a game of hitting a 40px strip of text between two
+   transport controls. */
+.player-open {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: center;
+	gap: 12px;
+	min-width: 0;
+	padding: 0;
+	border: 0;
 	background: none;
-	opacity: 0;
-	-webkit-appearance: none;
-	appearance: none;
+	color: inherit;
+	text-align: left;
+	transition: transform var(--fast) var(--ease), opacity var(--fast) var(--ease);
 }
 
-.scrubber::-webkit-slider-thumb {
-	width: 22px;
-	height: 22px;
-	-webkit-appearance: none;
-	appearance: none;
-}
+.player-open:active { transform: scale(0.985); opacity: 0.85; }
 
 .player img {
 	width: 46px;
@@ -590,39 +544,48 @@ h2 {
 	font-variant-numeric: tabular-nums;
 }
 
-.player-controls { display: flex; align-items: center; gap: 2px; }
+.player-controls { display: flex; align-items: center; gap: 1px; }
 
 .icon {
 	display: grid;
 	place-items: center;
-	width: 42px;
-	height: 42px;
+	width: 40px;
+	height: 40px;
 	border: 0;
 	border-radius: 50%;
 	background: none;
 	color: var(--text-soft);
-	transition: color var(--fast) var(--ease), background var(--fast) var(--ease);
+	transition: color var(--fast) var(--ease), background var(--fast) var(--ease), transform var(--fast) var(--ease);
 }
 
-.icon:active { background: var(--bg-lift); }
+.icon:active { background: var(--bg-lift); transform: scale(0.92); }
 .icon:hover { color: var(--text); }
 
-.icon svg {
-	width: 21px;
-	height: 21px;
-	fill: currentColor;
+/* Icons come from two places and must not fight.
+   The mini bar's glyphs are inline in index.html with no paint attributes, so
+   they are painted here. Everything built by src/dom.js already carries its own
+   fill/stroke attributes, and a blanket `.icon svg` rule would override those —
+   which is what turned the transport arrows into bare triangles. Size comes
+   from the markup in both cases. */
+.player-controls .icon svg { fill: currentColor; stroke: none; }
+
+.player-controls .icon.stroked svg {
+	fill: none;
 	stroke: currentColor;
-	stroke-width: 0;
+	stroke-width: 1.8;
+	stroke-linecap: round;
 }
+
+.player-controls .icon.stroked svg [stroke="none"] { fill: currentColor; }
 
 .icon.play {
-	width: 44px;
-	height: 44px;
-	background: var(--text);
-	color: var(--bg);
+	width: 42px;
+	height: 42px;
+	background: var(--accent);
+	color: var(--on-accent);
 }
 
-.icon.play:hover { background: var(--accent); color: var(--on-accent); }
+.icon.play:hover { filter: brightness(1.07); }
 
 .glyph-pause, .glyph-wait { display: none; }
 .icon.play[data-state="playing"] .glyph-play  { display: none; }
@@ -633,8 +596,8 @@ h2 {
 	display: block;
 	width: 15px;
 	height: 15px;
-	border: 2px solid color-mix(in oklab, var(--bg) 40%, transparent);
-	border-top-color: var(--bg);
+	border: 2px solid color-mix(in oklab, var(--on-accent) 35%, transparent);
+	border-top-color: var(--on-accent);
 	border-radius: 50%;
 	animation: spin 700ms linear infinite;
 }
@@ -642,11 +605,13 @@ h2 {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (min-width: 380px) {
-	.player {
-		grid-template-columns: auto minmax(0, 1fr) auto auto;
-	}
+	.player { grid-template-columns: minmax(0, 1fr) auto auto; }
 	.player-time { display: flex; }
 }
+
+/* Linked to the computer: the bar is showing something it is not itself
+   playing, so the accent edge says where the audio actually is. */
+.player.is-linked { border-color: color-mix(in oklab, var(--accent) 40%, transparent); }
 
 /* ── Tab bar ──────────────────────────────────────────────────────────── */
 
@@ -724,6 +689,690 @@ dialog b { color: var(--text); font-weight: 600; }
 dialog form { display: grid; }
 dialog .primary { margin-top: 10px; }
 
+/* ── Track rows: playing state and swipe ──────────────────────────────────
+   The shell is the fixed frame; the row inside it is what slides, revealing the
+   action underneath. Two layers instead of one is what lets the action be
+   readable during the gesture rather than only after it. */
+
+.track-shell {
+	position: relative;
+	overflow: hidden;
+	border-radius: var(--r-sm);
+	border-bottom: 1px solid var(--line);
+}
+
+.track-shell:last-child { border-bottom: 0; }
+
+.track-actions {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 0 18px;
+	pointer-events: none;
+}
+
+.track-action {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	color: var(--accent);
+	font-size: 12.5px;
+	font-weight: 600;
+	opacity: 0;
+	transform: scale(0.9);
+	transition: opacity var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+
+.track-shell.reveal-next .track-action.next,
+.track-shell.reveal-end .track-action.end { opacity: 1; transform: none; }
+
+.track {
+	position: relative;
+	display: grid;
+	grid-template-columns: 48px minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 13px;
+	width: 100%;
+	padding: 10px 8px 10px 0;
+	border: 0;
+	background: var(--bg);
+	text-align: left;
+	/* Vertical panning stays with the scroller; horizontal is ours. Without
+	   this the browser claims the gesture before the handler ever sees it. */
+	touch-action: pan-y;
+	transition: background var(--fast) var(--ease), transform var(--med) var(--ease);
+}
+
+.track.swiping { transition: none; }
+.track:active { background: var(--bg-lift); }
+
+.track img {
+	width: 48px;
+	height: 48px;
+	border-radius: 9px;
+	object-fit: cover;
+	background: var(--surface);
+}
+
+.track-copy { display: grid; gap: 3px; min-width: 0; }
+
+.track-copy b {
+	overflow: hidden;
+	font-size: 14.5px;
+	font-weight: 560;
+	letter-spacing: -0.012em;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.track-copy span {
+	overflow: hidden;
+	color: var(--text-muted);
+	font-size: 12.5px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.track-time {
+	color: var(--text-muted);
+	font-size: 11.5px;
+	font-variant-numeric: tabular-nums;
+}
+
+/* A live equaliser marks the playing row. Colour alone gets lost in a list of
+   similar rows; movement does not. */
+.track-bars { display: none; align-items: flex-end; gap: 2px; height: 14px; }
+.track-shell.is-playing .track-bars { display: flex; }
+.track-shell.is-playing .track-copy b { color: var(--accent); }
+.track-shell.is-playing .track-time { display: none; }
+
+.track-bars i {
+	width: 2.5px;
+	border-radius: 2px;
+	background: var(--accent);
+	animation: bars 900ms var(--ease) infinite alternate;
+}
+
+.track-bars i:nth-child(1) { height: 40%; animation-delay: -300ms; }
+.track-bars i:nth-child(2) { height: 90%; animation-delay: -120ms; }
+.track-bars i:nth-child(3) { height: 60%; }
+
+/* Paused is the same row, stopped — not a different row. */
+.track-shell.is-paused .track-bars i { animation-play-state: paused; opacity: 0.55; }
+
+@keyframes bars {
+	from { transform: scaleY(0.35); }
+	to   { transform: scaleY(1); }
+}
+
+/* ── List entrance ────────────────────────────────────────────────────── */
+
+.enter { animation: enter 340ms var(--ease) backwards; animation-delay: var(--enter-delay, 0ms); }
+
+@keyframes enter {
+	from { opacity: 0; transform: translateY(10px); }
+	to   { opacity: 1; transform: none; }
+}
+
+/* ── Panel transitions ────────────────────────────────────────────────── */
+
+.panel.active.from-right { animation: slide-right var(--med) var(--ease); }
+.panel.active.from-left  { animation: slide-left var(--med) var(--ease); }
+
+@keyframes slide-right {
+	from { opacity: 0; transform: translateX(16px); }
+	to   { opacity: 1; transform: none; }
+}
+
+@keyframes slide-left {
+	from { opacity: 0; transform: translateX(-16px); }
+	to   { opacity: 1; transform: none; }
+}
+
+/* ── Toast ────────────────────────────────────────────────────────────── */
+
+.toast {
+	position: fixed;
+	right: 16px;
+	bottom: calc(var(--tabbar-h) + var(--player-h) + var(--safe-bottom) + 22px);
+	left: 16px;
+	z-index: 60;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 9px;
+	max-width: 360px;
+	margin: 0 auto;
+	padding: 12px 18px;
+	border: 1px solid var(--line-firm);
+	border-radius: 999px;
+	background: color-mix(in oklab, var(--surface-high) 96%, transparent);
+	-webkit-backdrop-filter: blur(18px);
+	backdrop-filter: blur(18px);
+	box-shadow: 0 10px 30px oklch(0% 0 0 / 0.5);
+	color: var(--text);
+	font-size: 13.5px;
+	font-weight: 560;
+	opacity: 0;
+	transform: translateY(12px) scale(0.97);
+	pointer-events: none;
+	transition: opacity var(--med) var(--ease), transform var(--med) var(--ease);
+}
+
+.toast svg { flex: none; color: var(--accent); }
+.toast.show { opacity: 1; transform: none; }
+
+/* ── Sheets ───────────────────────────────────────────────────────────── */
+
+body.sheet-open { overflow: hidden; }
+
+.sheet {
+	position: fixed;
+	inset: 0;
+	z-index: 70;
+	display: flex;
+	align-items: flex-end;
+	justify-content: center;
+}
+
+.sheet-scrim {
+	position: absolute;
+	inset: 0;
+	background: oklch(0% 0 0 / 0.58);
+	-webkit-backdrop-filter: blur(3px);
+	backdrop-filter: blur(3px);
+}
+
+.sheet.opening .sheet-scrim { animation: fade-in var(--med) var(--ease); }
+.sheet.closing .sheet-scrim { animation: fade-in var(--med) var(--ease) reverse forwards; }
+
+.sheet-panel {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	max-width: 620px;
+	max-height: 92vh;
+	border-radius: 26px 26px 0 0;
+	background: var(--bg-lift);
+	border: 1px solid var(--line-firm);
+	border-bottom: 0;
+	box-shadow: 0 -18px 50px oklch(0% 0 0 / 0.55);
+	/* Fades with the drag, so pulling a sheet down dims it toward the page
+	   behind instead of sliding an opaque slab off-screen. */
+	opacity: calc(0.35 + 0.65 * var(--drag-fade, 1));
+	transition: transform var(--med) var(--ease), opacity var(--med) var(--ease);
+}
+
+.sheet-panel.full { height: 92vh; }
+/* During a drag the panel must track the finger exactly; a transition here is
+   the difference between "attached to my thumb" and "laggy". */
+.sheet-panel.dragging { transition: none; }
+
+.sheet.opening .sheet-panel { animation: sheet-up 340ms var(--ease); }
+.sheet.closing .sheet-panel { animation: sheet-down 260ms cubic-bezier(0.4, 0, 1, 1) forwards; }
+
+@keyframes sheet-up   { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes sheet-down { from { transform: none; } to { transform: translateY(100%); } }
+@keyframes fade-in    { from { opacity: 0; } to { opacity: 1; } }
+
+.sheet-grabber {
+	display: grid;
+	place-items: center;
+	flex: none;
+	padding: 10px 0 4px;
+	/* The grabber is the one place a downward drag is unambiguous, so it never
+	   pans the content behind it. */
+	touch-action: none;
+	cursor: grab;
+}
+
+.sheet-grabber span {
+	width: 38px;
+	height: 4px;
+	border-radius: 999px;
+	background: var(--line-firm);
+}
+
+.sheet-body {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+	padding: 4px 20px calc(var(--safe-bottom) + 24px);
+}
+
+.sheet-title {
+	margin: 2px 0 4px;
+	color: var(--text);
+	font-size: 19px;
+	font-weight: 640;
+	letter-spacing: -0.03em;
+	text-transform: none;
+}
+
+.sheet-message { margin: 0 0 16px; color: var(--text-soft); font-size: 14px; line-height: 1.55; }
+.sheet-drag { touch-action: none; }
+.sheet-buttons { display: grid; gap: 9px; margin-top: 8px; }
+
+/* ── Action lists ─────────────────────────────────────────────────────── */
+
+.action-list { display: grid; gap: 2px; margin-top: 8px; }
+
+.action-item {
+	display: flex;
+	align-items: center;
+	gap: 13px;
+	width: 100%;
+	padding: 14px 12px;
+	border: 0;
+	border-radius: var(--r-md);
+	background: none;
+	color: var(--text);
+	font-size: 14.5px;
+	font-weight: 560;
+	text-align: left;
+	transition: background var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+
+.action-item:active { background: var(--surface); transform: scale(0.99); }
+.action-item:disabled { opacity: 0.45; }
+.action-item.danger { color: var(--danger); }
+.action-icon { flex: none; display: inline-flex; color: var(--text-muted); }
+.action-item.danger .action-icon { color: var(--danger); }
+.action-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.action-hint { margin-left: auto; flex: none; color: var(--text-muted); font-size: 12px; font-weight: 500; }
+
+/* ── Now playing card ─────────────────────────────────────────────────── */
+
+.sheet-now .sheet-panel {
+	/* The wash is sampled from the artwork, so each track's card carries that
+	   track's colour instead of one house gradient for everything. */
+	background:
+		radial-gradient(120% 65% at 50% 0%, rgb(var(--tint, 60 90 70) / 0.34), transparent 72%),
+		var(--bg-lift);
+	transition: background 600ms var(--ease), transform var(--med) var(--ease), opacity var(--med) var(--ease);
+}
+
+.now-top {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 18px;
+}
+
+.now-eyebrow {
+	overflow: hidden;
+	color: var(--text-muted);
+	font-size: 11.5px;
+	font-weight: 620;
+	letter-spacing: 0.07em;
+	text-overflow: ellipsis;
+	text-transform: uppercase;
+	white-space: nowrap;
+}
+
+.now-close { color: var(--text-soft); }
+
+/* Sized against the viewport height, not just its width. A square that fills a
+   narrow screen edge-to-edge pushes the transport and the action row off the
+   bottom on a short phone, which is exactly where they are needed. */
+.now-art-shell {
+	position: relative;
+	width: min(100%, 340px, 42vh);
+	margin: 0 auto 24px;
+	aspect-ratio: 1;
+}
+
+.now-art {
+	width: 100%;
+	height: 100%;
+	border-radius: 18px;
+	object-fit: cover;
+	background: var(--surface);
+	box-shadow: 0 26px 60px oklch(0% 0 0 / 0.55);
+	animation: art-in 420ms var(--ease);
+}
+
+@keyframes art-in {
+	from { opacity: 0; transform: scale(0.94); }
+	to   { opacity: 1; transform: none; }
+}
+
+.now-meta { display: grid; gap: 5px; margin-bottom: 20px; text-align: center; }
+
+/* The global h2 is a small uppercase muted label; a track title is the opposite
+   of that in every respect, so each inherited property is answered explicitly. */
+.now-title {
+	margin: 0;
+	color: var(--text);
+	font-size: clamp(20px, 5.6vw, 25px);
+	font-weight: 660;
+	letter-spacing: -0.032em;
+	line-height: 1.2;
+	text-transform: none;
+}
+
+.now-artist { margin: 0; color: var(--text-soft); font-size: 14.5px; }
+
+/* ── Scrubber ─────────────────────────────────────────────────────────── */
+
+.now-seek { position: relative; height: 24px; }
+
+.now-seek-track {
+	position: absolute;
+	top: 10px;
+	right: 0;
+	left: 0;
+	height: 4px;
+	overflow: hidden;
+	border-radius: 999px;
+	background: var(--line-firm);
+	pointer-events: none;
+}
+
+.now-seek-track span {
+	display: block;
+	width: 100%;
+	height: 100%;
+	background: var(--accent);
+	transform: scaleX(var(--played, 0));
+	transform-origin: left;
+}
+
+/* The visible bar is 4px; the target is the full 24px row. */
+.now-seek-input {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	background: none;
+	-webkit-appearance: none;
+	appearance: none;
+}
+
+.now-seek-input::-webkit-slider-thumb {
+	width: 15px;
+	height: 15px;
+	border: 0;
+	border-radius: 50%;
+	background: var(--text);
+	box-shadow: 0 1px 6px oklch(0% 0 0 / 0.5);
+	-webkit-appearance: none;
+	appearance: none;
+}
+
+.now-seek-input::-moz-range-thumb {
+	width: 15px;
+	height: 15px;
+	border: 0;
+	border-radius: 50%;
+	background: var(--text);
+}
+
+.now-times {
+	display: flex;
+	justify-content: space-between;
+	margin: 4px 2px 20px;
+	color: var(--text-muted);
+	font-size: 11.5px;
+	font-variant-numeric: tabular-nums;
+}
+
+/* ── Transport ────────────────────────────────────────────────────────── */
+
+.now-transport {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px;
+	margin-bottom: 26px;
+}
+
+.now-btn {
+	width: 48px;
+	height: 48px;
+	color: var(--text-soft);
+}
+
+.now-btn.on { color: var(--accent); }
+.now-btn:active { transform: scale(0.9); }
+
+.now-play {
+	display: grid;
+	place-items: center;
+	width: 68px;
+	height: 68px;
+	border: 0;
+	border-radius: 50%;
+	background: var(--accent);
+	color: var(--on-accent);
+	box-shadow: 0 8px 26px var(--accent-wash);
+	transition: transform var(--fast) var(--ease), filter var(--fast) var(--ease);
+}
+
+.now-play:active { transform: scale(0.93); }
+.now-play svg { fill: currentColor; stroke: none; }
+
+.now-play-wait {
+	width: 22px;
+	height: 22px;
+	border: 2.5px solid color-mix(in oklab, var(--on-accent) 35%, transparent);
+	border-top-color: var(--on-accent);
+	border-radius: 50%;
+	animation: spin 700ms linear infinite;
+}
+
+/* ── Volume ───────────────────────────────────────────────────────────── */
+
+.now-volume {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: center;
+	gap: 12px;
+	margin-bottom: 18px;
+}
+
+.now-volume-icon { display: inline-flex; color: var(--text-muted); }
+
+.now-volume input {
+	width: 100%;
+	height: 22px;
+	margin: 0;
+	background: none;
+	-webkit-appearance: none;
+	appearance: none;
+}
+
+.now-volume input::-webkit-slider-runnable-track {
+	height: 4px;
+	border-radius: 999px;
+	background: var(--line-firm);
+}
+
+.now-volume input::-webkit-slider-thumb {
+	margin-top: -5.5px;
+	width: 15px;
+	height: 15px;
+	border: 0;
+	border-radius: 50%;
+	background: var(--text-soft);
+	-webkit-appearance: none;
+	appearance: none;
+}
+
+.now-volume input::-moz-range-track { height: 4px; border-radius: 999px; background: var(--line-firm); }
+.now-volume input::-moz-range-thumb { width: 15px; height: 15px; border: 0; border-radius: 50%; background: var(--text-soft); }
+
+/* ── Play on, and the action row ──────────────────────────────────────── */
+
+.now-output { display: flex; justify-content: center; margin-bottom: 22px; }
+
+.now-output-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	max-width: 100%;
+	padding: 9px 16px;
+	border: 1px solid var(--line-firm);
+	border-radius: 999px;
+	background: color-mix(in oklab, var(--surface) 70%, transparent);
+	color: var(--text-soft);
+	font-size: 12.5px;
+	font-weight: 580;
+	transition: border-color var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+
+.now-output-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.now-output-btn:active { border-color: var(--accent); color: var(--text); }
+
+.now-actions {
+	display: grid;
+	grid-template-columns: repeat(5, 1fr);
+	gap: 4px;
+}
+
+.now-action {
+	display: grid;
+	justify-items: center;
+	gap: 7px;
+	padding: 10px 2px;
+	border: 0;
+	border-radius: var(--r-md);
+	background: none;
+	color: var(--text-soft);
+	transition: background var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+
+.now-action:active { background: var(--surface); transform: scale(0.96); }
+.now-action-icon { display: inline-flex; }
+
+.now-action-label {
+	overflow: hidden;
+	max-width: 100%;
+	color: var(--text-muted);
+	font-size: 10.5px;
+	font-weight: 560;
+	text-align: center;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* ── Queue sheet ──────────────────────────────────────────────────────── */
+
+.queue-head { margin-bottom: 12px; }
+.queue-summary { margin: 0 0 12px; color: var(--text-muted); font-size: 12.5px; }
+.queue-tools { display: flex; gap: 8px; }
+
+.chip {
+	padding: 8px 15px;
+	border: 1px solid var(--line-firm);
+	border-radius: 999px;
+	background: none;
+	color: var(--text-soft);
+	font-size: 12.5px;
+	font-weight: 560;
+	transition: background var(--fast) var(--ease), color var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+
+.chip:active { background: var(--surface); }
+.chip.on { border-color: var(--accent); color: var(--accent); }
+.chip:disabled { opacity: 0.4; }
+
+.queue-label {
+	margin: 18px 0 6px;
+	color: var(--text-muted);
+	font-size: 11.5px;
+	font-weight: 620;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.queue-list { display: grid; }
+
+.queue-row {
+	position: relative;
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 8px;
+	border-radius: var(--r-sm);
+	transform: translateX(var(--swipe, 0));
+	transition: transform var(--med) var(--ease), background var(--fast) var(--ease);
+}
+
+.queue-row.is-current { background: color-mix(in oklab, var(--accent) 9%, transparent); }
+.queue-row.dragging { z-index: 2; background: var(--surface-high); box-shadow: 0 10px 26px oklch(0% 0 0 / 0.45); transition: none; }
+.queue-row.removing { background: color-mix(in oklab, var(--danger) 18%, transparent); }
+/* While a row is being dragged the others must not also animate their own
+   hovers; the list is mid-rearrangement, not being pointed at. */
+.queue-list.reordering .queue-row:not(.dragging) { transition: transform var(--med) var(--ease); }
+
+.queue-row-grip {
+	display: grid;
+	place-items: center;
+	width: 34px;
+	height: 46px;
+	color: var(--text-muted);
+	touch-action: none;
+	cursor: grab;
+}
+
+.queue-row-tap {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: center;
+	gap: 11px;
+	min-width: 0;
+	padding: 7px 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	text-align: left;
+	touch-action: pan-y;
+}
+
+.queue-row-tap img { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; background: var(--surface); }
+.queue-row-copy { display: grid; gap: 2px; min-width: 0; }
+
+.queue-row-copy b {
+	overflow: hidden;
+	font-size: 13.5px;
+	font-weight: 560;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.queue-row-copy span {
+	overflow: hidden;
+	color: var(--text-muted);
+	font-size: 12px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.queue-row.is-current .queue-row-copy b { color: var(--accent); }
+.queue-row-remove { width: 36px; height: 36px; color: var(--text-muted); }
+
+/* ── Lyrics ───────────────────────────────────────────────────────────── */
+
+.lyrics-head { margin-bottom: 18px; }
+.lyrics-artist { margin: 2px 0 0; color: var(--text-muted); font-size: 13px; }
+.lyrics-body { display: grid; gap: 2px; }
+.lyrics-line { margin: 0; color: var(--text-soft); font-size: 16px; line-height: 1.65; }
+.lyrics-gap { margin: 0; height: 14px; }
+
+/* ── Settings additions ───────────────────────────────────────────────── */
+
+.settings-list button { justify-content: space-between; gap: 14px; }
+.settings-state { display: inline-flex; flex: none; color: var(--text-muted); }
+.settings-list button[aria-pressed="true"] .settings-state { color: var(--accent); }
+
 /* ── Reduced motion ───────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -732,4 +1381,8 @@ dialog .primary { margin-top: 10px; }
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.01ms !important;
 	}
+	/* The sheet still needs to arrive and leave, or it appears to teleport and
+	   the scrim looks like a bug. It just does it without travel. */
+	.sheet.opening .sheet-panel,
+	.sheet.closing .sheet-panel { animation: none; }
 }

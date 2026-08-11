@@ -1,18 +1,37 @@
 /* Bump this whenever the pairing protocol changes. A returning phone that
  * kept a cached app.js would otherwise keep speaking the old handshake to a
  * computer that no longer understands it. */
-const CACHE = 'rainette-pwa-v3';
+const CACHE = 'rainette-pwa-v4';
 const SHELL = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './src/state.js',
+  './src/dom.js',
+  './src/bridge.js',
+  './src/player.js',
+  './src/sheets.js',
+  './src/tracks.js',
+  './src/queue.js',
+  './src/nowplaying.js',
+  './src/extras.js',
+  './src/sync.js',
   './manifest.webmanifest',
   './icon.svg',
 ];
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+  // addAll is all-or-nothing: one missing module would leave the phone with no
+  // offline shell at all rather than a partial one, so a failed precache falls
+  // back to caching lazily through the fetch handler instead of blocking the
+  // install outright.
+  event.waitUntil(
+    caches.open(CACHE)
+      .then(cache => cache.addAll(SHELL))
+      .catch(() => {})
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', event => {

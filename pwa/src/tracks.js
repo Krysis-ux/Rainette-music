@@ -1,0 +1,197 @@
+/* Track rows, and the swipe gestures that act on them.
+ *
+ * Tapping a row plays it. Everything else a row can do is reached by swiping,
+ * because a phone row has no room for buttons and a long-press menu hides the
+ * two actions people actually want:
+ *
+ *     swipe right →  Play next     (put it after the current track)
+ *     swipe left  →  Add to queue  (put it at the end)
+ *
+ * The gesture is axis-locked on first movement. Without that, a list is
+ * unscrollable: every slightly-diagonal flick down the page catches a row and
+ * drags it sideways. The lock is decided once per gesture and never revisited,
+ * which is what makes a fast scroll feel like a scroll.
+ */
+
+import { el, icon, tap, toast, stagger, collapseAway } from './dom.js';
+import { trackKey, artworkUrl, artistName, formatTime } from './state.js';
+import { queueAddNext, queueAddEnd, currentTrack, isPlaying } from './player.js';
+
+/* Past this many pixels sideways the action commits on release. Below it the
+ * row springs back, so a hesitant swipe is a cancel rather than a surprise. */
+const COMMIT_PX = 72;
+/* How far a finger must travel before the axis is decided. Small enough to feel
+ * immediate, large enough that a straight-down scroll never trips it. */
+const AXIS_PX = 10;
+
+/**
+ * Render a list of tracks into a container.
+ *
+ * `onPlay(track, index)` is what a tap runs. `emptyMessage` is shown instead of
+ * rows when the list is empty — an empty list is a state worth explaining, not
+ * a blank area.
+ */
+export function renderTracks(container, tracks, { emptyMessage, onPlay, swipe = true, showDuration = true } = {}) {
+	container.replaceChildren();
+	if (!tracks.length) {
+		container.append(el('p', 'empty', emptyMessage || 'Nothing here yet.'));
+		return;
+	}
+	for (const [index, track] of tracks.entries()) {
+		container.append(trackRow(track, {
+			onPlay: () => onPlay?.(track, index),
+			swipe,
+			showDuration,
+		}));
+	}
+	markPlayingRows();
+	stagger(container, ':scope > .track-shell');
+}
+
+export function trackRow(track, { onPlay, swipe = true, showDuration = true, trailing = null } = {}) {
+	// The shell holds the fixed action backdrop; the row itself is what slides.
+	const shell = el('div', 'track-shell');
+	shell.dataset.trackKey = trackKey(track);
+
+	if (swipe) {
+		const behind = el('div', 'track-actions');
+		behind.innerHTML =
+			`<span class="track-action next">${icon('queue', 18)}<b>Play next</b></span>` +
+			`<span class="track-action end">${icon('listAdd', 18)}<b>Add to queue</b></span>`;
+		behind.setAttribute('aria-hidden', 'true');
+		shell.append(behind);
+	}
+
+	const row = el('button', 'track');
+	row.type = 'button';
+
+	const art = document.createElement('img');
+	art.src = artworkUrl(track);
+	art.alt = '';
+	art.width = 48;
+	art.height = 48;
+	art.loading = 'lazy';
+	art.decoding = 'async';
+	art.referrerPolicy = 'no-referrer';
+
+	const copy = el('span', 'track-copy');
+	copy.append(el('b', '', track.title || 'Untitled'), el('span', '', artistName(track) || 'Unknown artist'));
+
+	// A playing row gets a live equaliser rather than only a colour change, so
+	// "this one, right now" survives a glance at a list of similar rows.
+	const bars = el('span', 'track-bars');
+	bars.setAttribute('aria-hidden', 'true');
+	bars.innerHTML = '<i></i><i></i><i></i>';
+
+	row.append(art, copy, bars);
+	if (showDuration && Number(track.duration)) {
+		row.append(el('span', 'track-time', formatTime(Number(track.duration))));
+	}
+	if (trailing) row.append(trailing);
+	row.addEventListener('click', () => onPlay?.());
+
+	shell.append(row);
+	if (swipe) wireSwipe(shell, row, track);
+	return shell;
+}
+
+function wireSwipe(shell, row, track) {
+	let startX = 0;
+	let startY = 0;
+	let axis = null;         // null → undecided, 'x' → ours, 'y' → the scroller's
+	let offset = 0;
+	let pointerId = null;
+
+	const settle = () => {
+		row.classList.remove('swiping');
+		row.style.transform = '';
+		shell.classList.remove('reveal-next', 'reveal-end');
+	};
+
+	row.addEventListener('pointerdown', event => {
+		if (event.pointerType === 'mouse' && event.button !== 0) return;
+		pointerId = event.pointerId;
+		startX = event.clientX;
+		startY = event.clientY;
+		axis = null;
+		offset = 0;
+	});
+
+	row.addEventListener('pointermove', event => {
+		if (event.pointerId !== pointerId) return;
+		const dx = event.clientX - startX;
+		const dy = event.clientY - startY;
+
+		if (axis === null) {
+			if (Math.abs(dx) < AXIS_PX && Math.abs(dy) < AXIS_PX) return;
+			// Decided once, for the whole gesture.
+			axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+			if (axis === 'x') {
+				row.setPointerCapture?.(pointerId);
+				row.classList.add('swiping');
+			}
+		}
+		if (axis !== 'x') return;
+		event.preventDefault();
+		// Resistance past the commit point: the row keeps answering the finger
+		// but stops running away with it, which is how the threshold is felt
+		// rather than guessed.
+		offset = Math.abs(dx) > COMMIT_PX
+			? Math.sign(dx) * (COMMIT_PX + (Math.abs(dx) - COMMIT_PX) * 0.35)
+			: dx;
+		row.style.transform = `translateX(${offset}px)`;
+		shell.classList.toggle('reveal-next', offset > 12);
+		shell.classList.toggle('reveal-end', offset < -12);
+	});
+
+	const finish = event => {
+		if (event.pointerId !== pointerId) return;
+		pointerId = null;
+		if (axis !== 'x') { axis = null; return; }
+		axis = null;
+		const committed = Math.abs(offset) >= COMMIT_PX;
+		if (committed) {
+			tap(10);
+			if (offset > 0) {
+				queueAddNext(track);
+				toast('Playing next', { icon: 'queue' });
+			} else {
+				queueAddEnd(track);
+				toast('Added to queue', { icon: 'listAdd' });
+			}
+		}
+		settle();
+	};
+
+	row.addEventListener('pointerup', finish);
+	row.addEventListener('pointercancel', event => {
+		if (event.pointerId !== pointerId) return;
+		pointerId = null;
+		axis = null;
+		settle();
+	});
+
+	// A tap that followed a swipe must not also play the track.
+	row.addEventListener('click', event => {
+		if (Math.abs(offset) > 4) { event.stopImmediatePropagation(); event.preventDefault(); offset = 0; }
+	}, true);
+}
+
+/** Mark whichever rendered rows correspond to the track playing now. */
+export function markPlayingRows() {
+	const track = currentTrack();
+	const key = track ? trackKey(track) : null;
+	const playing = isPlaying();
+	for (const shell of document.querySelectorAll('.track-shell')) {
+		const isCurrent = !!key && shell.dataset.trackKey === key;
+		shell.classList.toggle('is-playing', isCurrent);
+		// The bars freeze rather than disappear when paused: the row is still
+		// the current one, it just is not moving.
+		shell.classList.toggle('is-paused', isCurrent && !playing);
+	}
+}
+
+/** Remove a row with a collapse, for lists the user is editing. */
+export function removeRow(shell, done) {
+	collapseAway(shell, () => { shell.remove(); done?.(); });
+}

@@ -85,9 +85,56 @@ settings first. Never use a wildcard origin.
   cannot invoke arbitrary desktop functions.
 - Do not port-forward the companion port. Use a trusted HTTPS tunnel.
 
+## Layout
+
+No build step, so the modules are loaded directly by the browser.
+
+```text
+app.js            transport, its failure diagnosis, pairing, connection, boot
+src/bridge.js     the injected seam app.js installs; keeps the graph acyclic
+src/state.js      shared state and pure helpers (a leaf: imports nothing)
+src/player.js     the <audio>, the queue, the transport, reporting upward
+src/sync.js       the long-poll loop, output transfer, desktop mirroring
+src/sheets.js     the one modal surface: drag-to-dismiss, stacking, back
+src/tracks.js     track rows and their swipe gestures
+src/queue.js      the queue sheet: reorder, remove, up-next
+src/nowplaying.js the full-screen card the mini bar expands into
+src/extras.js     playlists, lyrics, sleep timer, output picker, track menu
+```
+
+`app.js` keeps transport and pairing because those are the parts that must not
+be guessed at, and a release test pins their diagnosis helpers to that file.
+
+Every module is precached by `sw.js`. **Adding one means adding it to `SHELL`
+and bumping `CACHE`**, or an installed phone keeps serving the previous set —
+the worker answers same-origin GETs cache-first.
+
 ## Capabilities
 
-Search, library sync, queue and previous/next, recent history, lock-screen
-Media Session controls, stream-expiry recovery, and an offline app shell.
+Search, library sync, a full now-playing card, an editable queue with
+swipe-to-queue and drag reordering, playlists, lyrics, a sleep timer, shuffle
+and three-state repeat, recent history, lock-screen Media Session controls,
+stream-expiry recovery, and an offline app shell.
+
+### Two sessions, or one
+
+By default a phone runs its **own** session: what it plays is its own, and two
+phones on one computer never interrupt each other.
+
+**Linked mode** (Settings → Link to my computer, or Play on → the computer) is
+the other choice: the phone stops running a session and mirrors the desktop's,
+showing what the computer plays and driving that transport instead of its own.
+It is opt-in per device, re-asserted on every poll — so it survives a desktop
+restart — and it never affects any other paired phone.
+
+### Play on
+
+The desktop can hand its session to a phone, and the phone acknowledges only
+once the audio has actually loaded; a failed handoff leaves the desktop playing
+rather than pausing both devices into silence.
+
+The picker also lists the computer's real audio outputs by name, including a
+connected Bluetooth speaker. The phone cannot re-route the computer's audio, so
+choosing one links this phone to that computer rather than pretending otherwise.
 
 Playback still needs the paired computer to be awake and online.
