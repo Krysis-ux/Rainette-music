@@ -37,6 +37,12 @@
         remote, so nothing plays until that computer says yes.
       </p>
 
+      <p id="setupStandaloneNote" class="note" hidden>
+        This is the Home Screen copy of Rainette. iPhone keeps it separate from Safari,
+        so the pairing you did in the browser isn’t here. Paste the link once more and
+        this copy stays paired for good.
+      </p>
+
       <form id="pairForm" class="pair-form">
         <label class="field">
           <span>Pairing link</span>
@@ -92,6 +98,10 @@
           <h1>Library</h1>
           <button id="libraryRefreshButton" class="ghost small" type="button">Refresh</button>
         </div>
+        <div class="segmented" role="tablist" aria-label="Library view">
+          <button id="libraryModeSongs" class="active" type="button" role="tab" aria-selected="true">Songs</button>
+          <button id="libraryModePlaylists" type="button" role="tab" aria-selected="false">Playlists</button>
+        </div>
         <div id="libraryList" class="track-list"></div>
       </section>
 
@@ -137,6 +147,9 @@
     </button>
     <div class="player-time"><span id="playerElapsed">0:00</span><span id="playerDuration"></span></div>
     <div class="player-controls">
+      <button id="prevButton" class="icon" type="button" aria-label="Previous track">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M18 7.2v9.6a1 1 0 0 1-1.5.87l-8-4.8a1 1 0 0 1 0-1.74l8-4.8A1 1 0 0 1 18 7.2z"/><rect x="5.6" y="6" width="2" height="12" rx="1"/></svg>
+      </button>
       <button id="playPauseButton" class="icon play" type="button" aria-label="Play" data-state="paused">
         <svg class="glyph-play" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M8.5 5.9v12.2a1 1 0 0 0 1.53.85l9.5-6.1a1 1 0 0 0 0-1.7l-9.5-6.1A1 1 0 0 0 8.5 5.9z"/></svg>
         <svg class="glyph-pause" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M7.5 5h3.2v14H7.5zM13.3 5h3.2v14h-3.2z"/></svg>
@@ -155,7 +168,7 @@
 
   <nav id="tabBar" class="tabbar" hidden aria-label="Primary">
     <button data-tab="home" type="button" class="active" aria-current="page">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4v-5h-6v5H5a1 1 0 0 1-1-1z"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.6 12 4.4l8 6.2V19a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/><path d="M9.6 20v-5.2h4.8V20"/></svg>
       Home
     </button>
     <button data-tab="search" type="button">
@@ -167,7 +180,7 @@
       Library
     </button>
     <button data-tab="settings" type="button">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2.6"/><path d="M12 4v2.2M12 17.8V20M4 12h2.2M17.8 12H20M6.3 6.3l1.6 1.6M16.1 16.1l1.6 1.6M17.7 6.3l-1.6 1.6M7.9 16.1l-1.6 1.6"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.6" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="18.4" cy="12" r="1.5"/></svg>
       More
     </button>
   </nav>
@@ -177,6 +190,11 @@
       <h2>Keep Rainette one tap away</h2>
       <p><b>iPhone:</b> tap Share in Safari, then <b>Add to Home Screen</b>.</p>
       <p><b>Android:</b> open the browser menu, then <b>Install app</b>.</p>
+      <p class="note">
+        On iPhone the Home Screen copy gets its own storage, so it starts unpaired even
+        though Safari is paired. Make a second pairing code on your computer and pair the
+        installed app once — after that it stays paired and you can stop using Safari.
+      </p>
       <button class="primary" value="close">Got it</button>
     </form>
   </dialog>

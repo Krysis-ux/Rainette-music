@@ -107,8 +107,27 @@ def _ns_window(window: Any) -> Any | None:
 
     pywebview assigns ``.native`` while constructing the browser view, so this
     returns None for any call that lands before the window is realised.
+
+    ``native`` is a property, and on some pywebview builds its getter reaches for
+    the Windows backend and raises ModuleNotFoundError('winreg'). getattr's
+    default only absorbs AttributeError, so that escaped and every window
+    operation logged a Windows error on a Mac.
     """
-    return getattr(window, "native", None)
+    try:
+        return getattr(window, "native", None)
+    except Exception:
+        return None
+
+
+_warned: set[str] = set()
+
+
+def _warn_once(log: Callable[[str], None], key: str, message: str) -> None:
+    """Log a persistent platform limitation once, not once per window call."""
+    if key in _warned:
+        return
+    _warned.add(key)
+    log(message)
 
 
 def _on_main_thread(action: Callable[[], None]) -> None:
@@ -162,7 +181,7 @@ def shape_player(window: Any, collapsed: bool, log: Logger) -> None:
                 layer.setCornerRadius_(radius)
                 layer.setMasksToBounds_(True)
         except Exception as exc:
-            log(f"player shape failed: {exc}")
+            _warn_once(log, "shape", f"player shape failed: {exc}")
 
     _on_main_thread(apply_shape)
 
@@ -208,7 +227,7 @@ def apply_player_on_top(window: Any, enabled: bool, log: Logger) -> None:
                 AppKit.NSStatusWindowLevel if enabled else AppKit.NSNormalWindowLevel
             )
         except Exception as exc:
-            log(f"player pin failed: {exc}")
+            _warn_once(log, "pin", f"player pin failed: {exc}")
 
     _on_main_thread(set_level)
 

@@ -12,6 +12,7 @@
  */
 
 import { state, STORAGE, artworkUrl, artistName, formatTime, readRecent, rememberRecent } from './src/state.js';
+import { fetchDesktopRecent, mergeRecent, fetchPlaylists, fetchPlaylistTracks, playlistSubtitle } from './src/collections.js';
 import { $, el, icon, toast } from './src/dom.js';
 import { configureBridge } from './src/bridge.js';
 import { configurePlayer, subscribe, playTrack, toggle, skip, currentTrack, isPlaying, isLoading, currentTime, duration, resetPlayback, isLinked } from './src/player.js';
@@ -124,6 +125,14 @@ function setStatus(kind, text) {
 	statusText.textContent = text;
 }
 
+/* iOS gives a Home Screen app its own storage, separate from Safari's. Pairing
+ * in the browser and then opening the icon therefore lands on an app that has
+ * genuinely never been paired -- not a bug to fix, but the reason to say so
+ * plainly instead of showing the same blank form twice. */
+export function isStandalone() {
+	return window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+}
+
 function showSetup(message = '') {
 	state.connected = false;
 	stopEventLoop();
@@ -136,6 +145,7 @@ function showSetup(message = '') {
 	pairWaiting.hidden = true;
 	pairForm.hidden = false;
 	setupError.textContent = message;
+	$('#setupStandaloneNote').hidden = !(isStandalone() && !state.token);
 	setStatus('', 'Not connected');
 }
 
@@ -340,10 +350,19 @@ function playFromList(list) {
 }
 
 function renderRecent(recent = readRecent()) {
-	renderTracks($('#recentList'), recent.slice(0, 12), {
-		emptyMessage: 'Play something from Search and it shows up here.',
-		onPlay: playFromList(recent.slice(0, 12)),
+	const list = recent.slice(0, 12);
+	renderTracks($('#recentList'), list, {
+		emptyMessage: 'Play something here or on your computer and it shows up.',
+		onPlay: playFromList(list),
 	});
+}
+
+/* The computer's history and this phone's are one list. Rendering the local
+ * copy first keeps the tab populated while the computer answers. */
+async function refreshRecent() {
+	renderRecent();
+	const desktop = await fetchDesktopRecent();
+	if (desktop.length) renderRecent(mergeRecent(desktop));
 }
 
 async function refreshLibrary() {
@@ -359,7 +378,71 @@ async function refreshLibrary() {
 	} catch (error) {
 		target.replaceChildren(el('p', 'empty', connectionError(error)));
 	}
-	renderRecent();
+	refreshRecent();
+}
+
+/* ── Playlists ────────────────────────────────────────────────────────────
+ * The computer's playlists, browsable rather than only writable. Library is a
+ * two-mode panel instead of a fifth tab: a phone tab bar stops being tappable
+ * somewhere around four. */
+
+let libraryMode = 'songs';
+let openPlaylistId = null;
+
+async function renderLibraryPanel() {
+	const target = $('#libraryList');
+	$('#libraryModeSongs')?.classList.toggle('active', libraryMode === 'songs');
+	$('#libraryModePlaylists')?.classList.toggle('active', libraryMode === 'playlists');
+
+	if (libraryMode === 'songs') { openPlaylistId = null; return refreshLibrary(); }
+	if (openPlaylistId) return renderPlaylistTracks(openPlaylistId);
+
+	target.replaceChildren(el('p', 'empty', 'Loading your playlists…'));
+	try {
+		const playlists = await fetchPlaylists();
+		if (!playlists.length) {
+			target.replaceChildren(el('p', 'empty', 'Playlists you make on your computer show up here.'));
+			return;
+		}
+		target.replaceChildren(...playlists.map(playlist => {
+			const row = el('button', 'collection-row');
+			row.type = 'button';
+			row.append(
+				el('span', 'collection-mark', (playlist.name || '?').slice(0, 1).toUpperCase()),
+				el('span', 'collection-copy',
+					el('b', '', playlist.name || 'Untitled playlist'),
+					el('span', '', playlistSubtitle(playlist))),
+			);
+			row.addEventListener('click', () => {
+				openPlaylistId = playlist.id;
+				renderPlaylistTracks(playlist.id, playlist.name);
+			});
+			return row;
+		}));
+	} catch (error) {
+		target.replaceChildren(el('p', 'empty', connectionError(error)));
+	}
+}
+
+async function renderPlaylistTracks(playlistId, name = '') {
+	const target = $('#libraryList');
+	target.replaceChildren(el('p', 'empty', 'Loading…'));
+	const back = el('button', 'collection-back', '‹ All playlists');
+	back.type = 'button';
+	back.addEventListener('click', () => { openPlaylistId = null; renderLibraryPanel(); });
+	try {
+		const tracks = await fetchPlaylistTracks(playlistId);
+		target.replaceChildren(back);
+		if (name) target.append(el('h2', 'collection-title', name));
+		const list = el('div', 'track-list');
+		target.append(list);
+		renderTracks(list, tracks, {
+			emptyMessage: 'This playlist is empty.',
+			onPlay: playFromList(tracks),
+		});
+	} catch (error) {
+		target.replaceChildren(back, el('p', 'empty', connectionError(error)));
+	}
 }
 
 async function search(query) {
@@ -439,7 +522,8 @@ function switchTab(name) {
 		button.classList.toggle('active', active);
 		button.setAttribute('aria-current', active ? 'page' : 'false');
 	}
-	if (name === 'library' && !state.library.length) refreshLibrary();
+	if (name === 'library' && !state.library.length) renderLibraryPanel();
+	if (name === 'home') refreshRecent();
 	if (name === 'search') $('#searchInput').focus();
 	if (name === 'settings') renderSettings();
 }
@@ -518,7 +602,19 @@ $('#connectionButton').addEventListener('click', () => {
 	else showSetup();
 });
 
-$('#libraryRefreshButton').addEventListener('click', refreshLibrary);
+$('#libraryRefreshButton').addEventListener('click', () => { state.library = []; renderLibraryPanel(); });
+
+for (const [id, mode] of [['#libraryModeSongs', 'songs'], ['#libraryModePlaylists', 'playlists']]) {
+	$(id).addEventListener('click', () => {
+		if (libraryMode === mode) return;
+		libraryMode = mode;
+		openPlaylistId = null;
+		for (const button of [$('#libraryModeSongs'), $('#libraryModePlaylists')]) {
+			button.setAttribute('aria-selected', String(button.id === id.slice(1)));
+		}
+		renderLibraryPanel();
+	});
+}
 $('#testConnectionButton').addEventListener('click', () => testConnection({ reveal: false }));
 $('#installHelpButton').addEventListener('click', () => $('#installDialog').showModal());
 $('#outputButton').addEventListener('click', () => openOutputPicker());
@@ -541,6 +637,7 @@ for (const button of document.querySelectorAll('[data-tab]')) {
 }
 
 $('#playPauseButton').addEventListener('click', event => { event.stopPropagation(); toggle(); });
+$('#prevButton').addEventListener('click', event => { event.stopPropagation(); skip(-1).catch(showPlaybackError); });
 $('#nextButton').addEventListener('click', event => { event.stopPropagation(); skip(1).catch(showPlaybackError); });
 $('#queueButton').addEventListener('click', event => { event.stopPropagation(); openQueueSheet(); });
 wireMiniBar();

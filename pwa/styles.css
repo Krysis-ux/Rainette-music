@@ -385,6 +385,101 @@ h2 {
 	line-height: 1.6;
 }
 
+/* ── Segmented control ────────────────────────────────────────────────────
+ * Songs / Playlists. A second row of tabs would compete with the tab bar, so
+ * this sits inside the panel and reads as a filter on it. */
+
+.segmented {
+	display: grid;
+	grid-auto-flow: column;
+	grid-auto-columns: 1fr;
+	gap: 2px;
+	margin: 14px 0 4px;
+	padding: 3px;
+	background: var(--bg-lift);
+	border-radius: var(--r-md);
+}
+
+.segmented button {
+	appearance: none;
+	border: 0;
+	padding: 8px 10px;
+	min-height: 36px;
+	background: transparent;
+	color: var(--text-muted);
+	font: inherit;
+	font-size: 13.5px;
+	font-weight: 560;
+	border-radius: calc(var(--r-md) - 4px);
+	transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+
+.segmented button.active {
+	background: var(--surface-high);
+	color: var(--text);
+}
+
+.segmented button:active { transform: scale(0.98); }
+
+/* ── Playlists ────────────────────────────────────────────────────────────*/
+
+.collection-row {
+	display: grid;
+	grid-template-columns: 44px minmax(0, 1fr);
+	align-items: center;
+	gap: 12px;
+	width: 100%;
+	padding: 10px 2px;
+	border: 0;
+	border-bottom: 1px solid var(--line);
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+}
+
+.collection-row:active { background: var(--bg-lift); }
+
+.collection-mark {
+	display: grid;
+	place-items: center;
+	width: 44px;
+	height: 44px;
+	border-radius: var(--r-sm);
+	background: var(--accent-wash);
+	color: var(--accent);
+	font-size: 17px;
+	font-weight: 600;
+}
+
+.collection-copy { display: grid; gap: 2px; min-width: 0; }
+.collection-copy b { font-size: 14.5px; font-weight: 560; }
+.collection-copy span { font-size: 12.5px; color: var(--text-muted); }
+
+.collection-back {
+	appearance: none;
+	border: 0;
+	margin: 10px 0 2px;
+	padding: 6px 0;
+	background: none;
+	color: var(--accent);
+	font: inherit;
+	font-size: 14px;
+}
+
+.collection-title { margin: 2px 0 6px; font-size: 19px; font-weight: 600; }
+
+/* A short explanation attached to a control, not a paragraph of body copy. */
+.note {
+	margin: 14px 0 0;
+	padding: 12px 14px;
+	background: var(--bg-lift);
+	border-radius: var(--r-md);
+	color: var(--text-soft);
+	font-size: 13px;
+	line-height: 1.6;
+}
+
 /* ── Search ───────────────────────────────────────────────────────────── */
 
 .search-form {
@@ -604,9 +699,20 @@ h2 {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Four transport buttons do not fit beside the artwork and title on the
+   narrowest phones. Previous is the one to drop: the now-playing card is one
+   tap away and carries the full transport. */
+#prevButton { display: none; }
+.player-controls .icon { width: 38px; height: 38px; }
+
+@media (min-width: 360px) {
+	#prevButton { display: grid; }
+}
+
 @media (min-width: 380px) {
 	.player { grid-template-columns: minmax(0, 1fr) auto auto; }
 	.player-time { display: flex; }
+	.player-controls .icon { width: 40px; height: 40px; }
 }
 
 /* Linked to the computer: the bar is showing something it is not itself

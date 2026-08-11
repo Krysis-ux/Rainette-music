@@ -218,14 +218,27 @@ export async function skip(offset) {
 	if (index < 0) {
 		// Pressing previous mid-track restarts it first, as every other player
 		// does, and only steps back when already near the start.
-		if (currentTime() > 3) { audio.currentTime = 0; return; }
-		if (state.repeat !== 'all') return;
-		await playTrack(state.queue[state.queue.length - 1], state.queue, state.queue.length - 1);
+		if (currentTime() > 3) { audio.currentTime = 0; emit(); return; }
+		if (state.repeat === 'all') {
+			await playTrack(state.queue[state.queue.length - 1], state.queue, state.queue.length - 1);
+			return;
+		}
+		// Nothing before the first track, so restart it. Doing nothing at all
+		// reads as a dead button.
+		audio.currentTime = 0;
+		emit();
 		return;
 	}
 	if (index >= state.queue.length) {
-		if (state.repeat !== 'all') return;
-		await playTrack(state.queue[0], state.queue, 0);
+		if (state.repeat === 'all') {
+			await playTrack(state.queue[0], state.queue, 0);
+			return;
+		}
+		// End of the queue: stop on the last track rather than leaving it
+		// running, and let the transport show paused instead of looking stuck.
+		audio.pause();
+		audio.currentTime = 0;
+		emit();
 		return;
 	}
 	await playTrack(state.queue[index], state.queue, index);

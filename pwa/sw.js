@@ -17,6 +17,7 @@ const SHELL = [
   './src/nowplaying.js',
   './src/extras.js',
   './src/sync.js',
+  './src/collections.js',
   './manifest.webmanifest',
   './icon.svg',
 ];
