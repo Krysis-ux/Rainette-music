@@ -235,9 +235,26 @@ h2 {
 
 .pair-form { display: grid; gap: 14px; }
 
-/* Scanning is the path that works; pasting is the fallback. The form is
- * ordered and weighted to say so. */
-.scan-cta { display: inline-flex; align-items: center; justify-content: center; gap: 9px; }
+/* Under the pair button rather than above the form: pasting a link is the
+ * expected path, and scanning is the one that also works from a Home Screen
+ * icon — so it sits alongside as an equal, not as a footnote. */
+.scan-cta {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 9px;
+	width: 100%;
+	padding: 13px 16px;
+	border: 1px solid var(--line-firm);
+	border-radius: var(--r-md);
+	background: var(--surface);
+	color: var(--text);
+	font: inherit;
+	font-weight: 600;
+	transition: background var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+
+.scan-cta:active { background: var(--surface-high); transform: scale(0.99); }
 
 .scan-divider {
 	display: flex;

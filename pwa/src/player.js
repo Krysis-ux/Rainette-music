@@ -107,9 +107,10 @@ let lastProgressAt = 0;
 function publishProgress() {
 	if (isLinked()) return;
 	// One tick a second is enough for a remote progress bar and keeps a phone on
-	// mobile data from spending its battery on the tunnel.
+	// mobile data from spending its battery on the tunnel. With the screen off
+	// nobody is reading it at all, so it drops to a keep-alive.
 	const now = Date.now();
-	if (now - lastProgressAt < 1000) return;
+	if (now - lastProgressAt < (document.hidden ? 5000 : 1000)) return;
 	lastProgressAt = now;
 	command('music_progress', {
 		current_time: currentTime(),
@@ -124,6 +125,54 @@ function remoteControl(action, payload = {}) {
 	command('music_remote_control', { action, ...payload }).catch(() => {});
 }
 
+/* ── Stream URLs ───────────────────────────────────────────────────────────
+ * Resolved URLs are kept so the next track can start without asking the
+ * computer first. That is what keeps the music going with the screen off: a
+ * backgrounded page may only start audio as a continuation of the track that
+ * just ended, and awaiting the network breaks that chain. */
+
+const HALF_LIFE = 0.9;   // refresh before the grant expires, not at the edge
+const PREFETCH_AHEAD = 2;
+
+const streams = new Map();
+const prefetching = new Set();
+
+function rememberStream(track, result) {
+	const seconds = Math.min(Math.max(Number(result?.expires_hint_s) || 3600, 60), 21600);
+	streams.set(trackKey(track), { url: result.url, expiresAt: Date.now() + seconds * 1000 * HALF_LIFE });
+}
+
+function readyStream(track) {
+	const key = trackKey(track);
+	const entry = streams.get(key);
+	if (!entry) return '';
+	if (entry.expiresAt <= Date.now()) { streams.delete(key); return ''; }
+	return entry.url;
+}
+
+async function resolveStream(track, forceRefresh) {
+	const result = await command('music_stream_url', {
+		source_id: track.source_id,
+		track,
+		force_refresh: !!forceRefresh,
+	}, 50000);
+	if (!result.url) throw new Error('The computer did not return an audio stream.');
+	rememberStream(track, result);
+	return result.url;
+}
+
+/** Resolve what is coming up, so advancing needs no round trip. */
+function prefetchUpcoming() {
+	for (let offset = 1; offset <= PREFETCH_AHEAD; offset += 1) {
+		const next = state.queue[state.queueIndex + offset];
+		if (!next?.source_id || readyStream(next)) continue;
+		const key = trackKey(next);
+		if (prefetching.has(key)) continue;
+		prefetching.add(key);
+		resolveStream(next, false).catch(() => {}).finally(() => prefetching.delete(key));
+	}
+}
+
 /* ── Playback ──────────────────────────────────────────────────────────────*/
 
 export async function playTrack(track, queue = [track], index = 0, options = {}) {
@@ -135,9 +184,13 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 	state.queue = queue.slice();
 	state.queueIndex = Math.max(0, Math.min(index, state.queue.length - 1));
 	state.currentTrack = track;
-	state.loading = true;
 	endGuardKey = '';
 	state.streamRefreshAttempted = !!options.forceRefresh;
+
+	// Only a track whose URL still has to be fetched is "loading"; one already
+	// resolved starts now and never shows a spinner.
+	const ready = options.forceRefresh ? '' : readyStream(track);
+	state.loading = !ready;
 	emit();
 
 	// `loading` drives a spinner in place of the play glyph. Any exit from here
@@ -145,32 +198,31 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 	// computer that went to sleep mid-resolve — leaves the transport spinning
 	// forever with no way back.
 	try {
-		const stream = await command('music_stream_url', {
-			source_id: track.source_id,
-			track,
-			force_refresh: !!options.forceRefresh,
-		}, 50000);
-		if (!stream.url) throw new Error('The computer did not return an audio stream.');
+		const url = ready || await resolveStream(track, options.forceRefresh);
 
 		// A newer play may have started while this one was resolving; adopting
 		// its stream would swap the track out from under the user.
 		if (trackKey(state.currentTrack) !== trackKey(track)) return;
 
 		const resumeAt = Number(options.resumeAt || 0);
-		audio.src = mediaUrl(stream.url);
+		audio.src = mediaUrl(url);
 		audio.load();
 		if (resumeAt > 0) {
 			audio.addEventListener('loadedmetadata', () => {
 				if (Number.isFinite(audio.duration)) audio.currentTime = Math.min(resumeAt, Math.max(0, audio.duration - 1));
 			}, { once: true });
 		}
+		// Named on the lock screen before it starts, not after, so the controls
+		// never show the track that just finished.
+		publishMediaSession(track);
 		if (options.startPaused) {
 			publishNowPlaying('paused');
 			return;
 		}
-		await audio.play();
+		const started = audio.play();
+		prefetchUpcoming();
+		await started;
 		rememberRecent(track);
-		publishMediaSession(track);
 		publishNowPlaying('playing');
 	} finally {
 		state.loading = false;
@@ -387,6 +439,27 @@ function publishMediaSession(track) {
 		});
 		navigator.mediaSession.playbackState = audio.paused ? 'paused' : 'playing';
 	} catch { /* older iOS builds reject some artwork */ }
+	publishPosition(true);
+}
+
+/* Without this the lock screen shows a scrubber that does not move, and its
+ * skip-forward gestures land in the wrong place. */
+let lastPositionAt = 0;
+
+function publishPosition(force = false) {
+	if (!navigator.mediaSession?.setPositionState) return;
+	const now = Date.now();
+	if (!force && now - lastPositionAt < 900) return;
+	lastPositionAt = now;
+	const length = duration();
+	if (!(length > 0)) return;
+	try {
+		navigator.mediaSession.setPositionState({
+			duration: length,
+			position: Math.max(0, Math.min(currentTime(), length)),
+			playbackRate: audio.playbackRate || 1,
+		});
+	} catch { /* a position the element disagrees with is refused, harmlessly */ }
 }
 
 function wireMediaSession() {
@@ -410,13 +483,14 @@ function wireMediaSession() {
 for (const event of ['play', 'pause']) {
 	audio.addEventListener(event, () => {
 		if ('mediaSession' in navigator) navigator.mediaSession.playbackState = audio.paused ? 'paused' : 'playing';
+		publishPosition(true);
 		publishNowPlaying(audio.paused ? 'paused' : 'playing');
 		emit();
 	});
 }
 
-audio.addEventListener('loadedmetadata', emit);
-audio.addEventListener('timeupdate', () => { guardTrueEnd(); publishProgress(); emit(); });
+audio.addEventListener('loadedmetadata', () => { publishPosition(true); emit(); });
+audio.addEventListener('timeupdate', () => { guardTrueEnd(); publishProgress(); publishPosition(); emit(); });
 
 function finishTrack() {
 	if (state.repeat === 'one') {
@@ -484,6 +558,9 @@ export function resetPlayback() {
 	audio.pause();
 	audio.removeAttribute('src');
 	audio.load();
+	// The cached URLs are grants bound to the credential being discarded.
+	streams.clear();
+	prefetching.clear();
 	state.queue = [];
 	state.queueIndex = -1;
 	state.currentTrack = null;
