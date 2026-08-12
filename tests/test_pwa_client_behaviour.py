@@ -86,7 +86,9 @@ class FakeComputer:
             return {"ok": True, "id": request_id, "plain": "First line\nSecond line\nThird line",
                     "synced": SYNCED_LRC, "instrumental": False}
         if kind == "music_stream_url":
-            return {"ok": True, "id": request_id, "url": "/audio/fake"}
+            # One grant per track, as the real relay hands out.
+            return {"ok": True, "id": request_id,
+                    "url": f"/audio/{payload.get('source_id')}", "expires_hint_s": 3600}
         if kind == "music_output_devices":
             return {"ok": True, "id": request_id, "devices": [
                 {"id": "spk", "name": "Kitchen speaker", "kind": "bluetooth", "is_default": False},
@@ -273,6 +275,57 @@ class TestTransport:
         )
         assert "music_output_transfer" in computer.commands, computer.commands
         assert page.evaluate("() => window.__rainetteAudio.paused") is True
+        assert not errors, errors
+        page.close()
+
+
+class TestBackgroundPlayback:
+    def test_the_next_track_starts_without_asking_the_computer(self, browser, static_server):
+        """A backgrounded page may only start audio as a continuation of the
+        track that just ended, so advancing must not await the network."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+
+        # The rest of the queue is resolved while the first track plays: three
+        # recents means one URL for the track playing and two prefetched.
+        deadline = time.monotonic() + 5
+        while computer.commands.count("music_stream_url") < 3 and time.monotonic() < deadline:
+            page.wait_for_timeout(100)
+        resolved = computer.commands.count("music_stream_url")
+        assert resolved == 3, f"upcoming tracks were not prefetched: {computer.commands}"
+
+        # `ended` must reach play() in the same task, with no request between.
+        outcome = page.evaluate(
+            """() => {
+                const audio = window.__rainetteAudio;
+                const before = audio.src;
+                audio.paused = true;
+                audio.dispatchEvent(new Event('ended'));
+                return { started: audio.paused === false, changed: audio.src !== before };
+            }"""
+        )
+        assert outcome["changed"], "the next track's source was not set synchronously"
+        assert outcome["started"], "playback did not start in the same task as `ended`"
+        assert computer.commands.count("music_stream_url") == resolved, \
+            "advancing asked the computer for a URL instead of using the prefetched one"
+        assert not errors, errors
+        page.close()
+
+    def test_the_lock_screen_is_told_what_is_playing(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+        page.wait_for_function("() => navigator.mediaSession?.metadata?.title")
+
+        assert page.evaluate("() => navigator.mediaSession.metadata.title") == "Track 1"
+        assert page.evaluate("() => navigator.mediaSession.playbackState") == "playing"
         assert not errors, errors
         page.close()
 
