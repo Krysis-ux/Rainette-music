@@ -39,13 +39,9 @@ export class PlaybackLoadGuard {
 	}
 }
 
-/** Settle a promise into an explicit result before a bounded deadline.
- *
- * MediaElement.play() is allowed to remain pending while the user agent waits
- * for media.  Turning that into a value (instead of throwing from a race) keeps
- * late rejection handlers attached and prevents unhandled-promise noise after
- * the timeout has already moved playback into its guarded retry path.
- */
+/** Settle a promise into an explicit result before a deadline. play() may stay
+ *  pending indefinitely; a value rather than a throw keeps late rejection
+ *  handlers attached once playback has moved on to its retry path. */
 export function settleWithin(value, timeoutMs) {
 	return new Promise(resolve => {
 		let finished = false;

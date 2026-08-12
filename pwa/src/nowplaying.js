@@ -1,10 +1,6 @@
-/* The now-playing card: what the mini bar expands into.
- *
- * Same contents in the same order as the desktop's Now Playing view, so the two
- * devices are not two layouts. Phone-specific: the artwork tints the sheet, and
- * the scrubber is a real range input, because 2px is a fine cursor target and a
- * useless thumb one.
- */
+/* The now-playing card the mini bar expands into. Same contents in the same
+ * order as the desktop, so the two devices are not two layouts. The scrubber is
+ * a real range input: 2px is a fine cursor target and a useless thumb one. */
 
 import { $, el, icon, iconButton, tap, toast, motionOff } from './dom.js';
 import { state, artworkUrl, artistName, formatTime, REPEAT_LABEL } from './state.js';
@@ -196,7 +192,6 @@ export function openNowPlaying() {
 
 			render();
 			const stop = subscribe(render);
-			handle.onRefresh = render;
 			new MutationObserver((_records, observer) => {
 				if (handle.root.isConnected) return;
 				observer.disconnect();
@@ -245,10 +240,6 @@ function tintFromArtwork(image, root) {
 		} catch { /* tainted canvas: keep the default ground */ }
 	};
 	source.src = image.src;
-}
-
-export function closeNowPlaying() {
-	openHandle?.close();
 }
 
 /** Wire the mini bar so tapping it opens the card. */

@@ -1,9 +1,6 @@
-/**
- * Small custom modal helpers — replace the native confirm()/alert()/prompt()
- * dialogs with UI that matches the rest of the app. Each exported helper
- * returns a Promise that resolves on confirm/cancel/backdrop-click/Escape and
- * removes the modal from the DOM once it settles.
- */
+/* Modal helpers replacing native confirm/alert/prompt with UI that matches the
+ * app. Each returns a Promise that settles on confirm, cancel, backdrop click
+ * or Escape, and removes itself once it does. */
 
 import { iconMarkup } from './rainette_icons.js';
 

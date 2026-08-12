@@ -235,6 +235,27 @@ h2 {
 
 .pair-form { display: grid; gap: 14px; }
 
+/* Scanning is the path that works; pasting is the fallback. The form is
+ * ordered and weighted to say so. */
+.scan-cta { display: inline-flex; align-items: center; justify-content: center; gap: 9px; }
+
+.scan-divider {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin: 0;
+	color: var(--text-muted);
+	font-size: 12px;
+}
+
+.scan-divider::before,
+.scan-divider::after {
+	content: '';
+	flex: 1;
+	height: 1px;
+	background: var(--line);
+}
+
 .field { display: grid; gap: 7px; }
 
 .field > span {
@@ -1092,6 +1113,13 @@ body.sheet-open { overflow: hidden; }
 .action-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .action-hint { margin-left: auto; flex: none; color: var(--text-muted); font-size: 12px; font-weight: 500; }
 
+/* The row that is already the answer. A picker with nothing marked makes the
+ * current output a thing you have to remember rather than read. */
+.action-item.active { color: var(--accent); }
+.action-item.active .action-icon { color: var(--accent); }
+.action-check { flex: none; display: inline-flex; margin-left: auto; color: var(--accent); }
+.action-hint + .action-check { margin-left: 8px; }
+
 /* ── Now playing card ─────────────────────────────────────────────────── */
 
 .sheet-now .sheet-panel {
@@ -1465,6 +1493,46 @@ body.sheet-open { overflow: hidden; }
 .queue-row.is-current .queue-row-copy b { color: var(--accent); }
 .queue-row-remove { width: 36px; height: 36px; color: var(--text-muted); }
 
+/* ── Scanner ──────────────────────────────────────────────────────────── */
+
+.scan-head { margin-bottom: 16px; }
+.scan-hint { margin: 4px 0 0; color: var(--text-muted); font-size: 13px; }
+
+.scan-stage {
+	position: relative;
+	aspect-ratio: 1;
+	overflow: hidden;
+	border-radius: var(--r-lg);
+	background: oklch(20% 0.01 155);
+}
+
+.scan-stage video {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+}
+
+/* Corner marks rather than a full frame: they say where to aim without
+ * hiding the picture the person is aiming with. */
+.scan-reticle {
+	position: absolute;
+	inset: 14%;
+	border-radius: var(--r-md);
+	background:
+		linear-gradient(var(--accent), var(--accent)) 0 0 / 22px 3px no-repeat,
+		linear-gradient(var(--accent), var(--accent)) 0 0 / 3px 22px no-repeat,
+		linear-gradient(var(--accent), var(--accent)) 100% 0 / 22px 3px no-repeat,
+		linear-gradient(var(--accent), var(--accent)) 100% 0 / 3px 22px no-repeat,
+		linear-gradient(var(--accent), var(--accent)) 0 100% / 22px 3px no-repeat,
+		linear-gradient(var(--accent), var(--accent)) 0 100% / 3px 22px no-repeat,
+		linear-gradient(var(--accent), var(--accent)) 100% 100% / 22px 3px no-repeat,
+		linear-gradient(var(--accent), var(--accent)) 100% 100% / 3px 22px no-repeat;
+}
+
+.scan-status { margin: 14px 0 12px; color: var(--text-soft); font-size: 13.5px; text-align: center; }
+.scan-status.is-error { color: var(--danger); text-align: left; }
+
 /* ── Lyrics ───────────────────────────────────────────────────────────── */
 
 .lyrics-head { margin-bottom: 18px; }
@@ -1472,6 +1540,33 @@ body.sheet-open { overflow: hidden; }
 .lyrics-body { display: grid; gap: 2px; }
 .lyrics-line { margin: 0; color: var(--text-soft); font-size: 16px; line-height: 1.65; }
 .lyrics-gap { margin: 0; height: 14px; }
+
+/* A followed line has to win against a screen full of its neighbours, so it
+ * takes size, weight and colour at once rather than a tint that reads as noise
+ * at arm's length. The dimming of everything else is what makes it findable. */
+.lyrics-body:has(.is-current) .lyrics-line { color: var(--text-muted); }
+
+.lyrics-line.seekable {
+	padding: 5px 10px;
+	margin-inline: -10px;
+	border-radius: var(--r-sm);
+	cursor: pointer;
+	transition: color var(--fast) var(--ease), transform var(--fast) var(--ease), background var(--fast) var(--ease);
+}
+
+.lyrics-line.seekable:active { background: var(--surface); }
+
+.lyrics-body .lyrics-line.is-current {
+	color: var(--text);
+	font-size: 19px;
+	font-weight: 640;
+	transform: translateX(2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.lyrics-line.seekable { transition: none; }
+	.lyrics-body .lyrics-line.is-current { transform: none; }
+}
 
 /* ── Settings additions ───────────────────────────────────────────────── */
 

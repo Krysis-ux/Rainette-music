@@ -1,11 +1,6 @@
-/* One long-poll loop, and what it does with each event.
- *
- * `music_output_transfer` is only acknowledged after the track actually loads,
- * because the desktop waits on that answer before pausing itself.
- * `music_now_playing` / `music_progress` arrive only for a linked phone, so two
- * people can share one library without fighting. `reset_required` means the
- * desktop restarted and the revision has to be re-based.
- */
+/* One long-poll loop, and what it does with each event. A transfer is
+ * acknowledged only once the track loads, because the desktop waits on that
+ * before pausing itself. `reset_required` means the desktop restarted. */
 
 import { state } from './state.js';
 import { command, events } from './bridge.js';
@@ -13,11 +8,13 @@ import { adoptTransfer, notifyPlayerChanged } from './player.js';
 
 let onStatus = () => {};
 let onLibrary = () => {};
+let onDesktopReset = () => {};
 let onAuthLost = () => {};
 
 export function configureSync(options) {
 	onStatus = options.onStatus || onStatus;
 	onLibrary = options.onLibrary || onLibrary;
+	onDesktopReset = options.onDesktopReset || onDesktopReset;
 	onAuthLost = options.onAuthLost || onAuthLost;
 }
 
@@ -33,8 +30,8 @@ export function startEventLoop() {
 				});
 				state.eventRevision = Number(result.revision || state.eventRevision);
 				if (result.reset_required) {
-					state.eventRevision = Number(result.revision || 0);
-					onLibrary();
+					state.eventRevision = Number(result.revision) || 0;
+					onDesktopReset();
 				}
 				for (const event of result.events || []) handleEvent(event.message || {});
 			} catch (error) {
@@ -77,8 +74,12 @@ function handleEvent(message) {
 			notifyPlayerChanged();
 			return;
 
+		/* The desktop broadcasts a command's result to every paired device as well
+		 * as answering the caller over HTTP, so this arrives for work this phone
+		 * asked for. Render what it carries; re-issuing the command here would
+		 * produce another result, and the two would chase each other forever. */
 		case 'music_library_index_result':
-			if (Array.isArray(message.tracks || message.items)) {
+			if (message.ok !== false && Array.isArray(message.tracks || message.items)) {
 				state.library = message.tracks || message.items;
 				onLibrary(state.library);
 			}

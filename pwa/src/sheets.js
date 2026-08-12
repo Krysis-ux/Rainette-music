@@ -1,9 +1,6 @@
-/* The one modal surface: now-playing, queue, action menus.
- *
- * Drag to dismiss, judged on velocity rather than distance — a fast flick is a
- * dismissal, a long drag that stopped is a change of mind. Sheets stack, and the
- * topmost owns Escape and the back gesture.
- */
+/* The one modal surface: now-playing, queue, action menus. Dismissal is judged
+ * on velocity, not distance — a flick is a dismissal, a long drag that stopped
+ * is a change of mind. The topmost sheet owns Escape and the back gesture. */
 
 import { el, icon, motionOff, tap } from './dom.js';
 
@@ -21,13 +18,8 @@ function topSheet() {
 	return open[open.length - 1] || null;
 }
 
-/**
- * Open a sheet.
- *
- * `build(api)` fills the body; `api.close()` dismisses, `api.body` is the
- * scrolling content element. Returns a handle so callers can close or refresh
- * a sheet they still hold.
- */
+/** Open a sheet. `build(api)` fills the body; `api.body` is the scroller and
+ *  `api.close()` dismisses. Returns a handle the caller can keep. */
 export function openSheet({ title = '', className = '', full = false, build }) {
 	const root = el('div', `sheet ${className}`.trim());
 	root.setAttribute('role', 'dialog');
@@ -80,12 +72,9 @@ export function openSheet({ title = '', className = '', full = false, build }) {
 	return handle;
 }
 
-/* Drag-to-dismiss.
- *
- * Only starts from the grabber, the header, or a body already scrolled to the
- * top — otherwise a downward swipe meant to scroll a long queue would drag the
- * sheet away instead, which is the single most common way this interaction is
- * got wrong. */
+/* Drag-to-dismiss, starting only from the grabber, the header, or a body
+ * already scrolled to the top. Otherwise a swipe meant to scroll a long queue
+ * drags the sheet away instead. */
 function wireDrag(panel, handle) {
 	const body = handle.body;
 	let startY = 0;
@@ -162,12 +151,8 @@ window.addEventListener('popstate', () => {
 	topSheet()?.close(true);
 });
 
-/**
- * A menu of choices, as a sheet.
- *
- * `items` are `{ label, hint, icon, danger, disabled, run }`. Resolves with the
- * chosen item's id (or label) once the sheet has closed, or null on dismissal.
- */
+/** A menu of choices. `items` are `{ label, hint, icon, active, danger, run }`.
+ *  Resolves with the chosen id once closed, or null on dismissal. */
 export function actionSheet({ title = 'Actions', items = [] } = {}) {
 	return new Promise(resolve => {
 		let answer = null;
@@ -188,6 +173,13 @@ export function actionSheet({ title = 'Actions', items = [] } = {}) {
 					}
 					button.append(el('span', 'action-label', item.label));
 					if (item.hint) button.append(el('span', 'action-hint', item.hint));
+					if (item.active) {
+						button.classList.add('active');
+						button.setAttribute('aria-current', 'true');
+						const mark = el('span', 'action-check');
+						mark.innerHTML = icon('check', 18);
+						button.append(mark);
+					}
 					button.addEventListener('click', () => {
 						answer = item.id || item.label;
 						close();
@@ -239,13 +231,4 @@ export function confirmSheet({ title, message, confirmLabel = 'Confirm', danger 
 
 export function closeAllSheets() {
 	while (open.length) open[open.length - 1].close();
-}
-
-export function anySheetOpen() {
-	return open.length > 0;
-}
-
-/** Ask the top sheet to redraw itself, used when playback state changes. */
-export function refreshSheets() {
-	for (const sheet of open) sheet.onRefresh?.();
 }

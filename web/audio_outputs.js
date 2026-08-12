@@ -1,11 +1,6 @@
-/**
- * Where Rainette's audio actually comes out.
- *
- * The OS knows device names but cannot route this app; the browser knows the
- * sink ids setSinkId needs but hides labels without a media permission. This
- * merges them: OS names to read, browser ids to route. With neither available
- * (any WKWebView), selecting a device opens the system sound panel instead.
- */
+/* Where Rainette's audio comes out. The OS knows device names but cannot route
+ * this app; the browser knows the sink ids but hides labels. This merges them.
+ * With neither (any WKWebView) a device opens the system sound panel. */
 
 /** setSinkId exists on Chromium/WebView2 and is absent on WKWebView. */
 export function canRouteAudio(element) {
@@ -42,13 +37,8 @@ function namesMatch(a, b) {
 	return x === y || x.includes(y) || y.includes(x);
 }
 
-/**
- * Merge the OS device list with the browser's sinks.
- *
- * Every OS device is returned whether or not a sink could be matched, because
- * the name is worth showing even when this engine cannot route to it. A
- * `sinkId` of '' means "listed, but not routable from here".
- */
+/** Merge the OS device list with the browser's sinks. Unmatched devices are
+ *  still returned — a `sinkId` of '' means "listed, not routable from here". */
 export function mergeOutputs(systemDevices, sinks) {
 	const list = (Array.isArray(systemDevices) ? systemDevices : []).map(device => {
 		const sink = sinks.find(candidate => namesMatch(candidate.label, device.name));
@@ -79,13 +69,8 @@ export function outputIcon(kind) {
 	}
 }
 
-/**
- * Point one media element at a sink.
- *
- * Resolves to false rather than throwing when the engine has no setSinkId or
- * the sink has gone away since it was listed — both are ordinary conditions
- * that the caller answers by pointing at the system sound panel instead.
- */
+/** Point one media element at a sink. False rather than a throw when the engine
+ *  cannot route or the sink is gone; both are ordinary. */
 export async function routeElementTo(element, sinkId) {
 	if (!canRouteAudio(element) || !sinkId) return false;
 	try {

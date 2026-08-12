@@ -73,15 +73,9 @@ _STREAM_OPTS = {
     "quiet": True,
     "no_warnings": True,
     "skip_download": True,
-    # Bias toward broadly HTML5-<audio>-compatible containers over a bare
-    # bestaudio (which can hand back formats Chrome/Edge won't play).
-    #
-    # The middle two rungs matter most on macOS. WebKit -- unlike Chromium --
-    # cannot decode Opus in WebM at all, so a source with no m4a would drop
-    # straight to `bestaudio` and hand the player a stream that fails with a
-    # bare "no supported source" instead of playing. Asking for an AAC codec or
-    # an MP4 container first keeps that case audible; on Windows it changes
-    # nothing, since Chromium plays every one of these.
+    # Prefer containers HTML5 <audio> plays over a bare bestaudio. The middle
+    # rungs matter on macOS: WebKit cannot decode Opus in WebM at all, so a
+    # source with no m4a would fall to bestaudio and fail silently.
     "format": (
         "bestaudio[ext=m4a]"
         "/bestaudio[acodec^=mp4a]"
@@ -880,6 +874,9 @@ def cmd_music_output_transfer(msg):
         "current_time": max(0, float(msg.get("current_time") or 0)),
         "playing": bool(msg.get("playing")),
         "loop": bool(msg.get("loop")),
+        # Forwarded alongside loop so a three-state repeat survives the handoff;
+        # loop alone cannot tell "repeat one" from "repeat all".
+        "repeat": str(msg.get("repeat") or ""),
     })
 
 

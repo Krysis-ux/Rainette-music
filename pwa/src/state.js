@@ -1,9 +1,6 @@
-/* Shared state, and the pure helpers that read it.
- *
- * A plain object rather than a store: one instance of everything, no SSR. Its
- * job is one place to answer "what is playing?" for the mini bar, the sheet and
- * the queue. Imports nothing — it must stay a leaf or the graph cycles.
- */
+/* Shared state and the pure helpers that read it. One place to answer "what is
+ * playing?" for the mini bar, the sheet and the queue. Imports nothing — it
+ * must stay a leaf or the graph cycles. */
 
 export const STORAGE = {
 	endpoint: 'rainette.pwa.endpoint',

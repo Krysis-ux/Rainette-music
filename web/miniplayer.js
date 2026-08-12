@@ -1,14 +1,8 @@
-/**
- * Rainette Music — detached player window.
+/* The detached player window: the <audio>, the queue, the transport, the Web
+ * Audio graph. Driven by music_remote_play / music_remote_control.
  *
- * Owns the <audio> element, the queue, transport, and the Web Audio graph.
- * Driven over the socket by `music_remote_play` / `music_remote_control`, and
- * broadcasts `music_now_playing_set` back.
- *
- * MediaElementSource outputs silence for cross-origin media, so playback uses
- * the direct URL until the EQ is first enabled, then the same-origin /audio
- * proxy for the rest of the session.
- */
+ * MediaElementSource is silent for cross-origin media, so playback uses the
+ * direct URL until the EQ is enabled and the /audio proxy after. */
 
 import { sendHelper, helperRequest } from './music_shell.js';
 import { iconMarkup } from './rainette_icons.js';
@@ -144,7 +138,7 @@ function beginOutputTransfer(message) {
 	const index = clamp(Number(message.index) || 0, 0, Math.max(0, tracks.length - 1));
 	const target = tracks[index];
 	if (!target) {
-		sendHelper({ type: 'music_output_transfer_result', id: message.id, ok: false, target_device_id: 'desktop', msg: 'Transfer queue is empty' });
+		sendHelper({ type: 'music_output_transfer_result', id: message.id, ok: false, target_device_id: 'desktop', source_device_id: String(message.source_device_id || ''), msg: 'Transfer queue is empty' });
 		return;
 	}
 	if (pendingOutputTransfer) finishOutputTransfer(false, 'Transfer was replaced by a newer request');
@@ -162,13 +156,10 @@ function beginOutputTransfer(message) {
 	if (transferred !== state.repeat) _setRepeat(transferred);
 	state.pendingSeek = Math.max(0, Number(message.current_time) || 0);
 
-	// A normal playQueue() deliberately avoids reloading an already-current
-	// track. During an output handoff, though, that shortcut used to leave the
-	// transfer waiting forever because no new `playing`/`loadedmetadata` event
-	// was produced. If the existing media element is genuinely ready, adopt the
-	// transferred queue and positively confirm readiness. If it is not ready,
-	// force the normal guarded load path so failure still rolls back cleanly on
-	// the phone instead of producing a false acknowledgement.
+	// playQueue() skips reloading an already-current track, which during a
+	// handoff left the transfer waiting for an event that never came. Confirm
+	// readiness directly when the element is ready, and take the guarded load
+	// path when it is not, so a failure still rolls back on the phone.
 	const current = state.queue[state.index];
 	if (current && trackKey(current) === trackKey(target)) {
 		state.queue = tracks;

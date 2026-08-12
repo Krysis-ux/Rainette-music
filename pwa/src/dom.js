@@ -1,9 +1,6 @@
-/* DOM, icon and motion primitives.
- *
- * Motion carries continuity here: on a small screen an untransitioned change
- * reads as a different screen. `prefers-reduced-motion` is honoured in JS as
- * well as CSS, since several of these animate where a media query cannot reach.
- */
+/* DOM, icon and motion primitives. On a small screen an untransitioned change
+ * reads as a different screen, so motion carries continuity.
+ * `prefers-reduced-motion` is honoured in JS as well as CSS. */
 
 export const $ = selector => document.querySelector(selector);
 
