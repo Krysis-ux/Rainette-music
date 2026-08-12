@@ -1,14 +1,10 @@
-/* Rainette Music — phone client.
- *
- * Holds no music: it is a remote for the one computer that approved this phone,
- * so pairing has a real waiting state and connection status always matters.
- * This file owns the transport, pairing and connection lifecycle; everything
- * visual lives in ./src.
- */
+/* Rainette Music — phone client. A remote for the one computer that approved
+ * it, so pairing has a real waiting state. This file owns transport, pairing
+ * and connection; everything visual lives in ./src. */
 
-import { state, STORAGE, artworkUrl, artistName, formatTime, readRecent, rememberRecent } from './src/state.js';
+import { state, STORAGE, artworkUrl, artistName, formatTime, readRecent, rememberRecent, trackKey } from './src/state.js';
 import { fetchDesktopRecent, mergeRecent, fetchPlaylists, fetchPlaylistTracks, playlistSubtitle } from './src/collections.js';
-import { $, el, icon, toast } from './src/dom.js';
+import { $, el, icon, toast, stagger } from './src/dom.js';
 import { configureBridge } from './src/bridge.js';
 import { configurePlayer, subscribe, playTrack, toggle, skip, currentTrack, isPlaying, isLoading, currentTime, duration, resetPlayback, isLinked } from './src/player.js';
 import { renderTracks, markPlayingRows } from './src/tracks.js';
@@ -17,6 +13,7 @@ import { wireMiniBar } from './src/nowplaying.js';
 import { openQueueSheet } from './src/queue.js';
 import { configureExtras, setLinked, openOutputPicker, sleepShouldStopAfterTrack } from './src/extras.js';
 import { closeAllSheets } from './src/sheets.js';
+import { openScanner, scanningIsPossible } from './src/scanner.js';
 
 const setupView = $('#setupView');
 const appView = $('#appView');
@@ -124,7 +121,7 @@ function setStatus(kind, text) {
  * in the browser and then opening the icon therefore lands on an app that has
  * genuinely never been paired -- not a bug to fix, but the reason to say so
  * plainly instead of showing the same blank form twice. */
-export function isStandalone() {
+function isStandalone() {
 	return window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
 }
 
@@ -344,8 +341,18 @@ function playFromList(list) {
 	};
 }
 
+/* Re-rendering a list into the same rows it already shows costs a full rebuild
+ * and replays the entrance animation, which reads as a flash. */
+function sameTracks(a, b) {
+	return a.length === b.length && a.every((track, index) => trackKey(track) === trackKey(b[index]));
+}
+
+let shownRecent = [];
+
 function renderRecent(recent = readRecent()) {
 	const list = recent.slice(0, 12);
+	if (sameTracks(list, shownRecent)) return;
+	shownRecent = list;
 	renderTracks($('#recentList'), list, {
 		emptyMessage: 'Play something here or on your computer and it shows up.',
 		onPlay: playFromList(list),
@@ -354,47 +361,83 @@ function renderRecent(recent = readRecent()) {
 
 /* The computer's history and this phone's are one list. Rendering the local
  * copy first keeps the tab populated while the computer answers. */
+let recentInFlight = null;
+
 async function refreshRecent() {
 	renderRecent();
-	const desktop = await fetchDesktopRecent();
-	if (desktop.length) renderRecent(mergeRecent(desktop));
+	// One request at a time: tab switches and playback both ask for this, and
+	// two answers landing together re-render the list twice for no gain.
+	if (recentInFlight) return recentInFlight;
+	recentInFlight = (async () => {
+		try {
+			const desktop = await fetchDesktopRecent();
+			if (desktop.length) renderRecent(mergeRecent(desktop));
+		} finally {
+			recentInFlight = null;
+		}
+	})();
+	return recentInFlight;
+}
+
+/* ── Library and playlists ────────────────────────────────────────────────
+ * One panel, two modes. Every async render claims a token and drops its result
+ * if something else claimed the panel since, so a late answer cannot paint over
+ * an open playlist. */
+
+const library = { mode: 'songs', playlistId: null, token: 0 };
+
+function claimLibrary() {
+	return ++library.token;
+}
+
+function libraryOwns(token) {
+	return token === library.token;
+}
+
+/** Render the song list from a payload the computer pushed on its own. */
+function showLibraryTracks(tracks) {
+	state.library = tracks;
+	if (library.mode !== 'songs' || library.playlistId) return;
+	claimLibrary();
+	renderTracks($('#libraryList'), tracks, {
+		emptyMessage: 'Tracks you save on your computer show up here.',
+		onPlay: playFromList(tracks),
+	});
 }
 
 async function refreshLibrary() {
+	const token = claimLibrary();
 	const target = $('#libraryList');
-	target.replaceChildren(el('p', 'empty', 'Syncing your library…'));
+	// Only blank the panel when there is nothing to keep. Re-syncing over a list
+	// the user is already reading should not take it away from them.
+	if (!state.library.length) target.replaceChildren(el('p', 'empty', 'Syncing your library…'));
 	try {
 		const result = await command('music_library_index', { limit: 250 });
+		if (!libraryOwns(token)) return;
 		state.library = result.tracks || result.items || [];
 		renderTracks(target, state.library, {
 			emptyMessage: 'Tracks you save on your computer show up here.',
 			onPlay: playFromList(state.library),
 		});
 	} catch (error) {
+		if (!libraryOwns(token)) return;
 		target.replaceChildren(el('p', 'empty', connectionError(error)));
 	}
-	refreshRecent();
 }
 
-/* ── Playlists ────────────────────────────────────────────────────────────
- * The computer's playlists, browsable rather than only writable. Library is a
- * two-mode panel instead of a fifth tab: a phone tab bar stops being tappable
- * somewhere around four. */
-
-let libraryMode = 'songs';
-let openPlaylistId = null;
-
 async function renderLibraryPanel() {
+	$('#libraryModeSongs')?.classList.toggle('active', library.mode === 'songs');
+	$('#libraryModePlaylists')?.classList.toggle('active', library.mode === 'playlists');
+
+	if (library.mode === 'songs') { library.playlistId = null; return refreshLibrary(); }
+	if (library.playlistId) return renderPlaylistTracks(library.playlistId);
+
+	const token = claimLibrary();
 	const target = $('#libraryList');
-	$('#libraryModeSongs')?.classList.toggle('active', libraryMode === 'songs');
-	$('#libraryModePlaylists')?.classList.toggle('active', libraryMode === 'playlists');
-
-	if (libraryMode === 'songs') { openPlaylistId = null; return refreshLibrary(); }
-	if (openPlaylistId) return renderPlaylistTracks(openPlaylistId);
-
 	target.replaceChildren(el('p', 'empty', 'Loading your playlists…'));
 	try {
 		const playlists = await fetchPlaylists();
+		if (!libraryOwns(token)) return;
 		if (!playlists.length) {
 			target.replaceChildren(el('p', 'empty', 'Playlists you make on your computer show up here.'));
 			return;
@@ -409,24 +452,28 @@ async function renderLibraryPanel() {
 					el('span', '', playlistSubtitle(playlist))),
 			);
 			row.addEventListener('click', () => {
-				openPlaylistId = playlist.id;
+				library.playlistId = playlist.id;
 				renderPlaylistTracks(playlist.id, playlist.name);
 			});
 			return row;
 		}));
+		stagger(target, ':scope > .collection-row');
 	} catch (error) {
+		if (!libraryOwns(token)) return;
 		target.replaceChildren(el('p', 'empty', connectionError(error)));
 	}
 }
 
 async function renderPlaylistTracks(playlistId, name = '') {
+	const token = claimLibrary();
 	const target = $('#libraryList');
 	target.replaceChildren(el('p', 'empty', 'Loading…'));
 	const back = el('button', 'collection-back', '‹ All playlists');
 	back.type = 'button';
-	back.addEventListener('click', () => { openPlaylistId = null; renderLibraryPanel(); });
+	back.addEventListener('click', () => { library.playlistId = null; renderLibraryPanel(); });
 	try {
 		const tracks = await fetchPlaylistTracks(playlistId);
+		if (!libraryOwns(token)) return;
 		target.replaceChildren(back);
 		if (name) target.append(el('h2', 'collection-title', name));
 		const list = el('div', 'track-list');
@@ -436,6 +483,7 @@ async function renderPlaylistTracks(playlistId, name = '') {
 			onPlay: playFromList(tracks),
 		});
 	} catch (error) {
+		if (!libraryOwns(token)) return;
 		target.replaceChildren(back, el('p', 'empty', connectionError(error)));
 	}
 }
@@ -469,28 +517,53 @@ function showPlaybackError(error) {
  * text: tapping it opens the full card, which is what every phone player does
  * and what this client conspicuously did not. */
 
+/* Playback emits several times a second. Every write here is guarded and the
+ * whole pass is coalesced onto one frame, because the main thread this loop
+ * occupies is the same one that has to answer the next tap. */
+const shownMini = { art: '', title: '', artist: '', transport: '', elapsed: '', total: '' };
+let miniFrame = 0;
+
+function scheduleMiniBar() {
+	if (miniFrame) return;
+	miniFrame = requestAnimationFrame(() => { miniFrame = 0; renderMiniBar(); });
+}
+
 function renderMiniBar() {
 	const track = currentTrack();
 	if (!track) { player.hidden = true; return; }
 	player.hidden = false;
 
-	$('#playerArt').src = artworkUrl(track);
-	$('#playerTitle').textContent = track.title || 'Nothing playing';
-	$('#playerArtist').textContent = isLoading()
-		? 'Preparing on your computer…'
-		: (artistName(track) || (isLinked() ? state.computerName : 'Unknown artist'));
+	const art = artworkUrl(track);
+	if (art !== shownMini.art) { shownMini.art = art; $('#playerArt').src = art; }
 
-	const playing = isPlaying();
+	const title = track.title || 'Nothing playing';
+	if (title !== shownMini.title) { shownMini.title = title; $('#playerTitle').textContent = title; }
+
 	const loading = isLoading();
-	const button = $('#playPauseButton');
-	button.dataset.state = loading ? 'loading' : (playing ? 'playing' : 'paused');
-	button.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+	const playing = isPlaying();
+	const linked = isLinked();
+	const artist = loading
+		? 'Preparing on your computer…'
+		: (artistName(track) || (linked ? state.computerName : 'Unknown artist'));
+	if (artist !== shownMini.artist) { shownMini.artist = artist; $('#playerArtist').textContent = artist; }
+
+	const transport = loading ? 'loading' : (playing ? 'playing' : 'paused');
+	if (transport !== shownMini.transport) {
+		shownMini.transport = transport;
+		const button = $('#playPauseButton');
+		button.dataset.state = transport;
+		button.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+		player.classList.toggle('is-linked', linked);
+	}
 
 	const length = duration();
-	player.style.setProperty('--progress', String(length > 0 ? Math.min(1, currentTime() / length) : 0));
-	$('#playerElapsed').textContent = formatTime(currentTime());
-	$('#playerDuration').textContent = length > 0 ? formatTime(length) : '';
-	player.classList.toggle('is-linked', isLinked());
+	const at = currentTime();
+	player.style.setProperty('--progress', String(length > 0 ? Math.min(1, at / length) : 0));
+	const elapsed = formatTime(at);
+	if (elapsed !== shownMini.elapsed) { shownMini.elapsed = elapsed; $('#playerElapsed').textContent = elapsed; }
+	const total = length > 0 ? formatTime(length) : '';
+	if (total !== shownMini.total) { shownMini.total = total; $('#playerDuration').textContent = total; }
+
 	markPlayingRows();
 }
 
@@ -545,7 +618,13 @@ configureBridge({
 configurePlayer({ onError: showPlaybackError });
 configureSync({
 	onStatus: setStatus,
-	onLibrary: () => refreshLibrary().catch(() => {}),
+	onLibrary: showLibraryTracks,
+	// The desktop restarted, so nothing this phone holds is known to be current.
+	onDesktopReset: () => {
+		state.library = [];
+		if (activeTab === 'library') renderLibraryPanel().catch(() => {});
+		if (activeTab === 'home') refreshRecent().catch(() => {});
+	},
 	onAuthLost: error => showSetup(connectionError(error)),
 });
 configureExtras({
@@ -560,7 +639,7 @@ configureExtras({
 	},
 });
 
-subscribe(renderMiniBar);
+subscribe(scheduleMiniBar);
 
 $('#pairForm').addEventListener('submit', async event => {
 	event.preventDefault();
@@ -578,6 +657,29 @@ $('#pairForm').addEventListener('submit', async event => {
 		button.disabled = false;
 	}
 });
+
+/* Scanning from inside the app is the only route that pairs *this* copy. The
+ * phone's own Camera app opens the browser, which on iOS is a different app
+ * with different storage from the icon on the Home Screen. */
+if (scanningIsPossible()) {
+	$('#scanButton').hidden = false;
+	$('#scanDivider').hidden = false;
+	$('#scanButton').addEventListener('click', async () => {
+		const scanned = await openScanner();
+		if (!scanned) return;
+		pairLinkInput.value = scanned;
+		setupError.textContent = '';
+		try {
+			const { endpoint, invitation } = pairFromLink(scanned);
+			await startPairing(endpoint, invitation, pairDeviceName.value.trim());
+		} catch (error) {
+			pairForm.hidden = false;
+			pairWaiting.hidden = true;
+			setStatus('', 'Not connected');
+			setupError.textContent = error?.message || 'That code is not a Rainette pairing link.';
+		}
+	});
+}
 
 $('#cancelPairing').addEventListener('click', () => {
 	state.pairPollId += 1;
@@ -601,9 +703,9 @@ $('#libraryRefreshButton').addEventListener('click', () => { state.library = [];
 
 for (const [id, mode] of [['#libraryModeSongs', 'songs'], ['#libraryModePlaylists', 'playlists']]) {
 	$(id).addEventListener('click', () => {
-		if (libraryMode === mode) return;
-		libraryMode = mode;
-		openPlaylistId = null;
+		if (library.mode === mode) return;
+		library.mode = mode;
+		library.playlistId = null;
 		for (const button of [$('#libraryModeSongs'), $('#libraryModePlaylists')]) {
 			button.setAttribute('aria-selected', String(button.id === id.slice(1)));
 		}

@@ -1,10 +1,5 @@
-/**
- * Rainette Music page - search, catalog, playlists, and library.
- *
- * Playback stays delegated to the persistent mini-player (window.RainetteMusic).
- * The helper provides ad-free yt-dlp streams and, when available, YouTube Music
- * metadata for artist/album catalog browsing.
- */
+/* The Music page: search, catalog, playlists, library. Playback stays with the
+ * persistent mini-player; the helper provides the streams and metadata. */
 
 import { sendHelper, helperRequest, rainetteAuthHeaders, app, el, btn } from './music_shell.js';
 import { RainetteRouter } from './music_shell.js';
@@ -1401,14 +1396,10 @@ function queueRow(track, index, compact = false) {
 	return row;
 }
 
-// Custom pointer-based drag reorder (replaces native HTML5 drag-and-drop,
-// which always rendered its own default ghost-image snapshot of the row -
-// there is no setDragImage() call anywhere to suppress it). The dragged row
-// stays in-flow and tracks the pointer directly via --rw-drag-y (see
-// .rw-queue-row.dragging in rainette_pages.css); siblings it crosses shift
-// live using the same .flip-move transition the post-drop settle already
-// uses in reorderQueueOptimistic(), so there's a single animation system
-// instead of two. Commit happens through reorderQueueOptimistic() unchanged.
+// Pointer-based drag reorder, replacing HTML5 drag-and-drop and its
+// unsuppressable ghost image. The dragged row stays in flow and tracks the
+// pointer via --rw-drag-y; siblings shift with the same transition the
+// post-drop settle uses, so there is one animation system rather than two.
 function wireQueuePointerDrag(list) {
 	list.addEventListener('pointerdown', e => {
 		const grip = e.target.closest('.rw-queue-grip');
@@ -2158,12 +2149,9 @@ function bindCommandPaletteKeys() {
 }
 
 // ── Now Playing view (docked-bar mode only) ──────────────────────────────
-// Opened by clicking the docked bar's art/title area, which lives in
-// rainette_music_player.js - a separately-booted module that can't import
-// this one, so it dispatches a DOM event instead. Structurally modeled on
-// the command palette: a fixed full-viewport overlay, built fresh on open,
-// re-rendered on every 'music_now_playing' broadcast so it stays live while
-// open (see onHelperMessage's music_now_playing case).
+// Opened from the docked bar, which is a separately-booted module that cannot
+// import this one and so dispatches a DOM event. A full-viewport overlay built
+// fresh on open and re-rendered on every broadcast, so it stays live.
 
 function currentQueueTrack() {
 	const q = pageState.queue || {};
@@ -2618,12 +2606,9 @@ function bindNowPlayingKeys() {
 }
 
 // ── Persistent docked bar (main window) ──────────────────────────────────
-// Always-present bottom transport in the main window whenever something is
-// playing - engine-agnostic (commands via window.RainetteMusic, state from
-// music_now_playing / music_progress broadcasts), so it works identically
-// whether the engine is the floating miniplayer (popout on) or the headless
-// local engine (popout off). The floating miniplayer, when on, is an
-// additional synced surface on top of this - not a replacement.
+// Engine-agnostic: commands go through window.RainetteMusic and state comes
+// from broadcasts, so it works the same with the floating miniplayer or the
+// headless engine. The miniplayer is an extra surface, not a replacement.
 
 function fmtClock(s) {
 	s = Math.max(0, Math.floor(Number(s) || 0));
@@ -3674,14 +3659,9 @@ function onUpdateBadgeClick() { return installAppUpdate(); }
 function bindUpdater(host) {
 	if (_updateBound || typeof window === 'undefined') return;
 	_updateBound = true;
-	// Bind unconditionally, matching the pattern used everywhere else pywebview
-	// readiness is uncertain (see miniplayer.js's nativeApi()): the click handler
-	// and checkForAppUpdate() each check window.pywebview?.api lazily at call
-	// time, so this is inert in browser/Edge-fallback mode. Gating the bind
-	// itself on window.pywebview being truthy at mount time meant the listener
-	// was silently never attached whenever pywebview injected even slightly
-	// late - "clicking Update does nothing" with no error, since there was
-	// nothing listening.
+	// Bind unconditionally: the handlers check window.pywebview?.api lazily, so
+	// this is inert in fallback mode. Gating the bind on pywebview being ready
+	// at mount time silently dropped the listener whenever it injected late.
 	host.querySelector('#rwUpdateBadge')?.addEventListener('click', onUpdateBadgeClick);
 	// window.pywebview.api is injected asynchronously; check now in case it's
 	// already ready, and also listen for the ready event in case it isn't yet -

@@ -1,11 +1,5 @@
-/**
- * Shared inline-SVG icon set for Rainette Music.
- *
- * Consolidates the icon paths that used to be duplicated between
- * miniplayer.js and rainette_music_player.js, and adds the extra icons
- * needed to replace literal text-character button labels ('>', '+', 'x', ...)
- * across the Music page.
- */
+/* The shared inline-SVG icon set, one copy for both players and the Music
+ * page. */
 
 const PATHS = {
 	prev: '<path d="M6 5v14"/><path d="M18 5.5v13a.6.6 0 0 1-.94.49L8 12.5a.6.6 0 0 1 0-.98l9.06-6.5a.6.6 0 0 1 .94.48z" fill="currentColor" stroke="none"/>',

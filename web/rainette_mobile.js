@@ -1,10 +1,6 @@
-/* Settings → Mobile: pair a phone with this desktop through the Rainette PWA.
- *
- * The desktop is the authority here. It mints a short-lived invitation, shows
- * it as a QR code, and nothing is granted until the person sitting at this
- * computer approves the request that appears below. Each approved phone gets
- * its own credential and can be revoked on its own.
- */
+/* Settings → Mobile: pair a phone through the Rainette PWA. The desktop is the
+ * authority — it mints a short-lived invitation and nothing is granted until
+ * someone here approves. Each phone gets its own revocable credential. */
 
 const DEFAULT_PWA_URL = 'https://music-pwa-web.vercel.app';
 

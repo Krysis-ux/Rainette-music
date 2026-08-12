@@ -74,14 +74,10 @@ _URL_DISCOVERY_TIMEOUT_S = 60.0
 _REACHABLE_TIMEOUT_S = 180.0
 _REGISTRATION_TIMEOUT_S = 45.0
 
-# `trycloudflare.com` has no wildcard record: the hostname cloudflared just
-# printed does not exist in DNS for another ten seconds or so.  Resolving it
-# too early does lasting damage, because the resolver caches the NXDOMAIN for
-# the zone's negative TTL and then answers every later attempt from that cache
-# without asking again — measured behaviour is that an immediate first lookup
-# makes the name stay unresolvable for the entire startup window, while waiting
-# first resolves in about 17s.  So: hold off before the first probe, and back
-# off between probes rather than re-asking a resolver that is already saying no.
+# The hostname cloudflared just printed does not exist in DNS for another ten
+# seconds. Asking too early is not free: the resolver caches the NXDOMAIN and
+# answers every later attempt from that cache, keeping the name unresolvable
+# for the whole startup window. So hold off, then back off between probes.
 _REACHABLE_GRACE_S = 12.0
 _PROBE_INTERVAL_S = 5.0
 _PROBE_INTERVAL_MAX_S = 20.0

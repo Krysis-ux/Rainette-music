@@ -1,10 +1,5 @@
-/* The computer's own recents and playlists, on the phone.
- *
- * Both already exist on the desktop and both are already on the companion
- * allowlist; this client simply never asked for them. Recents were kept per
- * phone in localStorage, so a track played on the computer was invisible here,
- * and playlists could be added to but never opened.
- */
+/* The computer's own recents and playlists, on the phone. Both were already on
+ * the companion allowlist; this client simply never asked for them. */
 
 import { state, trackKey, readRecent } from './state.js';
 import { command } from './bridge.js';

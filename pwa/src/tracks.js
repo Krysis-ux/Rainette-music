@@ -4,7 +4,7 @@
  * slightly-diagonal scroll catches a row and drags it sideways.
  */
 
-import { el, icon, tap, toast, stagger, collapseAway } from './dom.js';
+import { el, icon, tap, toast, stagger } from './dom.js';
 import { trackKey, artworkUrl, artistName, formatTime, trackDuration } from './state.js';
 import { queueAddNext, queueAddEnd, currentTrack, isPlaying } from './player.js';
 
@@ -15,13 +15,8 @@ const COMMIT_PX = 72;
  * immediate, large enough that a straight-down scroll never trips it. */
 const AXIS_PX = 10;
 
-/**
- * Render a list of tracks into a container.
- *
- * `onPlay(track, index)` is what a tap runs. `emptyMessage` is shown instead of
- * rows when the list is empty — an empty list is a state worth explaining, not
- * a blank area.
- */
+/** Render a list of tracks. `onPlay(track, index)` is what a tap runs, and
+ *  `emptyMessage` explains an empty list rather than leaving a blank area. */
 export function renderTracks(container, tracks, { emptyMessage, onPlay, swipe = true, showDuration = true } = {}) {
 	container.replaceChildren();
 	if (!tracks.length) {
@@ -35,7 +30,7 @@ export function renderTracks(container, tracks, { emptyMessage, onPlay, swipe = 
 			showDuration,
 		}));
 	}
-	markPlayingRows();
+	markPlayingRows(true);
 	stagger(container, ':scope > .track-shell');
 }
 
@@ -167,11 +162,21 @@ function wireSwipe(shell, row, track) {
 	}, true);
 }
 
+/* Called on every playback tick, so it has to be free when nothing changed:
+ * walking every row in the document four times a second is enough to make the
+ * transport buttons miss taps. `force` is for a fresh render, whose new rows
+ * carry no marks yet even though the playing track is the same one. */
+let markedKey = null;
+let markedPlaying = false;
+
 /** Mark whichever rendered rows correspond to the track playing now. */
-export function markPlayingRows() {
+export function markPlayingRows(force = false) {
 	const track = currentTrack();
 	const key = track ? trackKey(track) : null;
 	const playing = isPlaying();
+	if (!force && key === markedKey && playing === markedPlaying) return;
+	markedKey = key;
+	markedPlaying = playing;
 	for (const shell of document.querySelectorAll('.track-shell')) {
 		const isCurrent = !!key && shell.dataset.trackKey === key;
 		shell.classList.toggle('is-playing', isCurrent);
@@ -179,9 +184,4 @@ export function markPlayingRows() {
 		// the current one, it just is not moving.
 		shell.classList.toggle('is-paused', isCurrent && !playing);
 	}
-}
-
-/** Remove a row with a collapse, for lists the user is editing. */
-export function removeRow(shell, done) {
-	collapseAway(shell, () => { shell.remove(); done?.(); });
 }

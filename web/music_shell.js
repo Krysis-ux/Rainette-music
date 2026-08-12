@@ -1,12 +1,6 @@
-/**
- * Standalone shell for the Rainette Music app.
- *
- * Provides the page-shell features that the music modules import: the helper WebSocket transport
- * (sendHelper / helperRequest), the DOM utilities (el / btn), the shared `app`
- * state bag, and a minimal RainetteRouter that mounts the music page.
- *
- * The WebSocket contract keeps the music modules connected to the native app.
- */
+/* The page shell the music modules import: the helper WebSocket transport,
+ * the DOM utilities, the shared `app` state bag, and the router that mounts
+ * the music page. */
 
 import { loopFlagFor, repeatFromMessage } from './repeat_mode.js';
 
@@ -196,15 +190,10 @@ if (typeof window !== 'undefined' && window.RW_REMOTE) {
 		queueShuffle() { _queueControl({ action: 'queue_shuffle' }); },
 		queueDedupe() { _queueControl({ action: 'queue_dedupe' }); },
 		queueClearUpNext() { _queueControl({ action: 'queue_clear_up_next' }); },
-		/* Route audio to one output sink. The <audio> lives in the player
-		 * window, so this asks that window to do it and waits for the answer:
-		 * a false result is meaningful (this engine cannot route, so the caller
-		 * offers the system sound panel instead) and must not be assumed.
-		 *
-		 * helperRequest is unusable here. The bridge relays a remote-control
-		 * message to every window including this one, so its echo carries the
-		 * request's own id and would resolve the promise before the player had
-		 * touched anything. Only the player's explicit result counts. */
+		/* Route audio to one sink. The <audio> is in the player window, so this
+		 * asks and waits: a false answer means this engine cannot route, and the
+		 * caller offers the system sound panel instead. helperRequest is unusable
+		 * because the bridge echoes the request back with its own id. */
 		setOutputSink(sinkId) {
 			if (!sinkId) return Promise.resolve(false);
 			const id = 'sink_' + Math.random().toString(36).slice(2);

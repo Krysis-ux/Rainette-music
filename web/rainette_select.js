@@ -1,10 +1,6 @@
-/**
- * Custom dropdown for the .rh-selectx CSS. A native <select> popup is drawn by
- * the OS and cannot be themed, which is why those dropdowns looked out of place.
- *
- * createSelect() returns a node with a live `.value` and a dispatched 'change',
- * so call sites written against a native <select> swap in unchanged.
- */
+/* Custom dropdown: a native <select> popup is drawn by the OS and cannot be
+ * themed. createSelect() keeps a live `.value` and a 'change' event, so call
+ * sites written against a native <select> swap in unchanged. */
 
 let _closeOpenInstance = null;
 

@@ -84,13 +84,10 @@ PYWEBVIEW_BROWSER_ARGS = "--disable-features=ElasticOverscroll"
 # *loading* indefinitely -- play() is called but its promise never settles.
 # Measured, and separate from the autoplay-gesture policy.
 PLAYER_PARK_POS = (-32000, -32000)
-# macOS refuses that coordinate. Cocoa reports no containing screen for a window
-# placed entirely outside every display, and pywebview's windowDidMove_ handler
-# dereferences window.screen() unconditionally, so creating the player there
-# raises before it is ever shown -- which dropped the whole app into browser
-# fallback and left it silent. None of the parking is needed here either:
-# WKWebView does not throttle media for a hidden page (macos_support explains
-# the measurements), so the player is simply created hidden and shown on demand.
+# macOS refuses that coordinate: Cocoa reports no containing screen off-display
+# and pywebview dereferences it unconditionally, so the player raises before it
+# is shown. The parking is unnecessary here anyway — WKWebView does not throttle
+# media for a hidden page — so it is created hidden and shown on demand.
 PLAYER_MACOS_INITIAL_POS = (120, 120)
 
 # One writable per-user location, shared with the server. Deriving it here
@@ -1220,13 +1217,10 @@ class WindowApi:
                 handle = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, radius, radius)
                 form.Region = Region.FromHrgn(IntPtr.op_Explicit(handle))
                 ctypes.windll.gdi32.DeleteObject(handle)
-                # Best-effort fix for the reported "cutout corners" glitch: when
-                # the main window toggles fullscreen, Windows changes DWM
-                # composition mode for the whole desktop, and a regioned
-                # borderless window doesn't always get repainted against the
-                # new composition automatically. Forcing an immediate repaint
-                # here re-applies the mask instead of leaving stale corners
-                # until the next unrelated paint event.
+                # Toggling fullscreen changes DWM composition for the whole
+                # desktop, and a regioned borderless window is not always
+                # repainted against it. Forcing a repaint re-applies the mask
+                # instead of leaving stale corners.
                 try:
                     # invalidateChildren=True: the WebView2 browser is a child
                     # control with its own HWND, so invalidating just the form

@@ -1,9 +1,6 @@
-/* The queue sheet: what is playing, what is next, and reordering.
- *
- * Reorder is long-press-drag on a grip, because "drag from anywhere" and
- * "scroll" are the same gesture on a phone. Remove is a swipe. FLIP animates
- * moved rows so the list reads as rearranged rather than replaced.
- */
+/* The queue sheet: what is playing, what is next, and reordering. Reorder is
+ * long-press-drag on a grip, because "drag from anywhere" and "scroll" are the
+ * same gesture on a phone. Remove is a swipe. */
 
 import { el, icon, iconButton, tap, toast, flip, collapseAway } from './dom.js';
 import { state, trackKey, artworkUrl, artistName, totalDuration } from './state.js';
@@ -76,7 +73,6 @@ export function openQueueSheet() {
 			render();
 			// Stay live while open: a track ending must advance this list too.
 			const stop = subscribe(render);
-			handle.onRefresh = render;
 			new MutationObserver((_records, observer) => {
 				if (handle.root.isConnected) return;
 				observer.disconnect();
@@ -232,13 +228,15 @@ function wireSwipeToRemove(row, index, render) {
 		row.style.removeProperty('--swipe');
 		row.classList.remove('removing');
 		if (committed) removeAt(row, index, render);
-		offset = 0;
 	};
 
 	surface.addEventListener('pointerup', finish);
 	surface.addEventListener('pointercancel', finish);
-	// Suppress the click a completed swipe would otherwise also fire.
+	// Suppress the click a swipe would otherwise also fire. The offset is
+	// cleared here rather than in `finish`, which runs first — zeroing it there
+	// left every swipe ending in a play.
 	surface.addEventListener('click', event => {
 		if (Math.abs(offset) > 4) { event.stopImmediatePropagation(); event.preventDefault(); }
+		offset = 0;
 	}, true);
 }

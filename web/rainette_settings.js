@@ -1,13 +1,6 @@
-/**
- * Rainette Music — Settings tab.
- *
- * Appearance (theme + accent) applies directly to this document and persists
- * to localStorage, broadcasting to the detached player window so both stay in
- * sync while open. The equalizer panel doesn't own any audio state — the Web
- * Audio graph lives in the player window (miniplayer.js); this panel only
- * sends remote-control commands and mirrors whatever `music_eq_state`
- * broadcasts back (see miniplayer.js's wireRemote()/_broadcastEq()).
- */
+/* The Settings tab. Appearance persists here and is broadcast to the player
+ * window. The equaliser panel owns no audio state: the graph lives in
+ * miniplayer.js, so this only sends commands and mirrors what comes back. */
 
 import { sendHelper, el } from './music_shell.js';
 import { createSelect } from './rainette_select.js';

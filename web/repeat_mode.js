@@ -1,12 +1,7 @@
-/**
- * Shared three-state repeat: off -> loop the queue -> repeat this song.
- *
- * The two playback engines own separate queues but must agree on modes, cycle
- * order and labels, or the same button means different things on each surface.
- *
- * Broadcasts carry `repeat` plus a derived boolean `loop` for older consumers.
- * bool("off") is True, so `repeat` must never go through that boolean field.
- */
+/* Shared three-state repeat: off -> loop the queue -> repeat this song. Both
+ * engines own separate queues but must agree, or one button means two things.
+ * Broadcasts carry `repeat` plus a derived `loop`; bool("off") is True, so
+ * `repeat` must never travel through that boolean. */
 
 export const REPEAT_MODES = ['off', 'all', 'one'];
 

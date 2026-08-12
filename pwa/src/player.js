@@ -1,9 +1,6 @@
-/* The phone's playback engine: the one <audio> element, the queue, the transport.
- *
- * It also reports every state change up to the computer, and in linked mode it
- * drives the computer's audio instead of this element. Stream URLs expire, so a
- * failed load re-resolves once and resumes rather than surfacing an error.
- */
+/* The phone's playback engine: the one <audio>, the queue, the transport. Every
+ * state change is reported to the computer, and in linked mode this drives the
+ * computer's audio instead. A stream that expired re-resolves once. */
 
 import { state, STORAGE, persist, trackKey, artworkUrl, artistName, nextRepeat, rememberRecent, trackDuration } from './state.js';
 import { command, mediaUrl } from './bridge.js';
@@ -182,8 +179,19 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 }
 
 export async function toggle() {
-	if (isLinked()) { remoteControl('toggle'); return; }
+	if (isLinked()) {
+		// The desktop's answer comes back over the event loop, which is a round
+		// trip away. Showing the new state now keeps the button from reading as
+		// dead; the next broadcast corrects it if the command did not land.
+		state.remote = { ...state.remote, playing: !state.remote.playing };
+		emit();
+		remoteControl('toggle');
+		return;
+	}
 	if (!state.currentTrack) return;
+	// Mid-resolve there is no stream to start yet. Calling play() here rejects
+	// and surfaces a failure for a track that is loading perfectly well.
+	if (state.loading) return;
 	try {
 		if (audio.paused) await audio.play();
 		else audio.pause();
@@ -454,6 +462,22 @@ audio.addEventListener('error', async () => {
 });
 
 wireMediaSession();
+
+/** Pause this phone's own audio without forgetting the queue it holds. */
+export function pauseLocal() {
+	if (!audio.paused) audio.pause();
+}
+
+/** This phone's session, shaped the way an output handoff wants it. */
+export function localSession() {
+	return {
+		queue: state.queue,
+		index: state.queueIndex,
+		current_time: audio.currentTime || 0,
+		playing: !audio.paused,
+		repeat: state.repeat,
+	};
+}
 
 /** Stop and forget everything, for disconnect. */
 export function resetPlayback() {

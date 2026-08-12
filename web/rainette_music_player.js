@@ -1,11 +1,6 @@
-/**
- * The in-page "now playing" bubble, used in the browser fallback.
- *
- * Boots once at load so it survives page nav, and owns the global <audio> and
- * queue behind window.RainetteMusic (playTrack, playQueue, toggle, next, prev).
- * Stays hidden until a track loads. Drag is a local port of the pointer-capture
- * pattern, since a module cannot reach index.html's makeDraggablePanel.
- */
+/* The in-page "now playing" bubble used in the browser fallback. Boots once so
+ * it survives page nav, and owns the global <audio> and queue behind
+ * window.RainetteMusic. Hidden until a track loads. */
 
 import { sendHelper, helperRequest, app } from './music_shell.js';
 import { iconMarkup } from './rainette_icons.js';
