@@ -1,7 +1,9 @@
-/* Bump this whenever the pairing protocol changes. A returning phone that
- * kept a cached app.js would otherwise keep speaking the old handshake to a
- * computer that no longer understands it. */
-const CACHE = 'rainette-pwa-v6';
+/* Bump this whenever the pairing protocol changes, or whenever a module is
+ * added or its behaviour changes. Requests below are served cache-first, so a
+ * returning phone that kept a cached app.js would otherwise keep running the
+ * old client — speaking a handshake the computer no longer understands, or
+ * simply never seeing the new screens — until it was uninstalled. */
+const CACHE = 'rainette-pwa-v7';
 const SHELL = [
   './',
   './index.html',
@@ -20,6 +22,9 @@ const SHELL = [
   './src/collections.js',
   './src/scanner.js',
   './src/qr.js',
+  './src/catalog.js',
+  './src/sorting.js',
+  './src/eq.js',
   './manifest.webmanifest',
   './icon.svg',
 ];

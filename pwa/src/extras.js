@@ -5,7 +5,8 @@
 import { el, toast, tap, motionOff } from './dom.js';
 import { state, STORAGE, persist, artistName, trackKey } from './state.js';
 import { openSheet, actionSheet } from './sheets.js';
-import { command } from './bridge.js';
+import { command, commandError } from './bridge.js';
+import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
 import {
 	queueAddNext, queueAddEnd, isPlaying, toggle, playTrack, pauseLocal, localSession,
 	currentTrack, currentTime, seekTo, subscribe,
@@ -193,7 +194,8 @@ export function openLyrics(track) {
 			try {
 				result = await command('music_lyrics', { track }, 20000);
 			} catch (error) {
-				content.replaceChildren(el('p', 'empty', error?.message || 'Could not reach your computer for lyrics.'));
+				content.replaceChildren(el('p', 'empty',
+					commandError(error, 'Could not reach your computer for lyrics.')));
 				return;
 			}
 			if (result?.instrumental) {
@@ -410,17 +412,25 @@ export function setLinked(linked) {
 	onLinkChange(linked);
 }
 
-/* ── Track overflow menu ───────────────────────────────────────────────────*/
+/* ── Track overflow menu ───────────────────────────────────────────────────
+ * Reachable from the now-playing card and from a press-and-hold on any row,
+ * which is what makes an artist reachable from every list in the app rather
+ * than only from a search result. */
 
 export async function openTrackMenu(track, list = []) {
+	const artist = trackArtist(track);
+	const album = trackAlbum(track);
+
 	await actionSheet({
 		title: track.title || 'Track',
 		items: [
 			{ id: 'next', label: 'Play next', icon: 'queue', run: () => { queueAddNext(track); toast('Playing next', { icon: 'queue' }); } },
 			{ id: 'end', label: 'Add to queue', icon: 'listAdd', run: () => { queueAddEnd(track); toast('Added to queue', { icon: 'listAdd' }); } },
+			artist ? { id: 'artist', label: `Go to ${artist.name}`, icon: 'artist', run: () => openArtist(artist) } : null,
+			album ? { id: 'album', label: `Go to ${album.title}`, icon: 'album', run: () => openAlbum(album) } : null,
 			{ id: 'playlist', label: 'Add to playlist', icon: 'plus', run: () => openAddToPlaylist(track) },
 			{ id: 'lyrics', label: 'Lyrics', icon: 'mic', run: () => openLyrics(track) },
-			list.length ? { id: 'queue-all', label: `Queue all ${list.length}`, icon: 'listAdd', run: () => { for (const item of list) queueAddEnd(item); toast(`Queued ${list.length} tracks`, { icon: 'listAdd' }); } } : null,
+			list.length > 1 ? { id: 'queue-all', label: `Queue all ${list.length}`, icon: 'listAdd', run: () => { for (const item of list) queueAddEnd(item); toast(`Queued ${list.length} tracks`, { icon: 'listAdd' }); } } : null,
 		].filter(Boolean),
 	});
 }

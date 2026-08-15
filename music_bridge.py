@@ -262,6 +262,10 @@ def _ytm_album(item: dict[str, Any], artist_hint: str = "") -> dict[str, Any] | 
         "year": item.get("year") or "",
         "thumbnail_url": _ytm_thumb(item),
         "result_type": item.get("resultType") or "album",
+        # "Album" / "EP" / "Single" as YouTube Music classifies the release. The
+        # artist catalog returns EPs inside its album section, so without this a
+        # client has no way to shelve them separately.
+        "release_type": str(item.get("type") or "").strip(),
         "browse_id": str(album_id or ""),
         "params": item.get("params") or "",
     }

@@ -14,6 +14,19 @@ const COMMIT_PX = 72;
 /* How far a finger must travel before the axis is decided. Small enough to feel
  * immediate, large enough that a straight-down scroll never trips it. */
 const AXIS_PX = 10;
+/* A press held this long is a request for the row's menu. Long enough not to
+ * fire on a slow tap, short enough that it is discovered by accident once and
+ * then used on purpose. */
+const HOLD_MS = 480;
+
+/* Every list wants the same menu, so it is configured once rather than passed
+ * through every call. Set from app.js, which is the only layer that knows about
+ * both the menu and the catalog it can navigate to. */
+let onMenu = null;
+
+export function configureTracks(options = {}) {
+	onMenu = options.onMenu || onMenu;
+}
 
 /** Render a list of tracks. `onPlay(track, index)` is what a tap runs, and
  *  `emptyMessage` explains an empty list rather than leaving a blank area. */
@@ -26,6 +39,9 @@ export function renderTracks(container, tracks, { emptyMessage, onPlay, swipe = 
 	for (const [index, track] of tracks.entries()) {
 		container.append(trackRow(track, {
 			onPlay: () => onPlay?.(track, index),
+			// The list a row belongs to is what makes "queue all" and "go to
+			// artist" answerable, so the menu is given the whole list, not the row.
+			onHold: onMenu ? () => onMenu(track, tracks) : null,
 			swipe,
 			showDuration,
 		}));
@@ -34,7 +50,7 @@ export function renderTracks(container, tracks, { emptyMessage, onPlay, swipe = 
 	stagger(container, ':scope > .track-shell');
 }
 
-export function trackRow(track, { onPlay, swipe = true, showDuration = true, trailing = null } = {}) {
+export function trackRow(track, { onPlay, onHold = null, swipe = true, showDuration = true, trailing = null } = {}) {
 	// The shell holds the fixed action backdrop; the row itself is what slides.
 	const shell = el('div', 'track-shell');
 	shell.dataset.trackKey = trackKey(track);
@@ -76,19 +92,27 @@ export function trackRow(track, { onPlay, swipe = true, showDuration = true, tra
 	row.addEventListener('click', () => onPlay?.());
 
 	shell.append(row);
-	if (swipe) wireSwipe(shell, row, track);
+	wireGestures(shell, row, track, { swipe, onHold });
 	return shell;
 }
 
-function wireSwipe(shell, row, track) {
+function wireGestures(shell, row, track, { swipe, onHold }) {
 	let startX = 0;
 	let startY = 0;
 	let axis = null;         // null → undecided, 'x' → ours, 'y' → the scroller's
 	let offset = 0;
 	let pointerId = null;
+	let holdTimer = 0;
+	let held = false;
+	let touching = false;
+
+	const cancelHold = () => {
+		clearTimeout(holdTimer);
+		holdTimer = 0;
+	};
 
 	const settle = () => {
-		row.classList.remove('swiping');
+		row.classList.remove('swiping', 'holding');
 		row.style.transform = '';
 		shell.classList.remove('reveal-next', 'reveal-end');
 	};
@@ -100,12 +124,30 @@ function wireSwipe(shell, row, track) {
 		startY = event.clientY;
 		axis = null;
 		offset = 0;
+		held = false;
+		touching = event.pointerType !== 'mouse';
+		if (!onHold) return;
+		row.classList.add('holding');
+		holdTimer = setTimeout(() => {
+			holdTimer = 0;
+			held = true;
+			row.classList.remove('holding');
+			tap(12);
+			onHold();
+		}, HOLD_MS);
 	});
 
 	row.addEventListener('pointermove', event => {
 		if (event.pointerId !== pointerId) return;
 		const dx = event.clientX - startX;
 		const dy = event.clientY - startY;
+
+		// Any real movement means this is a swipe or a scroll, not a hold.
+		if (holdTimer && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) {
+			cancelHold();
+			row.classList.remove('holding');
+		}
+		if (!swipe) return;
 
 		if (axis === null) {
 			if (Math.abs(dx) < AXIS_PX && Math.abs(dy) < AXIS_PX) return;
@@ -132,7 +174,8 @@ function wireSwipe(shell, row, track) {
 	const finish = event => {
 		if (event.pointerId !== pointerId) return;
 		pointerId = null;
-		if (axis !== 'x') { axis = null; return; }
+		cancelHold();
+		if (axis !== 'x') { axis = null; settle(); return; }
 		axis = null;
 		const committed = Math.abs(offset) >= COMMIT_PX;
 		if (committed) {
@@ -152,14 +195,28 @@ function wireSwipe(shell, row, track) {
 	row.addEventListener('pointercancel', event => {
 		if (event.pointerId !== pointerId) return;
 		pointerId = null;
+		cancelHold();
 		axis = null;
 		settle();
 	});
 
-	// A tap that followed a swipe must not also play the track.
+	// Neither a swipe nor a hold may also play the track: the menu is already
+	// open by the time the click arrives, and playing behind it is a surprise.
 	row.addEventListener('click', event => {
-		if (Math.abs(offset) > 4) { event.stopImmediatePropagation(); event.preventDefault(); offset = 0; }
+		if (Math.abs(offset) > 4 || held) {
+			event.stopImmediatePropagation();
+			event.preventDefault();
+			offset = 0;
+			held = false;
+		}
 	}, true);
+
+	// A hold on a touch screen otherwise raises the system selection callout on
+	// top of the sheet the hold just opened. A right-click is not that gesture,
+	// so the browser's own menu is left alone.
+	row.addEventListener('contextmenu', event => {
+		if (onHold && touching) event.preventDefault();
+	});
 }
 
 /* Called on every playback tick, so it has to be free when nothing changed:

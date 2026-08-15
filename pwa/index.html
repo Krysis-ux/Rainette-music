@@ -102,8 +102,15 @@
                  placeholder="Songs, artists, albums" aria-label="Search music">
           <button class="primary compact" type="submit">Go</button>
         </form>
+        <div id="searchFilter" class="segmented" role="tablist" aria-label="Result type" hidden>
+          <button class="active" type="button" role="tab" aria-selected="true" data-filter="all">Top</button>
+          <button type="button" role="tab" aria-selected="false" data-filter="songs">Songs</button>
+          <button type="button" role="tab" aria-selected="false" data-filter="artists">Artists</button>
+          <button type="button" role="tab" aria-selected="false" data-filter="albums">Albums</button>
+        </div>
         <p id="searchMessage" class="muted" role="status" aria-live="polite"></p>
-        <div id="searchResults" class="track-list"></div>
+        <div id="searchSort" hidden></div>
+        <div id="searchResults"></div>
       </section>
 
       <section class="panel" data-panel="library">
@@ -114,19 +121,43 @@
         <div class="segmented" role="tablist" aria-label="Library view">
           <button id="libraryModeSongs" class="active" type="button" role="tab" aria-selected="true">Songs</button>
           <button id="libraryModePlaylists" type="button" role="tab" aria-selected="false">Playlists</button>
+          <button id="libraryModeArtists" type="button" role="tab" aria-selected="false">Artists</button>
         </div>
+        <div id="librarySort"></div>
         <div id="libraryList" class="track-list"></div>
       </section>
 
       <section class="panel" data-panel="settings">
         <h1>Settings</h1>
+
+        <h2 class="settings-group">Sound</h2>
+        <div class="settings-list">
+          <button id="equalizerButton" type="button">
+            <span><b>Equalizer</b><small>Five bands and the same presets as your computer</small></span>
+            <span id="equalizerState" class="settings-state settings-value"></span>
+          </button>
+          <button id="sleepButton" type="button">
+            <span><b>Sleep timer</b><small>Stop the music after a while, or after this track</small></span>
+            <span id="sleepState" class="settings-state settings-value"></span>
+          </button>
+          <button id="outputButton" type="button">
+            <span><b>Play on</b><small>Choose a speaker, a headset, or this phone</small></span>
+            <span id="outputState" class="settings-state settings-value"></span>
+          </button>
+        </div>
+
+        <h2 class="settings-group">Library</h2>
+        <div class="settings-list">
+          <button id="followedButton" type="button">
+            <span><b>Artists you follow</b><small>The same list your computer keeps</small></span>
+          </button>
+        </div>
+
+        <h2 class="settings-group">This phone</h2>
         <div class="settings-list">
           <button id="linkToggle" type="button" aria-pressed="false">
             <span><b>Link to my computer</b><small>This phone runs its own session, separate from the computer</small></span>
             <span id="linkState" class="settings-state" aria-hidden="true"></span>
-          </button>
-          <button id="outputButton" type="button">
-            <span><b>Play on</b><small>Choose a speaker, a headset, or this phone</small></span>
           </button>
           <button id="testConnectionButton" type="button">
             <span><b>Check the connection</b><small>Confirm this phone can still reach your computer</small></span>
@@ -192,9 +223,12 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4v16M10 4v16M15.5 5l4 15"/></svg>
       Library
     </button>
+    <!-- Labelled "Settings", not "More": a tab called More with a ••• glyph is
+         where a settings screen goes to hide. Sliders rather than a gear, which
+         at 22px in outline reads as a sun. -->
     <button data-tab="settings" type="button">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.6" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="18.4" cy="12" r="1.5"/></svg>
-      More
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h8M16.5 8H20M4 16h3.5M12 16h8"/><circle cx="14.2" cy="8" r="2.3"/><circle cx="9.8" cy="16" r="2.3"/></svg>
+      Settings
     </button>
   </nav>
 

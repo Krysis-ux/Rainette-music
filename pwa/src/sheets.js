@@ -18,6 +18,36 @@ function topSheet() {
 	return open[open.length - 1] || null;
 }
 
+/* Each sheet owns one history entry, so closing one programmatically has to pop
+ * that entry — and the pop comes back as a popstate indistinguishable from the
+ * user's own back gesture. Left unclaimed it closed the sheet *underneath* as
+ * well, which is why opening an artist from a track menu used to flash and
+ * vanish: the menu's pop landed after the artist sheet had pushed its own entry
+ * and took it instead.
+ *
+ * Counting the pops we caused lets the listener tell the two apart. */
+let selfPops = 0;
+/* Work that must not start until our pop has landed. Anything that pushes a new
+ * history entry belongs here; running it earlier hands it to the pending pop. */
+const afterPop = [];
+
+function drainAfterPop() {
+	const queued = afterPop.splice(0);
+	for (const run of queued) {
+		try { run(); } catch { /* one queued action must not strand the rest */ }
+	}
+}
+
+/** Run `fn` once any in-flight sheet close has finished popping its entry. */
+export function afterSheetSettles(fn) {
+	if (!selfPops) { fn(); return; }
+	afterPop.push(fn);
+	// A popstate that never arrives (a browser that refuses the back, a history
+	// entry something else replaced) must not strand the action for good. The
+	// drain is idempotent, so arriving late costs nothing.
+	setTimeout(drainAfterPop, 400);
+}
+
 /** Open a sheet. `build(api)` fills the body; `api.body` is the scroller and
  *  `api.close()` dismisses. Returns a handle the caller can keep. */
 export function openSheet({ title = '', className = '', full = false, build }) {
@@ -52,7 +82,10 @@ export function openSheet({ title = '', className = '', full = false, build }) {
 			const index = open.indexOf(handle);
 			if (index >= 0) open.splice(index, 1);
 			if (!open.length) document.body.classList.remove('sheet-open');
-			if (!fromHistory && history.state?.rainetteSheet) history.back();
+			if (!fromHistory && history.state?.rainetteSheet) {
+				selfPops += 1;
+				history.back();
+			}
 			if (motionOff()) { root.remove(); return; }
 			root.classList.add('closing');
 			panel.addEventListener('animationend', () => root.remove(), { once: true });
@@ -148,6 +181,13 @@ document.addEventListener('keydown', event => {
 });
 
 window.addEventListener('popstate', () => {
+	// A pop we asked for is already accounted for; only a real back gesture may
+	// dismiss the sheet now on top.
+	if (selfPops > 0) {
+		selfPops -= 1;
+		drainAfterPop();
+		return;
+	}
 	topSheet()?.close(true);
 });
 
@@ -183,7 +223,10 @@ export function actionSheet({ title = 'Actions', items = [] } = {}) {
 					button.addEventListener('click', () => {
 						answer = item.id || item.label;
 						close();
-						item.run?.();
+						// Deferred, because most of these open another sheet and a
+						// pushState issued before this one's pop lands is what the
+						// pop then consumes.
+						afterSheetSettles(() => item.run?.());
 					});
 					list.append(button);
 				}

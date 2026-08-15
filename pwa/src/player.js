@@ -9,11 +9,16 @@ const audio = new Audio();
 audio.preload = 'metadata';
 
 let reportError = () => {};
+/* Fired once a track's media has been handed to the element. The equaliser
+ * hangs off this rather than importing the player back, which would close a
+ * cycle between the two modules. */
+let onSourceLoaded = () => {};
 
 const listeners = new Set();
 
 export function configurePlayer(options = {}) {
 	reportError = options.onError || reportError;
+	onSourceLoaded = options.onSourceLoaded || onSourceLoaded;
 	audio.volume = Math.min(1, state.volume);
 }
 
@@ -215,6 +220,9 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 		// Named on the lock screen before it starts, not after, so the controls
 		// never show the track that just finished.
 		publishMediaSession(track);
+		// Deliberately not awaited: a listener may reload this same element, and
+		// waiting on that here would deadlock this call against its own restart.
+		try { onSourceLoaded(); } catch { /* a broken listener is not playback's problem */ }
 		if (options.startPaused) {
 			publishNowPlaying('paused');
 			return;
@@ -540,6 +548,26 @@ wireMediaSession();
 /** Pause this phone's own audio without forgetting the queue it holds. */
 export function pauseLocal() {
 	if (!audio.paused) audio.pause();
+}
+
+/* ── Audio graph access ────────────────────────────────────────────────────
+ * The equaliser needs the element itself, because Web Audio routes an element
+ * rather than a stream, and it needs a way to reload what is playing after it
+ * changes the element's CORS mode. Both are deliberately narrow: nothing else
+ * should be reaching for the element. */
+
+export function audioElement() {
+	return audio;
+}
+
+/** Reload the current track in place, keeping its position and play state. */
+export async function reloadCurrent() {
+	const track = state.currentTrack;
+	if (!track) return;
+	await playTrack(track, state.queue, state.queueIndex, {
+		resumeAt: audio.currentTime || 0,
+		startPaused: audio.paused,
+	});
 }
 
 /** This phone's session, shaped the way an output handoff wants it. */
