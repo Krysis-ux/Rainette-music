@@ -2,8 +2,9 @@
  * state change is reported to the computer, and in linked mode this drives the
  * computer's audio instead. A stream that expired re-resolves once. */
 
-import { state, STORAGE, persist, trackKey, artworkUrl, artistName, nextRepeat, rememberRecent, trackDuration } from './state.js';
+import { state, STORAGE, persist, trackKey, artworkUrl, artistName, nextRepeat, rememberRecent, trackDuration, countPlay } from './state.js';
 import { command, mediaUrl } from './bridge.js';
+import { isLocalTrack, localStreamUrl } from './local.js';
 
 const audio = new Audio();
 audio.preload = 'metadata';
@@ -19,7 +20,8 @@ const listeners = new Set();
 export function configurePlayer(options = {}) {
 	reportError = options.onError || reportError;
 	onSourceLoaded = options.onSourceLoaded || onSourceLoaded;
-	audio.volume = Math.min(1, state.volume);
+	// Volume is applied by audio.js, which knows whether the gain node or the
+	// element is the thing that actually carries it.
 }
 
 /** Subscribe to every playback state change. Returns an unsubscribe function. */
@@ -156,6 +158,11 @@ function readyStream(track) {
 }
 
 async function resolveStream(track, forceRefresh) {
+	// A file on this phone needs no computer and no network: the blob is right
+	// here, and asking the companion for it would fail on a source_id it has
+	// never heard of.
+	if (isLocalTrack(track)) return localStreamUrl(track);
+
 	const result = await command('music_stream_url', {
 		source_id: track.source_id,
 		track,
@@ -210,7 +217,10 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 		if (trackKey(state.currentTrack) !== trackKey(track)) return;
 
 		const resumeAt = Number(options.resumeAt || 0);
-		audio.src = mediaUrl(url);
+		// A blob URL is already absolute, and there may be no companion to
+		// resolve it against — local files are meant to play with no computer
+		// paired at all.
+		audio.src = isLocalTrack(track) ? url : mediaUrl(url);
 		audio.load();
 		if (resumeAt > 0) {
 			audio.addEventListener('loadedmetadata', () => {
@@ -231,6 +241,10 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 		prefetchUpcoming();
 		await started;
 		rememberRecent(track);
+		// The one place a track genuinely began, so the one place worth counting.
+		// "Most popular" over a library the computer sends no view counts for is
+		// otherwise nothing at all.
+		countPlay(track);
 		publishNowPlaying('playing');
 	} finally {
 		state.loading = false;
@@ -306,13 +320,12 @@ export function seekTo(seconds) {
 	audio.currentTime = Math.max(0, Math.min(seconds, duration()));
 }
 
-export function setVolume(value) {
-	const volume = Math.max(0, Math.min(1, Number(value) || 0));
-	state.volume = volume;
-	persist(STORAGE.volume, volume);
-	if (isLinked()) { remoteControl('set_volume', { value: volume }); return; }
-	audio.volume = volume;
-	emit();
+/* Volume itself lives in audio.js, because on iOS an element's volume is
+ * read-only and the only control that works is a gain node in the Web Audio
+ * graph — which is that module's business. This is the hook it drives the
+ * desktop through when the phone is only a remote. */
+export function remoteSetVolume(value) {
+	remoteControl('set_volume', { value: Math.max(0, Math.min(2, Number(value) || 0)) });
 }
 
 export function cycleRepeat() {

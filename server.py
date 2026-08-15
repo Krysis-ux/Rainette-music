@@ -131,6 +131,7 @@ COMPANION_COMMAND_TYPES = frozenset({
     "music_stream_url",
     "music_catalog_search",
     "music_artist_catalog",
+    "music_artist_images",
     "music_album_tracks",
     "music_mix_from_seed",
     "music_library_index",
@@ -675,6 +676,7 @@ async def audio_proxy(request: web.Request) -> web.StreamResponse:
             resp.headers[header] = upstream.headers[header]
     resp.headers.setdefault("Accept-Ranges", "bytes")
     resp.headers["Cache-Control"] = "no-store"
+    resp.headers.update(_cors_headers(request))
     try:
         await resp.prepare(request)
         async for chunk in upstream.content.iter_chunked(65536):
@@ -745,14 +747,34 @@ def _origin_allowed(request: web.Request) -> bool:
     return not origin or origin in request.app[ALLOWED_ORIGINS_KEY]
 
 
-def _apply_cors(request: web.Request, response: web.StreamResponse) -> web.StreamResponse:
+def _cors_headers(request: web.Request) -> dict[str, str]:
+    """The CORS headers this origin is owed, or nothing if it is not allowed.
+
+    The desktop app carries no allow-list at all — its /audio proxy is bound to
+    loopback and only ever called by the local UI — so an absent key means
+    "nothing to grant" rather than a missing configuration.
+    """
+    allowed = request.app.get(ALLOWED_ORIGINS_KEY) or frozenset()
     origin = str(request.headers.get("Origin") or "").rstrip("/")
-    if origin and origin in request.app[ALLOWED_ORIGINS_KEY]:
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
-        response.headers["Access-Control-Max-Age"] = "600"
-        response.headers["Vary"] = "Origin"
+    if not origin or origin not in allowed:
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
+
+
+def _apply_cors(request: web.Request, response: web.StreamResponse) -> web.StreamResponse:
+    # A streaming handler flushes its own headers at prepare() time, long before
+    # the middleware sees the response. Writing them here would be silently lost,
+    # so those routes ask for the headers up front via _cors_headers instead —
+    # which is why the phone could never build a Web Audio graph over the relay.
+    if response.prepared:
+        return response
+    response.headers.update(_cors_headers(request))
     return response
 
 
@@ -946,6 +968,10 @@ async def companion_audio_relay(request: web.Request) -> web.StreamResponse:
             response.headers[header] = upstream.headers[header]
     response.headers.setdefault("Accept-Ranges", "bytes")
     response.headers["Cache-Control"] = "no-store"
+    # Set before prepare(): once the stream starts, headers are already on the
+    # wire. Without these the phone's <audio crossorigin> load fails outright and
+    # Web Audio -- the equalizer and the volume gain -- can never be built.
+    response.headers.update(_cors_headers(request))
     try:
         await response.prepare(request)
         async for chunk in upstream.content.iter_chunked(65536):

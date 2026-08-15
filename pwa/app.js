@@ -4,7 +4,7 @@
 
 import { state, STORAGE, artworkUrl, artistName, formatTime, readRecent, rememberRecent, trackKey } from './src/state.js';
 import { fetchDesktopRecent, mergeRecent, fetchPlaylists, fetchPlaylistTracks, playlistSubtitle } from './src/collections.js';
-import { $, el, icon, toast, stagger } from './src/dom.js';
+import { $, el, icon, iconButton, toast, stagger } from './src/dom.js';
 import { configureBridge, isUnsupportedCommand } from './src/bridge.js';
 import { configurePlayer, subscribe, playTrack, toggle, skip, currentTrack, isPlaying, isLoading, currentTime, duration, resetPlayback, isLinked } from './src/player.js';
 import { renderTracks, markPlayingRows, configureTracks } from './src/tracks.js';
@@ -14,9 +14,14 @@ import { openQueueSheet } from './src/queue.js';
 import { configureExtras, setLinked, openOutputPicker, sleepShouldStopAfterTrack, openTrackMenu, openSleepTimer, sleepLabel } from './src/extras.js';
 import { closeAllSheets } from './src/sheets.js';
 import { openScanner, scanningIsPossible } from './src/scanner.js';
-import { artistRow, albumRow, openArtist, openFollowedArtists, loadFollowed, artistRef } from './src/catalog.js';
-import { sortControl, sortTracks } from './src/sorting.js';
+import { artistRow, albumRow, openArtist, openFollowedArtists, loadFollowed, hydrateArtistArt } from './src/catalog.js';
+import { artistsFromTracks, searchArtists } from './src/artists.js';
+import { sortControl, sortTracks, sortArtists, ARTIST_SORTS } from './src/sorting.js';
 import { openEqualizer, eqSummary, eqOnTrackLoaded } from './src/eq.js';
+import { pref } from './src/prefs.js';
+import { wireSettings, paintSettingsValues } from './src/settings.js';
+import { listLocalTracks } from './src/local.js';
+import { localPlaylists, isLocalPlaylist, localPlaylistTracks, openPlaylistEditor, openPlaylistMenu } from './src/playlists.js';
 
 const setupView = $('#setupView');
 const appView = $('#appView');
@@ -320,7 +325,9 @@ async function testConnection({ reveal = true } = {}) {
 	try {
 		const status = await api('/status');
 		showApp(status);
-		if (reveal) switchTab('home');
+		// Which tab the app opens on is a preference, because "home" is the wrong
+		// answer for somebody who only ever uses search.
+		if (reveal) switchTab(pref('landingTab') || 'home');
 		return true;
 	} catch (error) {
 		setStatus('', 'Offline');
@@ -387,7 +394,14 @@ async function refreshRecent() {
  * if something else claimed the panel since, so a late answer cannot paint over
  * an open playlist. */
 
-const library = { mode: 'songs', playlistId: null, token: 0 };
+const library = { mode: 'songs', playlistId: null, playlist: null, token: 0 };
+
+const LIBRARY_MODES = [
+	['#libraryModeSongs', 'songs'],
+	['#libraryModePlaylists', 'playlists'],
+	['#libraryModeArtists', 'artists'],
+	['#libraryModeLocal', 'local'],
+];
 
 /* One control serves whichever list the panel is showing, because "sort" means
  * the same thing in all of them and a second chip per mode would be three
@@ -401,6 +415,15 @@ const librarySort = sortControl({
 });
 $('#librarySort').append(librarySort.node);
 
+/* Artists are not tracks, so they get their own modes rather than a track sort
+ * whose "album" and "longest" mean nothing on a person. */
+const libraryArtistSort = sortControl({
+	scope: 'library-artists',
+	modes: ARTIST_SORTS,
+	onChange: () => { if (library.mode === 'artists') renderLibraryArtists(); },
+});
+$('#librarySort').append(libraryArtistSort.node);
+
 function claimLibrary() {
 	return ++library.token;
 }
@@ -409,11 +432,16 @@ function libraryOwns(token) {
 	return token === library.token;
 }
 
-/* Sorting is only offered where there is a list of tracks to sort — the
- * playlist index and the artist list are neither. */
+/* Every mode that shows a list gets a sort; which control is shown depends on
+ * what kind of list it is. The playlist index is the one screen with neither. */
 function paintLibrarySort() {
-	const sortable = (library.mode === 'songs') || (library.mode === 'playlists' && !!library.playlistId);
-	$('#librarySort').hidden = !sortable;
+	const tracks = (library.mode === 'songs')
+		|| (library.mode === 'local')
+		|| (library.mode === 'playlists' && !!library.playlistId);
+	const artists = library.mode === 'artists';
+	librarySort.node.hidden = !tracks;
+	libraryArtistSort.node.hidden = !artists;
+	$('#librarySort').hidden = !(tracks || artists);
 }
 
 /** Render the song list from a payload the computer pushed on its own. */
@@ -468,81 +496,119 @@ async function renderLibraryArtists() {
 	const followedArtists = await loadFollowed();
 	if (!libraryOwns(token)) return;
 
-	const byName = new Map();
-	for (const entry of followedArtists.map(artistRef)) {
-		if (entry.name) byName.set(entry.name.toLowerCase(), { ...entry, count: 0 });
-	}
-	for (const track of state.library) {
-		const name = artistName(track);
-		if (!name) continue;
-		const key = name.toLowerCase();
-		const existing = byName.get(key);
-		if (existing) {
-			existing.count += 1;
-			existing.id = existing.id || track?.metadata?.artist_id || '';
-			existing.art = existing.art || track.thumbnail_url || '';
-		} else {
-			byName.set(key, {
-				id: track?.metadata?.artist_id || '',
-				name,
-				art: track.thumbnail_url || '',
-				subscribers: '',
-				count: 1,
-			});
-		}
-	}
-
-	const artists = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+	const artists = artistsFromTracks(state.library, followedArtists);
 	if (!artists.length) {
 		target.replaceChildren(el('p', 'empty', 'Save some music on your computer, or follow an artist, and they show up here.'));
 		return;
 	}
-	target.replaceChildren(...artists.map(artist => artistRow(artist)));
+
+	const sorted = sortArtists(artists, libraryArtistSort.current());
+	target.replaceChildren(...sorted.map(artist => artistRow(artist)));
+	// Their pictures are resolved after the rows are up, so the list appears at
+	// once instead of waiting on artwork nobody is looking at yet.
+	hydrateArtistArt(target);
 	stagger(target, ':scope > .collection-row');
 }
 
+/* Files held on this phone. Needs no computer, which is the point: this is the
+ * one part of the library that still works with nothing paired. */
+async function renderLocalLibrary() {
+	const token = claimLibrary();
+	const target = $('#libraryList');
+	target.replaceChildren(el('p', 'empty', 'Reading files on this phone…'));
+
+	const tracks = await listLocalTracks();
+	if (!libraryOwns(token)) return;
+	if (!tracks.length) {
+		target.replaceChildren(el('p', 'empty',
+			'No music added from this phone yet. Settings → Music on this phone adds MP3s straight from your files — they stay on the device.'));
+		return;
+	}
+	const sorted = sortTracks(tracks, librarySort.current());
+	renderTracks(target, sorted, {
+		emptyMessage: 'No music added from this phone yet.',
+		onPlay: playFromList(sorted),
+	});
+}
+
 async function renderLibraryPanel() {
-	$('#libraryModeSongs')?.classList.toggle('active', library.mode === 'songs');
-	$('#libraryModePlaylists')?.classList.toggle('active', library.mode === 'playlists');
-	$('#libraryModeArtists')?.classList.toggle('active', library.mode === 'artists');
+	for (const [id, mode] of LIBRARY_MODES) {
+		$(id)?.classList.toggle('active', library.mode === mode);
+	}
 	paintLibrarySort();
 
 	if (library.mode === 'songs') { library.playlistId = null; return refreshLibrary(); }
 	if (library.mode === 'artists') { library.playlistId = null; return renderLibraryArtists(); }
+	if (library.mode === 'local') { library.playlistId = null; return renderLocalLibrary(); }
 	if (library.playlistId) return renderPlaylistTracks(library.playlistId, library.playlistName);
 
 	const token = claimLibrary();
 	const target = $('#libraryList');
 	target.replaceChildren(el('p', 'empty', 'Loading your playlists…'));
+
+	// The phone's own playlists are shown even when the computer cannot be
+	// reached — they live here, so a dead tunnel is no reason to hide them.
+	const mine = localPlaylists();
+	let fromComputer = [];
+	let failure = null;
 	try {
-		const playlists = await fetchPlaylists();
-		if (!libraryOwns(token)) return;
-		if (!playlists.length) {
-			target.replaceChildren(el('p', 'empty', 'Playlists you make on your computer show up here.'));
-			return;
-		}
-		target.replaceChildren(...playlists.map(playlist => {
-			const row = el('button', 'collection-row');
-			row.type = 'button';
-			row.append(
-				el('span', 'collection-mark', (playlist.name || '?').slice(0, 1).toUpperCase()),
-				el('span', 'collection-copy',
-					el('b', '', playlist.name || 'Untitled playlist'),
-					el('span', '', playlistSubtitle(playlist))),
-			);
-			row.addEventListener('click', () => {
-				library.playlistId = playlist.id;
-				library.playlistName = playlist.name;
-				paintLibrarySort();
-				renderPlaylistTracks(playlist.id, playlist.name);
-			});
-			return row;
-		}));
-		stagger(target, ':scope > .collection-row');
+		fromComputer = await fetchPlaylists();
 	} catch (error) {
-		if (!libraryOwns(token)) return;
-		target.replaceChildren(el('p', 'empty', connectionError(error)));
+		failure = error;
 	}
+	if (!libraryOwns(token)) return;
+
+	const playlists = [...mine, ...fromComputer];
+	if (!playlists.length) {
+		target.replaceChildren(el('p', 'empty', failure
+			? connectionError(failure)
+			: 'Playlists you make on your computer show up here, and so do any you make on this phone.'));
+		return;
+	}
+
+	target.replaceChildren(...playlists.map(playlistRow));
+	if (failure) target.append(el('p', 'catalog-note', connectionError(failure)));
+	stagger(target, ':scope > .collection-row');
+}
+
+function playlistRow(playlist) {
+	const row = el('div', 'collection-row playlist-row');
+
+	const open = el('button', 'collection-open');
+	open.type = 'button';
+	const cover = playlist.cover
+		? Object.assign(document.createElement('img'), { className: 'collection-art', src: playlist.cover, alt: '' })
+		: el('span', 'collection-mark', (playlist.name || '?').slice(0, 1).toUpperCase());
+	open.append(
+		cover,
+		el('span', 'collection-copy',
+			el('b', '', playlist.name || 'Untitled playlist'),
+			el('span', '', isLocalPlaylist(playlist)
+				? `On this phone · ${playlist.tracks?.length || 0} track${(playlist.tracks?.length || 0) === 1 ? '' : 's'}`
+				: playlistSubtitle(playlist))),
+	);
+	open.addEventListener('click', () => {
+		library.playlistId = playlist.id;
+		library.playlistName = playlist.name;
+		library.playlist = playlist;
+		paintLibrarySort();
+		renderPlaylistTracks(playlist.id, playlist.name);
+	});
+
+	// Editing is one tap from the list rather than buried inside the playlist,
+	// because renaming one is far more common than opening it to rename it.
+	const more = iconButton('sliders', {
+		label: `Edit ${playlist.name || 'playlist'}`,
+		className: 'collection-more',
+		size: 18,
+		onClick: () => openPlaylistMenu(playlist, {
+			onOpen: () => open.click(),
+			onChanged: () => renderLibraryPanel(),
+		}),
+	});
+
+	row.append(open, more);
+	return row;
 }
 
 async function renderPlaylistTracks(playlistId, name = '') {
@@ -558,10 +624,32 @@ async function renderPlaylistTracks(playlistId, name = '') {
 		renderLibraryPanel();
 	});
 	try {
-		const tracks = await fetchPlaylistTracks(playlistId);
+		const playlist = library.playlist && library.playlist.id === playlistId
+			? library.playlist
+			: { id: playlistId, name, local: String(playlistId).startsWith('local:') };
+		const tracks = isLocalPlaylist(playlist)
+			? localPlaylistTracks(playlistId)
+			: await fetchPlaylistTracks(playlistId);
 		if (!libraryOwns(token)) return;
+
 		target.replaceChildren(back);
-		if (name) target.append(el('h2', 'collection-title', name));
+		const head = el('div', 'collection-head');
+		if (name) head.append(el('h2', 'collection-title', name));
+		// Everything about a playlist is changeable from the playlist itself,
+		// which is where somebody looking at it expects to find that.
+		const edit = el('button', 'chip', 'Edit');
+		edit.type = 'button';
+		edit.addEventListener('click', () => openPlaylistEditor(playlist, tracks, {
+			onChanged: updated => {
+				if (!updated) { library.playlistId = null; library.playlist = null; renderLibraryPanel(); return; }
+				library.playlist = updated;
+				library.playlistName = updated.name;
+				renderPlaylistTracks(playlistId, updated.name);
+			},
+		}));
+		head.append(edit);
+		target.append(head);
+
 		const list = el('div', 'track-list');
 		target.append(list);
 		const sorted = sortTracks(tracks, librarySort.current());
@@ -594,6 +682,16 @@ const searchSort = sortControl({
 });
 searchSortHost.append(searchSort.node);
 
+/* The Artists tab sorts too — by name, or by how big the artist is. Asking a
+ * track sort to order people is what made "sort by artist" in search look like
+ * it did nothing. */
+const searchArtistSort = sortControl({
+	scope: 'search-artists',
+	modes: ARTIST_SORTS,
+	onChange: () => renderSearchResults(),
+});
+searchSortHost.append(searchArtistSort.node);
+
 async function search(query) {
 	searchMessage.textContent = 'Searching on your computer…';
 	$('#searchResults').replaceChildren();
@@ -618,7 +716,11 @@ async function search(query) {
 	}
 
 	searchState.songs = Array.isArray(result.songs) ? result.songs : (result.items || result.tracks || []);
-	searchState.artists = Array.isArray(result.artists) ? result.artists : [];
+	// A computer that answers with songs but no artists — an older Rainette, or
+	// one without ytmusicapi — used to leave the Artists tab empty even though
+	// every song in the results names somebody. They are derived from the songs
+	// instead, so tapping through to an artist always works.
+	searchState.artists = searchArtists(result.artists, searchState.songs);
 	searchState.albums = Array.isArray(result.albums) ? result.albums : [];
 	state.searchResults = searchState.songs;
 
@@ -668,16 +770,23 @@ function renderSearchResults() {
 	target.replaceChildren();
 	const { filter, songs, artists, albums } = searchState;
 
-	// Sorting is about a list of songs; artists and albums have their own order
-	// from the computer and no field worth reordering them on here.
-	const showSort = (filter === 'all' || filter === 'songs') && songs.length > 1;
-	searchSortHost.hidden = !showSort;
+	// Songs and artists sort on different fields, so each tab shows the control
+	// that belongs to what it is looking at and the other stays out of the way.
+	const sortSongs = (filter === 'all' || filter === 'songs') && songs.length > 1;
+	const sortArtistList = filter === 'artists' && artists.length > 1;
+	searchSort.node.hidden = !sortSongs;
+	searchArtistSort.node.hidden = !sortArtistList;
+	searchSortHost.hidden = !(sortSongs || sortArtistList);
+
 	const orderedSongs = sortTracks(songs, searchSort.current());
 	searchState.sorted = orderedSongs;
 
 	if (filter === 'artists' || (filter === 'all' && artists.length)) {
-		const { section } = resultSection('Artists', artists.slice(0, filter === 'all' ? 4 : artists.length).map(artistRow));
+		const ordered = sortArtists(artists, searchArtistSort.current());
+		const shown = filter === 'all' ? ordered.slice(0, 4) : ordered;
+		const { section, list } = resultSection('Artists', shown.map(artistRow));
 		target.append(section);
+		hydrateArtistArt(list);
 	}
 	if (filter === 'albums' || (filter === 'all' && albums.length)) {
 		const { section } = resultSection('Albums & singles', albums.slice(0, filter === 'all' ? 4 : albums.length).map(albumRow));
@@ -803,6 +912,7 @@ function renderSettings() {
 	$('#equalizerState').textContent = eqSummary();
 	$('#sleepState').textContent = sleepLabel() === 'Sleep' ? 'Off' : sleepLabel();
 	$('#outputState').textContent = isLinked() ? (state.computerName || 'Your computer') : 'This phone';
+	paintSettingsValues().catch(() => { /* a value that will not load is not worth a failure */ });
 }
 
 /* ── Wiring ───────────────────────────────────────────────────────────── */
@@ -922,20 +1032,26 @@ $('#connectionButton').addEventListener('click', () => {
 
 $('#libraryRefreshButton').addEventListener('click', () => { state.library = []; renderLibraryPanel(); });
 
-const LIBRARY_MODES = [['#libraryModeSongs', 'songs'], ['#libraryModePlaylists', 'playlists'], ['#libraryModeArtists', 'artists']];
-
 for (const [id, mode] of LIBRARY_MODES) {
 	$(id).addEventListener('click', () => {
 		if (library.mode === mode) return;
 		library.mode = mode;
 		library.playlistId = null;
 		library.playlistName = '';
+		library.playlist = null;
 		for (const [otherId] of LIBRARY_MODES) {
 			$(otherId).setAttribute('aria-selected', String(otherId === id));
 		}
 		renderLibraryPanel();
 	});
 }
+wireSettings({
+	refresh: renderSettings,
+	// Adding files or restoring a backup changes what the library holds, so the
+	// panel behind the sheet is rebuilt rather than left showing the old list.
+	onLibraryChanged: () => { if (activeTab === 'library') renderLibraryPanel().catch(() => {}); },
+});
+
 $('#testConnectionButton').addEventListener('click', () => testConnection({ reveal: false }));
 $('#installHelpButton').addEventListener('click', () => $('#installDialog').showModal());
 $('#outputButton').addEventListener('click', () => openOutputPicker().then(renderSettings));

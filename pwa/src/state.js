@@ -10,6 +10,11 @@ export const STORAGE = {
 	volume: 'rainette.pwa.volume',
 	repeat: 'rainette.pwa.repeat',
 	linked: 'rainette.pwa.linked',
+	plays: 'rainette.pwa.plays',
+	theme: 'rainette.pwa.theme',
+	accent: 'rainette.pwa.accent',
+	prefs: 'rainette.pwa.prefs',
+	artistArt: 'rainette.pwa.artist_art',
 };
 
 /* Repeat is three-state on the desktop ('off' | 'all' | 'one') and the phone
@@ -104,6 +109,59 @@ export function trackDuration(track) {
 		if (Number.isFinite(seconds) && seconds > 0) return seconds;
 	}
 	return 0;
+}
+
+/* How popular a track is, as a single number to order by. The computer sends
+ * this under whichever name its source used, and a phone's own play count is
+ * folded in so a library with no view counts at all still sorts by something
+ * real — what this listener actually plays. */
+export function trackPopularity(track) {
+	for (const value of [track?.view_count, track?.views, track?.play_count, track?.plays]) {
+		const count = typeof value === 'string' ? parseCount(value) : Number(value);
+		if (Number.isFinite(count) && count > 0) return count;
+	}
+	return localPlayCount(trackKey(track));
+}
+
+const COUNT_MAGNITUDE = { k: 1e3, m: 1e6, b: 1e9 };
+
+/* "1.4M views" and "23,918 plays" are both display strings rather than numbers. */
+function parseCount(value) {
+	const match = String(value).trim().toLowerCase().match(/([\d.,]+)\s*([kmb])?/);
+	if (!match) return 0;
+	const number = Number(match[1].replace(/,/g, ''));
+	if (!Number.isFinite(number)) return 0;
+	return number * (COUNT_MAGNITUDE[match[2]] || 1);
+}
+
+/* ── Play counts, kept on the phone ───────────────────────────────────────
+ * Written on every play so "most popular" means something even for a library
+ * the computer sends no counts for. Read often and written rarely, so the map
+ * is cached rather than parsed out of storage each time. */
+
+let playCounts = null;
+
+function readPlayCounts() {
+	if (playCounts) return playCounts;
+	try {
+		const value = JSON.parse(localStorage.getItem(STORAGE.plays) || '{}');
+		playCounts = (value && typeof value === 'object') ? value : {};
+	} catch {
+		playCounts = {};
+	}
+	return playCounts;
+}
+
+export function localPlayCount(key) {
+	return Number(readPlayCounts()[key]) || 0;
+}
+
+export function countPlay(track) {
+	const key = trackKey(track);
+	if (!key) return;
+	const counts = readPlayCounts();
+	counts[key] = (Number(counts[key]) || 0) + 1;
+	try { localStorage.setItem(STORAGE.plays, JSON.stringify(counts)); } catch { /* storage quota */ }
 }
 
 export function formatTime(seconds) {

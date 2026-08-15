@@ -7,6 +7,7 @@
 import { el, icon, tap, toast, stagger } from './dom.js';
 import { trackKey, artworkUrl, artistName, formatTime, trackDuration } from './state.js';
 import { queueAddNext, queueAddEnd, currentTrack, isPlaying } from './player.js';
+import { isLocalTrack, localArtworkUrl } from './local.js';
 
 /* Past this many pixels sideways the action commits on release. Below it the
  * row springs back, so a hesitant swipe is a cancel rather than a surprise. */
@@ -68,7 +69,14 @@ export function trackRow(track, { onPlay, onHold = null, swipe = true, showDurat
 	row.type = 'button';
 
 	const art = document.createElement('img');
-	art.src = artworkUrl(track);
+	// A file on this phone carries its cover inside itself rather than at a URL,
+	// so the row is tagged and filled in once the blob has been read.
+	if (isLocalTrack(track)) {
+		art.dataset.localArt = track.source_id;
+		art.src = localArtworkUrl(track);
+	} else {
+		art.src = artworkUrl(track);
+	}
 	art.alt = '';
 	art.width = 48;
 	art.height = 48;

@@ -4,15 +4,31 @@
 
 export const $ = selector => document.querySelector(selector);
 
-/** Create an element with an optional class and text, in one call. */
-export function el(tag, className = '', text = '') {
+/** Create an element with an optional class and any number of children, in one
+ *  call. A string child becomes text; a node is appended.
+ *
+ *  It used to take exactly one `text` argument, which several callers were
+ *  already passing elements to — `el('span', 'copy', el('b', '', name), …)`.
+ *  Assigning a node to `textContent` stringifies it, so every playlist row in
+ *  the library rendered the literal words "[object HTMLElement]" in place of its
+ *  name. Accepting children is what those call sites always meant.
+ */
+export function el(tag, className = '', ...children) {
 	const node = document.createElement(tag);
 	if (className) node.className = className;
-	if (text) node.textContent = text;
+	for (const child of children) {
+		if (child === null || child === undefined || child === false || child === '') continue;
+		node.append(child instanceof Node ? child : String(child));
+	}
 	return node;
 }
 
+/* The OS setting and the app's own switch are the same answer as far as any
+ * caller is concerned: either one turns the animations off. The class is set by
+ * prefs.js, which this module deliberately does not import — dom.js is a leaf,
+ * and reading the DOM keeps it one. */
 export function motionOff() {
+	if (document.documentElement.classList.contains('reduce-motion')) return true;
 	return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
 }
 
@@ -20,7 +36,7 @@ export function motionOff() {
  * a sheet shut. Confirmation for an action whose result is off-screen; never for
  * one the user can already see land. Silently unsupported on iOS Safari. */
 export function tap(pattern = 8) {
-	if (motionOff()) return;
+	if (motionOff() || document.documentElement.classList.contains('no-haptics')) return;
 	try { navigator.vibrate?.(pattern); } catch { /* unsupported */ }
 }
 

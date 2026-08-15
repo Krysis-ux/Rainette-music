@@ -11,7 +11,7 @@
 
 import { el, icon } from './dom.js';
 import { actionSheet } from './sheets.js';
-import { artistName, trackDuration } from './state.js';
+import { artistName, trackDuration, trackPopularity } from './state.js';
 
 const STORE_PREFIX = 'rainette.pwa.sort.';
 
@@ -39,14 +39,53 @@ function albumOf(track) {
 /* Sorts available for a list of tracks. 'default' keeps the order the computer
  * sent, which for an album is its running order and for search is relevance —
  * both of which are real orders worth being able to get back to. */
+/* Popularity is play counts where the computer supplied them. Where it did not,
+ * every track scores zero and the sort is a no-op that leaves the list in the
+ * order it arrived — which for a search *is* relevance, so the answer stays
+ * sensible rather than becoming arbitrary. */
+function byPopularity(a, b) {
+	const left = trackPopularity(a);
+	const right = trackPopularity(b);
+	if (left === right) return 0;
+	return right - left;
+}
+
 export const TRACK_SORTS = [
 	{ id: 'default', label: 'Default order', hint: 'As your computer sent it' },
+	{ id: 'popular', label: 'Most popular', hint: 'Most played first', compare: byPopularity },
+	{ id: 'least', label: 'Least popular', hint: 'Deep cuts first', compare: (a, b) => -byPopularity(a, b) },
 	{ id: 'title', label: 'Title', compare: byText(track => track?.title) },
 	{ id: 'artist', label: 'Artist', compare: byText(artistName) },
 	{ id: 'album', label: 'Album', compare: byText(albumOf) },
 	{ id: 'longest', label: 'Longest first', compare: (a, b) => trackDuration(b) - trackDuration(a) },
 	{ id: 'shortest', label: 'Shortest first', compare: (a, b) => trackDuration(a) - trackDuration(b) },
 ];
+
+/* Artists and albums are not tracks and have no duration or album of their own,
+ * so they get their own short list rather than a track sort that mostly no-ops
+ * on them. */
+export const ARTIST_SORTS = [
+	{ id: 'default', label: 'Default order', hint: 'As your computer sent it' },
+	{ id: 'name', label: 'Name', compare: byText(artist => artist?.name) },
+	{ id: 'popular', label: 'Most followers', compare: (a, b) => subscriberCount(b) - subscriberCount(a) },
+];
+
+/* "1.2M subscribers" is a display string, not a number. Reading the magnitude
+ * off the suffix is enough to order a list by it. */
+const MAGNITUDE = { k: 1e3, m: 1e6, b: 1e9 };
+
+export function subscriberCount(artist) {
+	const raw = String(artist?.subscribers || '').trim().toLowerCase();
+	const match = raw.match(/^([\d.,]+)\s*([kmb])?/);
+	if (!match) return 0;
+	const value = Number(match[1].replace(/,/g, ''));
+	if (!Number.isFinite(value)) return 0;
+	return value * (MAGNITUDE[match[2]] || 1);
+}
+
+export function sortArtists(artists, id) {
+	return applySort(artists, ARTIST_SORTS, id);
+}
 
 export const RELEASE_SORTS = [
 	{ id: 'default', label: 'Default order', hint: 'As your computer sent it' },

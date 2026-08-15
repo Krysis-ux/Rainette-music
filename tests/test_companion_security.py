@@ -273,3 +273,105 @@ def test_destructive_local_data_commands_are_not_reachable_from_the_lan():
             f"{command} is destructive and must not be invocable by a paired phone"
         )
         assert command not in server.COMPANION_ONE_WAY_COMMAND_TYPES
+
+
+class _FakeContent:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    async def iter_chunked(self, _size):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeUpstream:
+    """Just enough of an aiohttp response for the relay to stream it."""
+
+    def __init__(self, body=b"audio-bytes"):
+        self.status = 200
+        self.headers = {"Content-Type": "audio/mp4", "Content-Length": str(len(body))}
+        self.content = _FakeContent([body])
+        self.released = False
+
+    def release(self):
+        self.released = True
+
+
+class _FakeSession:
+    def __init__(self):
+        self.upstream = _FakeUpstream()
+
+    async def get(self, _url, headers=None):
+        return self.upstream
+
+    async def close(self):
+        """The app closes whatever session it holds on cleanup."""
+
+
+class AudioRelayCorsTests(unittest.IsolatedAsyncioTestCase):
+    """The relay must set CORS headers *before* it starts streaming.
+
+    ``companion_audio_relay`` calls ``prepare()``, which puts the headers on the
+    wire; the CORS middleware only runs once the handler has returned, so
+    anything it sets at that point is silently dropped. The relay therefore has
+    to ask for the headers itself.
+
+    This matters because without ``Access-Control-Allow-Origin`` the phone
+    cannot load the audio as ``crossorigin="anonymous"``, and without that
+    ``createMediaElementSource`` may not be used — no equalizer, and no gain
+    node, which is the only volume control iOS honours at all since it makes
+    ``HTMLMediaElement.volume`` read-only.
+
+    The fake upstream is the whole point: an unreachable one makes the handler
+    return a plain error response that the middleware *can* still decorate, so
+    the bug hides unless the streaming path is actually taken.
+    """
+
+    async def _serve(self):
+        registry = CompanionRegistry(now=lambda: 1_000)
+        invitation = registry.create_invitation(ttl_s=60)
+        request = registry.request_pairing(invitation["token"], "Pixel")
+        approved = registry.approve(request["request_id"])
+        grant = registry.create_relay_grant(
+            approved["device_id"],
+            "https://rr1---sn-x.googlevideo.com/videoplayback?x=1",
+            ttl_s=600,
+        )
+        app = server.build_companion_app(registry, allowed_origins={ORIGIN})
+        session = _FakeSession()
+        # Installed after the real startup hook has run, so the relay streams
+        # from the fake rather than reaching for the network.
+        app.on_startup.append(lambda instance: _install(instance, session))
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        return client, grant, session
+
+    async def test_relay_streams_with_cors_headers_for_the_pwa_origin(self):
+        client, grant, session = await self._serve()
+        try:
+            response = await client.get("/audio/" + grant["token"], headers={"Origin": ORIGIN})
+            assert response.status == 200
+            assert await response.read() == b"audio-bytes"
+            assert session.upstream.released
+            assert response.headers.get("Access-Control-Allow-Origin") == ORIGIN, (
+                "the relay streamed without CORS headers; the phone cannot build "
+                "a Web Audio graph over this, so the equalizer and the volume "
+                "gain are both dead"
+            )
+        finally:
+            await client.close()
+
+    async def test_relay_refuses_an_origin_that_was_never_configured(self):
+        client, grant, _session = await self._serve()
+        try:
+            response = await client.get(
+                "/audio/" + grant["token"], headers={"Origin": "https://evil.example"}
+            )
+            assert response.status == 403
+            assert "Access-Control-Allow-Origin" not in response.headers
+        finally:
+            await client.close()
+
+
+async def _install(app, session):
+    app[server.CLIENT_KEY] = session

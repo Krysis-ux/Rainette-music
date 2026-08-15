@@ -85,6 +85,21 @@ _STREAM_OPTS = {
     "compat_opts": _SYSTEM_TRUST_COMPAT,
 }
 
+# The same resolution, for when the client is showing a music video rather than
+# playing a song. A muxed format is required: a browser <video> plays one URL,
+# and yt-dlp's default best-video/best-audio pair would hand back two.
+_VIDEO_STREAM_OPTS = {
+    **_STREAM_OPTS,
+    "format": (
+        "best[ext=mp4][acodec!=none][vcodec!=none][height<=720]"
+        "/best[ext=mp4][acodec!=none][vcodec!=none]"
+        "/best[acodec!=none][vcodec!=none]"
+        # Nothing muxed exists for this source, so the audio it does have is a
+        # better answer than a failure — the client falls back to a still cover.
+        "/bestaudio[ext=m4a]/bestaudio/best"
+    ),
+}
+
 
 def _run_bg(target, *args):
     threading.Thread(target=target, args=args, name="rainette-music", daemon=True).start()
@@ -229,6 +244,10 @@ def _ytm_track(item: dict[str, Any], album_hint: dict[str, Any] | None = None) -
         "artist": primary.get("name") or "",
         "duration_s": duration,
         "thumbnail_url": _ytm_thumb(item) or _ytm_thumb(album) or "",
+        # YouTube Music reports this as a display string ("1.4M"), and only for
+        # some result kinds. Passed through as-is so a client can sort by
+        # popularity where it exists and fall back to relevance where it does not.
+        "view_count": item.get("views") or item.get("view_count") or "",
         "metadata": metadata,
     }
 
@@ -280,6 +299,10 @@ def cmd_music_stream_url(msg):
     track_payload = msg.get("track") if isinstance(msg.get("track"), dict) else None
     prefetch = bool(msg.get("prefetch"))
     force_refresh = bool(msg.get("force_refresh") or msg.get("invalidate_cache"))
+    # A music video and its audio are two different streams of the same source,
+    # so they are cached apart — asking for one must never hand back the other.
+    want_video = bool(msg.get("want_video"))
+    cache_key = ("video:" + source_id) if want_video else source_id
     if not YTDLP_AVAILABLE:
         shared.notify_browsers({"type": "music_stream_url_result", "id": req_id, "ok": False,
                                 "msg": "yt-dlp not installed", "track_id": track_id})
@@ -293,8 +316,8 @@ def cmd_music_stream_url(msg):
         except Exception:
             track_id = ""
     if force_refresh:
-        _stream_cache_invalidate(source_id)
-    elif cached := _stream_cache_get(source_id):
+        _stream_cache_invalidate(cache_key)
+    elif cached := _stream_cache_get(cache_key):
         if track_id and not prefetch:
             try:
                 shared.STATE.log_play(track_id)
@@ -307,15 +330,16 @@ def cmd_music_stream_url(msg):
             "expires_hint_s": min(ttl, STREAM_URL_CACHE_TTL_S), "cached": True,
             "title": cached.get("title") or "", "artist": cached.get("artist") or "",
             "duration_s": cached.get("duration_s"), "thumbnail_url": cached.get("thumbnail_url") or "",
+            "is_video": want_video,
         })
         return
-    _run_bg(_stream_worker, req_id, source_id, track_id, not prefetch)
+    _run_bg(_stream_worker, req_id, source_id, track_id, not prefetch, want_video)
 
 
-def _stream_worker(req_id, source_id, track_id, log_play=True):
+def _stream_worker(req_id, source_id, track_id, log_play=True, want_video=False):
     try:
         url = source_id if source_id.startswith("http") else f"https://www.youtube.com/watch?v={source_id}"
-        with yt_dlp.YoutubeDL(_STREAM_OPTS) as ydl:
+        with yt_dlp.YoutubeDL(_VIDEO_STREAM_OPTS if want_video else _STREAM_OPTS) as ydl:
             info = ydl.extract_info(url, download=False)
         stream_url = info.get("url")
         if not stream_url:
@@ -330,7 +354,11 @@ def _stream_worker(req_id, source_id, track_id, log_play=True):
         artist = info.get("uploader") or ""
         duration_s = info.get("duration")
         thumbnail_url = _pick_thumb(info)
-        _stream_cache_set(source_id, url=stream_url, title=title, artist=artist,
+        # A source with no muxed format falls back to audio, so the client is
+        # told what it actually got rather than being left to show a black box.
+        has_video = bool(want_video and info.get("vcodec") and info.get("vcodec") != "none")
+        _stream_cache_set(("video:" + source_id) if want_video else source_id,
+                          url=stream_url, title=title, artist=artist,
                           duration_s=duration_s, thumbnail_url=thumbnail_url)
         if log_play and track_id:
             try:
@@ -343,6 +371,7 @@ def _stream_worker(req_id, source_id, track_id, log_play=True):
             "expires_hint_s": STREAM_URL_CACHE_TTL_S, "cached": False,
             "title": title, "artist": artist,
             "duration_s": duration_s, "thumbnail_url": thumbnail_url,
+            "is_video": has_video,
         })
     except Exception as e:
         shared.notify_browsers({"type": "music_stream_url_result", "id": req_id, "ok": False, "msg": str(e), "track_id": track_id})
@@ -1047,6 +1076,66 @@ def _catalog_search_worker(req_id, query):
         shared.notify_browsers({"type": "music_catalog_search_result", "id": req_id, "ok": False, "msg": str(exc), "songs": [], "artists": [], "albums": []})
 
 
+def cmd_music_artist_images(msg):
+    """Resolve artist artwork for a batch of names in one round trip.
+
+    A phone building an artist list out of its own library has names and nothing
+    else — the tracks carry cover art, which is the album's, not the artist's.
+    Asking per artist would be one search per row; asking here is one command for
+    the whole screen, and the client caches what comes back.
+    """
+    req_id = msg.get("id")
+    raw = msg.get("names")
+    names = []
+    seen = set()
+    for value in raw if isinstance(raw, list) else []:
+        name = str(value or "").strip()
+        key = name.casefold()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+        if len(names) >= 40:   # one screen's worth; the client pages the rest
+            break
+    if not names:
+        shared.notify_browsers({"type": "music_artist_images_result", "id": req_id, "ok": True, "artists": []})
+        return
+    _run_bg(_artist_images_worker, req_id, names)
+
+
+def _artist_images_worker(req_id, names):
+    try:
+        if not YTMUSIC_AVAILABLE:
+            shared.notify_browsers({
+                "type": "music_artist_images_result", "id": req_id, "ok": True, "artists": [],
+                "msg": "Install ytmusicapi for artist artwork.",
+            })
+            return
+        yt = _ytmusic()
+
+        def lookup(name):
+            try:
+                matches = yt.search(name, filter="artists", limit=1) or []
+            except Exception:
+                return None
+            artist = _ytm_artist(matches[0]) if matches else None
+            if not artist:
+                return None
+            # The query is echoed back because the client keys its cache on what
+            # it asked for, which is rarely spelled the way the catalog spells it.
+            return {**artist, "query": name}
+
+        with ThreadPoolExecutor(max_workers=6, thread_name_prefix="rainette-artist-art") as pool:
+            found = [a for a in pool.map(lookup, names) if a]
+        shared.notify_browsers({
+            "type": "music_artist_images_result", "id": req_id, "ok": True, "artists": found,
+        })
+    except Exception as exc:
+        shared.notify_browsers({
+            "type": "music_artist_images_result", "id": req_id, "ok": False, "msg": str(exc), "artists": [],
+        })
+
+
 def cmd_music_artist_catalog(msg):
     req_id = msg.get("id")
     artist_id = str(msg.get("artist_id") or msg.get("id_value") or "").strip()
@@ -1431,6 +1520,7 @@ DISPATCH = {
     "music_eq_state":               cmd_music_eq_state,
     "music_catalog_search":         cmd_music_catalog_search,
     "music_artist_catalog":         cmd_music_artist_catalog,
+    "music_artist_images":          cmd_music_artist_images,
     "music_album_tracks":           cmd_music_album_tracks,
     "music_mix_from_seed":          cmd_music_mix_from_seed,
     "music_library_index":          cmd_music_library_index,

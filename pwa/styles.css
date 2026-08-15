@@ -51,7 +51,81 @@
 	--safe-bottom: env(safe-area-inset-bottom, 0px);
 	--player-h: 68px;
 	--tabbar-h: 60px;
+
+	/* The smallest a control is allowed to be. Several rows here were laid out
+	   to their text and ended up under 40px, which on a phone held one-handed
+	   is a target you miss and read as a dead button. */
+	--touch: 48px;
 }
+
+/* ── Themes ───────────────────────────────────────────────────────────────
+   Same four as the desktop, by the same names. Only the ground and the text
+   move; the accent is its own axis below, so any theme can wear any accent. */
+
+.theme-dark {
+	--bg:            oklch(15% 0 0);
+	--bg-lift:       oklch(19% 0 0);
+	--surface:       oklch(22% 0 0);
+	--surface-high:  oklch(27% 0 0);
+	--text:          oklch(96% 0 0);
+	--text-soft:     oklch(79% 0 0);
+	--text-muted:    oklch(62% 0 0);
+}
+
+.theme-mono {
+	--bg:            oklch(11% 0 0);
+	--bg-lift:       oklch(15% 0 0);
+	--surface:       oklch(19% 0 0);
+	--surface-high:  oklch(25% 0 0);
+	--text:          oklch(97% 0 0);
+	--text-soft:     oklch(78% 0 0);
+	--text-muted:    oklch(58% 0 0);
+	--accent:        oklch(88% 0 0);
+	--accent-dim:    oklch(62% 0 0);
+	--accent-wash:   oklch(100% 0 0 / 0.12);
+	--on-accent:     oklch(12% 0 0);
+}
+
+.theme-light {
+	color-scheme: light;
+	--bg:            oklch(97.5% 0.006 155);
+	--bg-lift:       oklch(100% 0 0);
+	--surface:       oklch(94.5% 0.008 155);
+	--surface-high:  oklch(90% 0.01 155);
+	--text:          oklch(22% 0.02 155);
+	--text-soft:     oklch(40% 0.018 155);
+	--text-muted:    oklch(52% 0.015 155);
+	--accent:        oklch(52% 0.14 155);
+	--accent-dim:    oklch(65% 0.1 155);
+	--accent-wash:   oklch(52% 0.14 155 / 0.14);
+	--on-accent:     oklch(99% 0 0);
+	--line:          oklch(0% 0 0 / 0.1);
+	--line-firm:     oklch(0% 0 0 / 0.18);
+}
+
+/* Accents are set separately so the choice survives a change of theme. Mono is
+   deliberately left alone — an accent is the one thing it is defined by not
+   having. */
+.accent-teal:not(.theme-mono)   { --accent: oklch(74% 0.12 195); --accent-dim: oklch(54% 0.09 195); --accent-wash: oklch(74% 0.12 195 / 0.14); --on-accent: oklch(15% 0.03 195); }
+.accent-purple:not(.theme-mono) { --accent: oklch(70% 0.15 300); --accent-dim: oklch(50% 0.12 300); --accent-wash: oklch(70% 0.15 300 / 0.14); --on-accent: oklch(97% 0.01 300); }
+.accent-amber:not(.theme-mono)  { --accent: oklch(80% 0.14 75);  --accent-dim: oklch(60% 0.11 75);  --accent-wash: oklch(80% 0.14 75 / 0.15);  --on-accent: oklch(18% 0.04 75); }
+.accent-rose:not(.theme-mono)   { --accent: oklch(72% 0.15 15);  --accent-dim: oklch(53% 0.12 15);  --accent-wash: oklch(72% 0.15 15 / 0.14);  --on-accent: oklch(98% 0.01 15); }
+
+.theme-light.accent-teal   { --accent: oklch(50% 0.11 195); --on-accent: oklch(99% 0 0); }
+.theme-light.accent-purple { --accent: oklch(48% 0.16 300); --on-accent: oklch(99% 0 0); }
+.theme-light.accent-amber  { --accent: oklch(58% 0.13 75);  --on-accent: oklch(99% 0 0); }
+.theme-light.accent-rose   { --accent: oklch(52% 0.16 15);  --on-accent: oklch(99% 0 0); }
+
+/* The in-app switch, honoured everywhere the media query is. */
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+	animation-duration: 1ms !important;
+	animation-delay: 0ms !important;
+	transition-duration: 1ms !important;
+}
+
+.no-swipe-actions .track-actions { display: none; }
 
 * { box-sizing: border-box; }
 
@@ -552,12 +626,17 @@ h2 {
 	display: flex;
 	align-items: center;
 	width: 100%;
+	min-height: var(--touch);
 	padding: 16px 4px;
 	border: 0;
 	border-bottom: 1px solid var(--line);
 	background: none;
 	text-align: left;
 }
+
+/* A row that gives no feedback on press reads as inert, which is most of why
+   this panel felt dead even where it worked. */
+.settings-list button:active { background: var(--bg-lift); }
 
 .settings-list button span { display: grid; gap: 3px; }
 .settings-list b { font-size: 14.5px; font-weight: 560; }
@@ -1882,4 +1961,315 @@ body.sheet-open { overflow: hidden; }
 	   the scrim looks like a bug. It just does it without travel. */
 	.sheet.opening .sheet-panel,
 	.sheet.closing .sheet-panel { animation: none; }
+}
+
+/* ── Appearance sheet ─────────────────────────────────────────────────────
+   A theme is a look, so it is chosen by looking at it: each card carries a
+   swatch painted in that theme's own ground and accent rather than a name and
+   a radio button. */
+
+.theme-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 10px;
+	margin: 10px 0 4px;
+}
+
+.theme-card {
+	display: grid;
+	gap: 4px;
+	padding: 12px;
+	border: 1px solid var(--line-firm);
+	border-radius: var(--r-md);
+	background: var(--surface);
+	text-align: left;
+	transition: border-color var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+
+.theme-card b { font-size: 14px; font-weight: 580; }
+.theme-card small { color: var(--text-muted); font-size: 11.5px; line-height: 1.4; }
+.theme-card:active { transform: scale(0.98); }
+
+.theme-card.active {
+	border-color: var(--accent);
+	box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.theme-swatch {
+	display: block;
+	height: 34px;
+	margin-bottom: 4px;
+	border: 1px solid var(--line-firm);
+	border-radius: var(--r-sm);
+	/* Ground on the left, accent on the right: the two decisions a theme makes. */
+	background: linear-gradient(105deg, var(--swatch-bg) 0 62%, var(--swatch-accent) 62% 100%);
+}
+
+.theme-swatch-midnight { --swatch-bg: oklch(13% 0.012 155); --swatch-accent: oklch(72% 0.145 155); }
+.theme-swatch-dark     { --swatch-bg: oklch(15% 0 0);       --swatch-accent: oklch(72% 0.145 155); }
+.theme-swatch-mono     { --swatch-bg: oklch(11% 0 0);       --swatch-accent: oklch(88% 0 0); }
+.theme-swatch-light    { --swatch-bg: oklch(97.5% 0.006 155); --swatch-accent: oklch(52% 0.14 155); }
+
+.accent-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	margin: 10px 0 6px;
+}
+
+.accent-dot {
+	width: var(--touch);
+	height: var(--touch);
+	padding: 0;
+	border: 2px solid transparent;
+	border-radius: 50%;
+	background: var(--dot) content-box;
+	/* The colour is the target; the padding is the part you are allowed to miss
+	   by and still hit it. */
+	padding: 7px;
+	transition: border-color var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+
+.accent-dot:active { transform: scale(0.92); }
+.accent-dot.active { border-color: var(--text); }
+
+.accent-dot-default { --dot: oklch(72% 0.145 155); }
+.accent-dot-teal    { --dot: oklch(74% 0.12 195); }
+.accent-dot-purple  { --dot: oklch(70% 0.15 300); }
+.accent-dot-amber   { --dot: oklch(80% 0.14 75); }
+.accent-dot-rose    { --dot: oklch(72% 0.15 15); }
+
+/* ── Switches and choices inside sheets ───────────────────────────────── */
+
+.settings-toggle,
+.settings-choice {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 14px;
+	width: 100%;
+	min-height: var(--touch);
+	padding: 14px 2px;
+	border: 0;
+	border-bottom: 1px solid var(--line);
+	background: none;
+	text-align: left;
+}
+
+.settings-toggle span,
+.settings-choice span { display: grid; gap: 3px; }
+.settings-toggle b,
+.settings-choice b { font-size: 14.5px; font-weight: 560; }
+.settings-toggle small,
+.settings-choice small { color: var(--text-muted); font-size: 12.5px; line-height: 1.45; }
+.settings-toggle:active,
+.settings-choice:active { background: var(--bg-lift); }
+.settings-toggle.on .settings-state { color: var(--accent); }
+.settings-choice .settings-value { color: var(--text-soft); font-size: 13.5px; white-space: nowrap; }
+
+.settings-slider-row {
+	display: grid;
+	gap: 8px;
+	padding: 14px 2px;
+	border-bottom: 1px solid var(--line);
+}
+
+.settings-slider-copy { display: grid; gap: 3px; }
+.settings-slider-copy b { font-size: 14.5px; font-weight: 560; }
+.settings-slider-copy small { color: var(--text-muted); font-size: 12.5px; }
+
+.settings-slider-row input[type="range"] {
+	width: 100%;
+	height: var(--touch);
+	margin: 0;
+	background: none;
+	appearance: none;
+}
+
+.settings-slider-row input[type="range"]::-webkit-slider-runnable-track {
+	height: 4px;
+	border-radius: 999px;
+	background: var(--line-firm);
+}
+
+.settings-slider-row input[type="range"]::-webkit-slider-thumb {
+	width: 20px;
+	height: 20px;
+	margin-top: -8px;
+	border: 0;
+	border-radius: 50%;
+	background: var(--accent);
+	appearance: none;
+}
+
+.settings-slider-row input[type="range"]::-moz-range-track { height: 4px; border-radius: 999px; background: var(--line-firm); }
+.settings-slider-row input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border: 0; border-radius: 50%; background: var(--accent); }
+
+/* ── Now playing: artist and album as links ───────────────────────────── */
+
+.now-artist,
+.now-album {
+	display: inline-block;
+	max-width: 100%;
+	margin: 0;
+	padding: 4px 0;
+	border: 0;
+	background: none;
+	color: var(--text-soft);
+	font: inherit;
+	font-size: 14.5px;
+	text-align: left;
+}
+
+.now-album { color: var(--text-muted); font-size: 13px; }
+
+/* Only what can actually be tapped is drawn as tappable. */
+.now-artist.is-link {
+	color: var(--accent);
+	text-decoration: underline;
+	text-decoration-color: color-mix(in oklab, var(--accent) 40%, transparent);
+	text-underline-offset: 3px;
+}
+
+.now-artist.is-link:active,
+.now-album:active { opacity: 0.65; }
+.now-artist:disabled { color: var(--text-soft); text-decoration: none; }
+
+.now-volume-value {
+	min-width: 4ch;
+	color: var(--text-muted);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+}
+
+/* Past unity the slider changes colour, so "louder than the phone normally
+   goes" is visible rather than a number you have to read. */
+.now-volume.is-boosted .now-volume-value,
+.now-volume.is-boosted .now-volume-icon { color: var(--warn); }
+.now-volume.is-boosted input::-webkit-slider-thumb { background: var(--warn); }
+.now-volume.is-boosted input::-moz-range-thumb { background: var(--warn); }
+
+/* ── Playlists ────────────────────────────────────────────────────────── */
+
+.playlist-row { display: flex; align-items: center; gap: 4px; padding-right: 4px; }
+
+.collection-open {
+	display: flex;
+	flex: 1;
+	align-items: center;
+	gap: 12px;
+	min-width: 0;
+	min-height: var(--touch);
+	padding: 10px 0;
+	border: 0;
+	background: none;
+	text-align: left;
+}
+
+.collection-open:active { opacity: 0.7; }
+
+.collection-more {
+	flex: none;
+	width: var(--touch);
+	height: var(--touch);
+	color: var(--text-muted);
+}
+
+.collection-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin: 10px 0 4px;
+}
+
+.playlist-cover-row { display: flex; align-items: center; gap: 14px; margin: 12px 0; }
+.playlist-cover { width: 74px; height: 74px; border-radius: var(--r-md); object-fit: cover; background: var(--surface); }
+
+.playlist-edit-list { display: grid; margin: 6px 0 18px; }
+
+.playlist-edit-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-height: var(--touch);
+	padding: 8px 0;
+	border-bottom: 1px solid var(--line);
+}
+
+.playlist-edit-copy { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.playlist-edit-copy b { overflow: hidden; font-size: 14px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.playlist-edit-copy span { overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
+.playlist-move,
+.playlist-remove {
+	flex: none;
+	width: 40px;
+	height: 40px;
+	color: var(--text-muted);
+}
+
+.playlist-move.up svg { transform: rotate(180deg); }
+.playlist-move:disabled { opacity: 0.3; }
+.playlist-remove { color: var(--danger); }
+
+/* ── Segmented control that scrolls ───────────────────────────────────── */
+
+/* A fourth tab does not fit at 375px, so the strip scrolls rather than
+   squeezing every label until it truncates. */
+.segmented.scrollable {
+	overflow-x: auto;
+	scrollbar-width: none;
+	-webkit-overflow-scrolling: touch;
+}
+
+.segmented.scrollable::-webkit-scrollbar { display: none; }
+.segmented.scrollable button { flex: none; white-space: nowrap; }
+
+/* ── Tap targets ──────────────────────────────────────────────────────── */
+
+/* Everything a thumb is meant to hit gets the same floor. These were laid out
+   to their contents and several landed near 34px. */
+.segmented button,
+.chip,
+.action-item,
+.collection-row,
+.eq-toggle { min-height: var(--touch); }
+
+.tabbar button { min-height: calc(var(--touch) + 4px); }
+
+.sheet-buttons { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.sheet-buttons button { flex: 1 1 46%; min-height: var(--touch); }
+
+.field textarea {
+	width: 100%;
+	padding: 12px 13px;
+	border: 1px solid var(--line-firm);
+	border-radius: var(--r-md);
+	background: var(--surface);
+	color: var(--text);
+	font: inherit;
+	font-size: 15px;
+	resize: vertical;
+}
+
+/* ── Video ────────────────────────────────────────────────────────────── */
+
+.video-head { padding-bottom: 6px; }
+
+.video-stage {
+	display: grid;
+	place-items: center;
+	min-height: 210px;
+	margin: 8px 0 16px;
+	border-radius: var(--r-md);
+	background: oklch(0% 0 0 / 0.55);
+}
+
+.video-player {
+	width: 100%;
+	max-height: 62vh;
+	border-radius: var(--r-md);
+	background: #000;
 }

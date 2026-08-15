@@ -7,9 +7,12 @@ import { state, artworkUrl, artistName, formatTime, REPEAT_LABEL } from './state
 import { openSheet } from './sheets.js';
 import { openQueueSheet } from './queue.js';
 import { openAddToPlaylist, openLyrics, openSleepTimer, openOutputPicker, openTrackMenu, sleepLabel } from './extras.js';
+import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
+import { setVolume, volume as currentVolume, boostAvailable, VOLUME_MAX } from './audio.js';
+import { isLocalTrack, localArtworkUrl } from './local.js';
 import {
 	currentTrack, isPlaying, isLoading, currentTime, duration, isLinked,
-	toggle, skip, seekTo, setVolume, cycleRepeat, toggleShuffle, subscribe,
+	toggle, skip, seekTo, cycleRepeat, toggleShuffle, subscribe,
 } from './player.js';
 
 let openHandle = null;
@@ -45,10 +48,29 @@ export function openNowPlaying() {
 			art.decoding = 'async';
 			artShell.append(art);
 
+			// The artist line is a button, not a label. Tapping the name of whoever
+			// you are listening to is the most obvious route to their page, and the
+			// card was the one place in the app that did not offer it.
 			const meta = el('div', 'now-meta');
 			const title = el('h2', 'now-title');
-			const artist = el('p', 'now-artist');
-			meta.append(title, artist);
+			const artist = el('button', 'now-artist');
+			artist.type = 'button';
+			artist.addEventListener('click', () => {
+				const track = currentTrack();
+				const who = track && trackArtist(track);
+				if (who) openArtist(who);
+			});
+			// The album sits under it for the same reason, and only when the track
+			// actually carries one to go to.
+			const album = el('button', 'now-album');
+			album.type = 'button';
+			album.hidden = true;
+			album.addEventListener('click', () => {
+				const track = currentTrack();
+				const release = track && trackAlbum(track);
+				if (release) openAlbum(release);
+			});
+			meta.append(title, artist, album);
 
 			// ── Scrubber ────────────────────────────────────────────────────
 			const seekWrap = el('div', 'now-seek');
@@ -106,22 +128,42 @@ export function openNowPlaying() {
 			transport.append(shuffleBtn, prevBtn, playBtn, nextBtn, repeatBtn);
 
 			// ── Volume ──────────────────────────────────────────────────────
+			// Runs to 200%, because a phone at full volume through a car aux or a
+			// quiet bluetooth speaker is often still too quiet. Past 100% the gain
+			// node is doing the work, so the readout says so — and if the graph is
+			// unavailable the slider stops honestly at 100 rather than pretending.
 			const volumeRow = el('div', 'now-volume');
 			const volumeIcon = el('span', 'now-volume-icon');
 			const volume = document.createElement('input');
 			volume.type = 'range';
 			volume.min = '0';
-			volume.max = '100';
+			volume.max = String(Math.round(VOLUME_MAX * 100));
 			volume.step = '1';
-			volume.value = String(Math.round(state.volume * 100));
+			volume.value = String(Math.round(currentVolume() * 100));
 			volume.setAttribute('aria-label', 'Volume');
-			volume.addEventListener('input', () => {
-				setVolume(Number(volume.value) / 100);
-				volumeIcon.innerHTML = icon(Number(volume.value) ? 'volume' : 'volumeOff', 18);
-				volume.setAttribute('aria-valuetext', `${volume.value}%`);
+			const volumeValue = el('span', 'now-volume-value');
+
+			const paintVolume = () => {
+				const percent = Number(volume.value);
+				volumeIcon.innerHTML = icon(percent ? 'volume' : 'volumeOff', 18);
+				volumeValue.textContent = `${percent}%`;
+				volumeRow.classList.toggle('is-boosted', percent > 100);
+				volume.setAttribute('aria-valuetext', `${percent}%`);
+				volume.style.setProperty('--level', String(percent / (VOLUME_MAX * 100)));
+			};
+
+			volume.addEventListener('input', async () => {
+				const applied = await setVolume(Number(volume.value) / 100);
+				// A phone whose graph refused to build cannot exceed unity; snapping
+				// the thumb back is the only honest way to say so.
+				if (Number(volume.value) > 100 && !boostAvailable()) {
+					volume.value = String(Math.round(applied * 100));
+					toast('Boost needs a newer Rainette on your computer.', { icon: 'volume' });
+				}
+				paintVolume();
 			});
-			volumeIcon.innerHTML = icon(state.volume ? 'volume' : 'volumeOff', 18);
-			volumeRow.append(volumeIcon, volume);
+			paintVolume();
+			volumeRow.append(volumeIcon, volume, volumeValue);
 
 			// ── Actions ─────────────────────────────────────────────────────
 			const actions = el('div', 'now-actions');
@@ -152,12 +194,28 @@ export function openNowPlaying() {
 				const track = currentTrack();
 				if (!track) { handle.close(); return; }
 
-				if (art.src !== artworkUrl(track)) {
-					art.src = artworkUrl(track);
+				const cover = isLocalTrack(track) ? localArtworkUrl(track) : artworkUrl(track);
+				if (art.src !== cover) {
+					art.dataset.localArt = isLocalTrack(track) ? track.source_id : '';
+					art.src = cover;
 					tintFromArtwork(art, handle.root);
 				}
 				title.textContent = track.title || 'Untitled';
+
+				// Only offer the tap when there is genuinely somewhere to land:
+				// a row that looks like a link and goes nowhere is worse than a label.
+				const who = trackArtist(track);
 				artist.textContent = artistName(track) || 'Unknown artist';
+				artist.disabled = !who;
+				artist.classList.toggle('is-link', !!who);
+				artist.setAttribute('aria-label', who ? `Go to ${who.name}` : (artistName(track) || 'Unknown artist'));
+
+				const release = trackAlbum(track);
+				album.hidden = !release;
+				if (release) {
+					album.textContent = release.title;
+					album.setAttribute('aria-label', `Go to ${release.title}`);
+				}
 
 				const playing = isPlaying();
 				const loading = isLoading();

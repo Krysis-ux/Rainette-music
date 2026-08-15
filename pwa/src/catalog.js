@@ -15,6 +15,7 @@ import { renderTracks } from './tracks.js';
 import { sortTracks, sortControl, RELEASE_SORTS, sortReleases } from './sorting.js';
 import { playTrack, queueAddEnd } from './player.js';
 import { rememberRecent } from './state.js';
+import { artistRef, knownArtist, resolveArtistImages } from './artists.js';
 
 /* ── Shapes ───────────────────────────────────────────────────────────────
  * The computer speaks one album shape everywhere, but which key holds the id
@@ -33,14 +34,7 @@ export function albumRef(album) {
 	};
 }
 
-export function artistRef(artist) {
-	return {
-		id: String(artist?.id || artist?.artist_id || artist?.browse_id || artist?.channel_id || ''),
-		name: String(artist?.name || artist?.artist || 'Unknown artist'),
-		art: artist?.thumbnail_url || artist?.artwork_url || '',
-		subscribers: String(artist?.subscribers || ''),
-	};
-}
+export { artistRef };
 
 /** The artist behind a track, when the computer supplied enough to open one.
  *  A name alone is enough — the catalog command resolves it. */
@@ -487,36 +481,62 @@ export function openFollowedArtists() {
 				return;
 			}
 			list.replaceChildren(...artists.map(artist => artistRow(artist)));
+			hydrateArtistArt(list);
 			stagger(list, ':scope > .collection-row');
 		},
 	});
 }
 
-/** One artist, as a row. Used by search results and the followed list. */
+/** One artist, as a row. Used by search results, the library and the followed
+ *  list. When the seed carries no picture the row is tagged with the name so
+ *  `hydrateArtistArt` can fill it in once the computer answers. */
 export function artistRow(seed) {
 	const artist = artistRef(seed);
-	const row = el('button', 'collection-row');
-	row.type = 'button';
-
+	const cached = artist.art ? null : knownArtist(artist.name);
 	const art = document.createElement('img');
 	art.className = 'collection-art round';
-	art.src = artist.art || './icon.svg';
+	art.src = artist.art || cached?.art || './icon.svg';
 	art.alt = '';
 	art.width = 44;
 	art.height = 44;
 	art.loading = 'lazy';
 	art.decoding = 'async';
 	art.referrerPolicy = 'no-referrer';
+	if (!artist.art && !cached?.art) art.dataset.artistName = artist.name;
+
+	const row = el('button', 'collection-row');
+	row.type = 'button';
 
 	const copy = el('span', 'collection-copy');
-	copy.append(el('b', '', artist.name), el('span', '', artist.subscribers ? `Artist · ${artist.subscribers} subscribers` : 'Artist'));
+	const detail = artist.subscribers
+		? `Artist · ${artist.subscribers} subscribers`
+		: (seed?.count ? `Artist · ${seed.count} track${seed.count === 1 ? '' : 's'}` : 'Artist');
+	copy.append(el('b', '', artist.name), el('span', '', detail));
 
 	const chevron = el('span', 'collection-go');
 	chevron.innerHTML = icon('chevronDown', 16);
 
 	row.append(art, copy, chevron);
-	row.addEventListener('click', () => openArtist(artist));
+	row.addEventListener('click', () => openArtist({ ...artist, art: art.src }));
 	return row;
+}
+
+/** Fill in the artwork of every artist row under `container` that is still
+ *  showing the placeholder. One command for the whole screen, and each answer
+ *  paints as it lands. */
+export function hydrateArtistArt(container) {
+	const pending = [...container.querySelectorAll('img[data-artist-name]')];
+	if (!pending.length) return;
+
+	const names = pending.map(image => image.dataset.artistName);
+	resolveArtistImages(names, (resolvedKey, entry) => {
+		for (const image of pending) {
+			if (image.dataset.artistName?.trim().toLowerCase() !== resolvedKey) continue;
+			if (!image.isConnected) continue;
+			image.src = entry.art;
+			delete image.dataset.artistName;
+		}
+	});
 }
 
 /** One album or single, as a row. */

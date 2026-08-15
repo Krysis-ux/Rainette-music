@@ -3,7 +3,7 @@
  * returning phone that kept a cached app.js would otherwise keep running the
  * old client — speaking a handshake the computer no longer understands, or
  * simply never seeing the new screens — until it was uninstalled. */
-const CACHE = 'rainette-pwa-v7';
+const CACHE = 'rainette-pwa-v8';
 const SHELL = [
   './',
   './index.html',
@@ -13,6 +13,7 @@ const SHELL = [
   './src/dom.js',
   './src/bridge.js',
   './src/player.js',
+  './src/audio.js',
   './src/sheets.js',
   './src/tracks.js',
   './src/queue.js',
@@ -23,8 +24,16 @@ const SHELL = [
   './src/scanner.js',
   './src/qr.js',
   './src/catalog.js',
+  './src/artists.js',
   './src/sorting.js',
   './src/eq.js',
+  './src/prefs.js',
+  './src/local.js',
+  './src/playlists.js',
+  './src/backup.js',
+  './src/import.js',
+  './src/settings.js',
+  './src/video.js',
   './manifest.webmanifest',
   './icon.svg',
 ];
@@ -69,13 +78,23 @@ self.addEventListener('fetch', event => {
     return;
   }
 
+  // Stale-while-revalidate rather than cache-first.
+  //
+  // Cache-first meant that forgetting to bump CACHE above shipped a *new*
+  // index.html to a phone still running the *old* modules — new markup wired by
+  // old JavaScript, which is an app whose buttons are all there and none of
+  // which do anything. That failure was permanent until the app was
+  // reinstalled. Here a missed bump costs one stale load and then heals itself,
+  // because every hit also refreshes the copy in the background.
   event.respondWith(
-    caches.match(request).then(cached => cached || fetch(request).then(response => {
-      if (response.ok) {
-        const copy = response.clone();
-        caches.open(CACHE).then(cache => cache.put(request, copy));
-      }
-      return response;
+    caches.open(CACHE).then(cache => cache.match(request).then(cached => {
+      const network = fetch(request)
+        .then(response => {
+          if (response.ok) cache.put(request, response.clone());
+          return response;
+        })
+        .catch(() => cached);   // offline: whatever we have is the best answer
+      return cached || network;
     })),
   );
 });

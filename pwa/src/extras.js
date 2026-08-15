@@ -7,6 +7,9 @@ import { state, STORAGE, persist, artistName, trackKey } from './state.js';
 import { openSheet, actionSheet } from './sheets.js';
 import { command, commandError } from './bridge.js';
 import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
+import { playlistChoices, addTrackToPlaylist, isLocalPlaylist, createLocalPlaylist } from './playlists.js';
+import { openVideo, looksLikeVideo } from './video.js';
+import { isLocalTrack } from './local.js';
 import {
 	queueAddNext, queueAddEnd, isPlaying, toggle, playTrack, pauseLocal, localSession,
 	currentTrack, currentTime, seekTo, subscribe,
@@ -15,24 +18,22 @@ import {
 /* ── Add to playlist ───────────────────────────────────────────────────────*/
 
 export async function openAddToPlaylist(track) {
-	let playlists = state.playlists;
-	try {
-		const result = await command('music_playlist_list', {});
-		playlists = Array.isArray(result?.playlists) ? result.playlists : (result?.items || []);
-		state.playlists = playlists;
-	} catch {
-		// A stale list still lets somebody add to a playlist they already know
-		// about, which beats refusing outright because one request failed.
-	}
+	// The phone's own playlists come first and are always available; the
+	// computer's are added when it answers. A stale list still lets somebody add
+	// to a playlist they already know about, which beats refusing outright.
+	const playlists = await playlistChoices();
+	state.playlists = playlists.filter(playlist => !isLocalPlaylist(playlist));
 
 	const items = playlists.map(playlist => ({
 		id: `pl:${playlist.id}`,
 		label: playlist.name || 'Untitled playlist',
-		hint: playlist.track_count ? `${playlist.track_count} tracks` : '',
+		hint: isLocalPlaylist(playlist)
+			? `On this phone · ${playlist.tracks?.length || 0}`
+			: (playlist.track_count ? `${playlist.track_count} tracks` : ''),
 		icon: 'listAdd',
 		run: async () => {
 			try {
-				await command('music_playlist_add_track', { playlist_id: playlist.id, track });
+				await addTrackToPlaylist(playlist, track);
 				toast(`Added to ${playlist.name || 'playlist'}`);
 			} catch (error) {
 				toast(error?.message || 'Could not add that track.', { icon: 'close' });
@@ -42,12 +43,52 @@ export async function openAddToPlaylist(track) {
 
 	items.push({
 		id: 'new',
-		label: 'New playlist',
+		label: 'New playlist on this phone',
+		hint: 'Kept here, works offline',
+		icon: 'plus',
+		run: () => openNewLocalPlaylist(track),
+	});
+	items.push({
+		id: 'new-remote',
+		label: 'New playlist on my computer',
 		icon: 'plus',
 		run: () => openNewPlaylist(track),
 	});
 
 	await actionSheet({ title: 'Add to playlist', items });
+}
+
+/* A playlist made here can hold files that only exist here, which is the one
+ * thing the computer's playlists can never do. */
+function openNewLocalPlaylist(track) {
+	openSheet({
+		title: 'New playlist',
+		className: 'sheet-actions',
+		build: ({ body, close }) => {
+			body.append(el('h2', 'sheet-title sheet-drag', 'New playlist on this phone'));
+			const field = el('label', 'field');
+			field.append(el('span', '', 'Name'));
+			const input = document.createElement('input');
+			input.type = 'text';
+			input.maxLength = 80;
+			input.placeholder = 'Late night';
+			input.autocapitalize = 'words';
+			field.append(input);
+
+			const create = el('button', 'primary', 'Create and add');
+			create.type = 'button';
+			create.addEventListener('click', () => {
+				const name = input.value.trim();
+				if (!name) { input.focus(); return; }
+				createLocalPlaylist(name, [track]);
+				toast(`Added to ${name}`);
+				close();
+			});
+
+			body.append(field, create);
+			setTimeout(() => input.focus(), 260);
+		},
+	});
 }
 
 function openNewPlaylist(track) {
@@ -426,6 +467,18 @@ export async function openTrackMenu(track, list = []) {
 		items: [
 			{ id: 'next', label: 'Play next', icon: 'queue', run: () => { queueAddNext(track); toast('Playing next', { icon: 'queue' }); } },
 			{ id: 'end', label: 'Add to queue', icon: 'listAdd', run: () => { queueAddEnd(track); toast('Added to queue', { icon: 'listAdd' }); } },
+			// Offered on anything the catalog calls a video, and on whatever is
+			// playing right now — a song with a music video is worth a look even
+			// when the computer filed it under songs.
+			// A file on this phone has no video anywhere to look for.
+			isLocalTrack(track) ? null : {
+				id: 'video',
+				label: looksLikeVideo(track) ? 'Watch the video' : 'Look for a music video',
+				icon: 'play',
+				run: () => openVideo(track, {
+					startAt: trackKey(currentTrack() || {}) === trackKey(track) ? currentTime() : 0,
+				}),
+			},
 			artist ? { id: 'artist', label: `Go to ${artist.name}`, icon: 'artist', run: () => openArtist(artist) } : null,
 			album ? { id: 'album', label: `Go to ${album.title}`, icon: 'album', run: () => openAlbum(album) } : null,
 			{ id: 'playlist', label: 'Add to playlist', icon: 'plus', run: () => openAddToPlaylist(track) },
