@@ -15,6 +15,10 @@ export const STORAGE = {
 	accent: 'rainette.pwa.accent',
 	prefs: 'rainette.pwa.prefs',
 	artistArt: 'rainette.pwa.artist_art',
+	/* Computers this phone has paired with, and their credentials — kept apart
+	 * on purpose, so reading or dumping the list cannot leak a token. */
+	sessions: 'rainette.pwa.sessions',
+	tokens: 'rainette.pwa.tokens',
 };
 
 /* Repeat is three-state on the desktop ('off' | 'all' | 'one') and the phone
@@ -76,10 +80,18 @@ export const state = {
 	 * mode, and never mixed into the local queue: the phone shows it, and its
 	 * transport controls drive the desktop rather than this <audio>. */
 	remote: null,
+	/* The computer's answer to "who owns the audio". Null until it tells us,
+	 * which is why every reader falls back rather than assuming. */
+	playbackTarget: null,
 
 	eventRevision: 0,
 	eventLoopId: 0,
-	streamRefreshAttempted: false,
+	/* How many times the current track has been re-resolved after a media
+	 * error. A count rather than a flag, because one retry was not enough: the
+	 * first failure is often the expired link and the second the race to
+	 * replace it. Reset by a stretch of clean playback, so a track that fails
+	 * three minutes in still gets its retries. */
+	streamRetries: 0,
 	pairPollId: 0,
 };
 
@@ -201,5 +213,23 @@ export function rememberRecent(track) {
 }
 
 export function persist(key, value) {
-	try { localStorage.setItem(key, String(value)); } catch { /* storage quota */ }
+	try {
+		// Objects and arrays go in as JSON; everything else keeps the plain
+		// string form the existing keys are already written and read as.
+		const raw = value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value);
+		localStorage.setItem(key, raw);
+	} catch { /* storage quota */ }
+}
+
+/** Read a JSON-shaped key, falling back rather than throwing on anything
+ *  unparseable — a half-written value must not stop the app from starting. */
+export function readJson(key, fallback = null) {
+	try {
+		const raw = localStorage.getItem(key);
+		if (!raw) return fallback;
+		const parsed = JSON.parse(raw);
+		return parsed === null || parsed === undefined ? fallback : parsed;
+	} catch {
+		return fallback;
+	}
 }

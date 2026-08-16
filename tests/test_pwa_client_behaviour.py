@@ -93,6 +93,9 @@ class FakeComputer:
             return {"ok": True, "id": request_id, "devices": [
                 {"id": "spk", "name": "Kitchen speaker", "kind": "bluetooth", "is_default": False},
             ]}
+        if kind == "music_artist_catalog":
+            return {"ok": True, "id": request_id, "artist": {"name": payload.get("name") or "Artist"},
+                    "songs": TRACKS[:2], "albums": [], "singles": [], "videos": []}
         return {"ok": True, "id": request_id}
 
     def read_events(self, after):
@@ -229,6 +232,68 @@ class TestLibraryDoesNotThrash:
 
         assert page.locator("#libraryList .collection-title").count() == 1, \
             "a pushed library result painted over the open playlist"
+        assert not errors, errors
+        page.close()
+
+
+class TestArtistLinks:
+    """The artist name is a control everywhere it appears, not just on the card.
+
+    Two things have to be true at once, and they pull against each other: the
+    whole row plays the track, and the name inside it goes to the artist. Get
+    the stacking wrong and either the link is unreachable or it swallows the
+    tap that should have started the song.
+    """
+
+    def test_the_row_plays_and_the_name_inside_it_does_not(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        # A tap anywhere on the row that is not the name starts the track. The
+        # middle of the row is the natural place to press, and is exactly where
+        # a full-width artist link would have intercepted it.
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+
+        assert not errors, errors
+        page.close()
+
+    def test_the_artist_name_opens_the_artist_without_playing(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        link = page.locator("#recentList .track .track-artist").first
+        link.wait_for(state="visible")
+        # A real control, so it carries a name and can be reached by keyboard.
+        assert link.evaluate("node => node.tagName") == "BUTTON"
+        assert "Go to" in (link.get_attribute("aria-label") or "")
+
+        link.click()
+        page.locator(".sheet-catalog").wait_for(state="visible")
+        # The row underneath must not also have fired: opening someone's page
+        # and starting their song are different requests.
+        assert page.locator("#player").is_hidden()
+
+        assert not errors, errors
+        page.close()
+
+    def test_every_track_row_offers_the_artist(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        # Wait for the list rather than counting whatever has rendered so far:
+        # under load the recent list arrives after #appView does.
+        page.locator("#recentList .track").first.wait_for(state="visible")
+        rows = page.locator("#recentList .track")
+        for index in range(rows.count()):
+            row = rows.nth(index)
+            assert row.locator(".track-artist").count() == 1, (
+                "every row shows an artist line, and it is the same control on each"
+            )
+
         assert not errors, errors
         page.close()
 

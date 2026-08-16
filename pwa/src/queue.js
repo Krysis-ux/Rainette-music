@@ -3,12 +3,20 @@
  * same gesture on a phone. Remove is a swipe. */
 
 import { el, icon, iconButton, tap, toast, flip, collapseAway } from './dom.js';
+import { dragGesture } from './gesture.js';
 import { state, trackKey, artworkUrl, artistName, totalDuration } from './state.js';
+import { artistLink } from './catalog.js';
 import { openSheet, confirmSheet } from './sheets.js';
 import {
 	activeQueue, activeIndex, queueMove, queueRemove, queuePlayIndex,
 	queueClearUpNext, toggleShuffle, subscribe, isLinked,
 } from './player.js';
+
+/* Long enough that a scroll starting on the grip is not a reorder, short
+ * enough that a deliberate press does not feel like waiting. */
+const HOLD_TO_REORDER_MS = 220;
+/* How far left a row goes before releasing removes it. */
+const REMOVE_PX = 72;
 
 export function openQueueSheet() {
 	openSheet({
@@ -100,13 +108,16 @@ function queueRow(track, index, { current = false, render } = {}) {
 	art.referrerPolicy = 'no-referrer';
 
 	const copy = el('span', 'queue-row-copy');
-	copy.append(el('b', '', track.title || 'Untitled'), el('span', '', artistName(track) || 'Unknown artist'));
+	copy.append(el('b', '', track.title || 'Untitled'), artistLink(track, { className: 'queue-row-artist' }));
 
-	const play = el('button', 'queue-row-tap');
+	// Stretched under the artwork and copy rather than wrapped around them, so
+	// the artist name can be its own control without nesting a button.
+	const tapArea = el('div', 'queue-row-tap');
+	const play = el('button', 'queue-row-play');
 	play.type = 'button';
 	play.setAttribute('aria-label', `Play ${track.title || 'this track'}`);
-	play.append(art, copy);
 	play.addEventListener('click', () => { queuePlayIndex(index); });
+	tapArea.append(play, art, copy);
 
 	const remove = iconButton('close', {
 		label: `Remove ${track.title || 'this track'} from the queue`,
@@ -115,7 +126,7 @@ function queueRow(track, index, { current = false, render } = {}) {
 		onClick: () => removeAt(row, index, render),
 	});
 
-	row.append(grip, play, remove);
+	row.append(grip, tapArea, remove);
 	// Reordering a queue the desktop owns would have to round-trip through it;
 	// the desktop is the authority there, so the grip is simply not offered.
 	if (!isLinked()) wireReorder(row, grip, index, render);
@@ -132,57 +143,43 @@ function removeAt(row, index, render) {
  * held, which is what keeps a one-handed scroll from reordering the queue by
  * accident. */
 function wireReorder(row, grip, index, render) {
-	let pointerId = null;
-	let holdTimer = 0;
-	let dragging = false;
-	let startY = 0;
-	let rowHeight = 0;
+	let rowHeight = 1;
 
 	const stop = () => {
-		clearTimeout(holdTimer);
-		pointerId = null;
-		if (!dragging) return;
-		dragging = false;
 		row.classList.remove('dragging');
 		row.style.transform = '';
 		row.parentElement?.classList.remove('reordering');
 	};
 
-	grip.addEventListener('pointerdown', event => {
-		pointerId = event.pointerId;
-		startY = event.clientY;
-		rowHeight = row.getBoundingClientRect().height || 1;
-		holdTimer = setTimeout(() => {
-			dragging = true;
+	const reorder = dragGesture(grip, {
+		axis: 'y',
+		holdMs: HOLD_TO_REORDER_MS,
+		// The hold, not a distance, is what arms this one — moving first is a
+		// scroll and abandons the gesture outright.
+		holdToDrag: true,
+		holdSlop: 8,
+		onStart: () => { rowHeight = row.getBoundingClientRect().height || 1; },
+		onHold: () => {
 			tap(12);
-			grip.setPointerCapture?.(pointerId);
 			row.classList.add('dragging');
 			row.parentElement?.classList.add('reordering');
-		}, 220);
+		},
+		onMove: ({ dy }) => {
+			row.style.transform = `translateY(${dy}px)`;
+			const steps = Math.round(dy / rowHeight);
+			if (!steps) return;
+			const target = index + steps;
+			if (target < 0 || target >= activeQueue().length) return;
+			queueMove(index, target);
+			stop();
+			// The re-render below replaces this very row, so the gesture is
+			// ended explicitly rather than left captured on a detached node.
+			reorder.cancel();
+			render?.();
+		},
+		onEnd: stop,
+		onCancel: stop,
 	});
-
-	grip.addEventListener('pointermove', event => {
-		if (event.pointerId !== pointerId) return;
-		if (!dragging) {
-			// Moved before the hold completed: this was a scroll.
-			if (Math.abs(event.clientY - startY) > 8) stop();
-			return;
-		}
-		event.preventDefault();
-		const delta = event.clientY - startY;
-		row.style.transform = `translateY(${delta}px)`;
-		const steps = Math.round(delta / rowHeight);
-		if (!steps) return;
-		const target = index + steps;
-		const length = activeQueue().length;
-		if (target < 0 || target >= length) return;
-		queueMove(index, target);
-		stop();
-		render?.();
-	});
-
-	grip.addEventListener('pointerup', stop);
-	grip.addEventListener('pointercancel', stop);
 }
 
 /* Swipe a queue row away to remove it — the same left-swipe vocabulary the
@@ -190,51 +187,35 @@ function wireReorder(row, grip, index, render) {
  * track is already queued. */
 function wireSwipeToRemove(row, index, render) {
 	const surface = row.querySelector('.queue-row-tap');
-	let startX = 0;
-	let startY = 0;
-	let axis = null;
 	let offset = 0;
-	let pointerId = null;
 
-	surface.addEventListener('pointerdown', event => {
-		pointerId = event.pointerId;
-		startX = event.clientX;
-		startY = event.clientY;
-		axis = null;
-		offset = 0;
-	});
-
-	surface.addEventListener('pointermove', event => {
-		if (event.pointerId !== pointerId) return;
-		const dx = event.clientX - startX;
-		const dy = event.clientY - startY;
-		if (axis === null) {
-			if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
-			axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
-			if (axis === 'x') surface.setPointerCapture?.(pointerId);
-		}
-		if (axis !== 'x' || dx > 0) return;   // removal is leftward only
-		event.preventDefault();
-		offset = dx;
-		row.style.setProperty('--swipe', `${dx}px`);
-		row.classList.toggle('removing', dx < -72);
-	});
-
-	const finish = event => {
-		if (event.pointerId !== pointerId) return;
-		pointerId = null;
-		const committed = axis === 'x' && offset < -72;
-		axis = null;
+	const settle = () => {
 		row.style.removeProperty('--swipe');
 		row.classList.remove('removing');
-		if (committed) removeAt(row, index, render);
 	};
 
-	surface.addEventListener('pointerup', finish);
-	surface.addEventListener('pointercancel', finish);
+	dragGesture(surface, {
+		axis: 'x',
+		// A press on the artist name belongs to that link, not to the row.
+		canStart: event => !event.target?.closest?.('.link-inline'),
+		onStart: () => { offset = 0; },
+		onMove: ({ dx }) => {
+			if (dx > 0) return;                 // removal is leftward only
+			offset = dx;
+			row.style.setProperty('--swipe', `${dx}px`);
+			row.classList.toggle('removing', dx < -REMOVE_PX);
+		},
+		onEnd: ({ committed }) => {
+			const remove = committed && offset < -REMOVE_PX;
+			settle();
+			if (remove) removeAt(row, index, render);
+		},
+		onCancel: settle,
+	});
+
 	// Suppress the click a swipe would otherwise also fire. The offset is
-	// cleared here rather than in `finish`, which runs first — zeroing it there
-	// left every swipe ending in a play.
+	// cleared here rather than in the end handler, which runs first — zeroing
+	// it there left every swipe ending in a play.
 	surface.addEventListener('click', event => {
 		if (Math.abs(offset) > 4) { event.stopImmediatePropagation(); event.preventDefault(); }
 		offset = 0;

@@ -7,6 +7,7 @@
  */
 
 import { el, icon } from './dom.js';
+import { createSlider } from './slider.js';
 import { openSheet } from './sheets.js';
 import { state } from './state.js';
 import { currentTrack, isLinked } from './player.js';
@@ -77,12 +78,14 @@ export function openEqualizer() {
 				paintToggle();
 			});
 
+			/* The band controls, in band order. Held as handles rather than queried
+			 * back out of the DOM: a preset moves all five at once, and `'force'` is
+			 * the only source that may move a slider a finger might be holding. */
+			const bands = [];
+
 			const repaintSliders = () => {
 				const gains = eqGains();
-				for (const [index, input] of sliders.querySelectorAll('input').entries()) {
-					input.value = String(gains[index]);
-					input.paintBand?.();
-				}
+				bands.forEach((band, index) => band.paint(gains[index]));
 			};
 
 			for (const name of Object.keys(EQ_PRESETS)) {
@@ -99,32 +102,39 @@ export function openEqualizer() {
 
 			const gains = eqGains();
 			EQ_BANDS.forEach((band, index) => {
-				const row = el('label', 'eq-band');
+				// Not a <label> any more: the control is a div with role="slider", so
+				// there is no labelable element for a <label> to name. The accessible
+				// name comes from the slider's own aria-label instead.
+				const row = el('div', 'eq-band');
 				row.append(el('span', 'eq-band-label', band.label));
 
-				const input = document.createElement('input');
-				input.type = 'range';
-				input.min = String(EQ_MIN);
-				input.max = String(EQ_MAX);
-				input.step = '1';
-				input.value = String(gains[index]);
-				input.setAttribute('aria-label', `${band.label} at ${band.short} hertz`);
-
 				const readout = el('span', 'eq-band-value');
-				const paint = () => {
-					const value = Number(input.value);
-					readout.textContent = `${value > 0 ? '+' : ''}${value} dB`;
-					input.setAttribute('aria-valuetext', `${value} decibels`);
-				};
-				input.paintBand = paint;
-				input.addEventListener('input', () => {
-					setBandGain(index, Number(input.value));
-					paint();
-					paintToggle();
-				});
-				paint();
+				const show = value => { readout.textContent = `${value > 0 ? '+' : ''}${value} dB`; };
 
-				row.append(input, readout);
+				const slider = createSlider({
+					min: EQ_MIN,
+					max: EQ_MAX,
+					step: 1,
+					value: gains[index],
+					variant: 'eq',
+					label: `${band.label} at ${band.short} hertz`,
+					format: value => `${value} decibels`,
+					// 0 dB is the origin this band is measured from, so it gets a mark,
+					// a magnet and the one haptic worth spending on a value in flight.
+					detent: 0,
+					onInput: value => {
+						setBandGain(index, value);
+						show(value);
+						paintToggle();
+					},
+				});
+
+				show(slider.value);
+				bands.push({
+					paint(value) { slider.setValue(value, 'force'); show(slider.value); },
+				});
+
+				row.append(slider.root, readout);
 				sliders.append(row);
 			});
 

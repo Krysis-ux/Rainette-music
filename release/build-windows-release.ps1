@@ -77,13 +77,18 @@ function Invoke-PyInstallerBuild([string]$EmbeddedSignerFingerprint) {
         throw 'Failed to generate the Windows version resource.'
     }
 
+    # Every --collect-all here names a package that loads part of itself at run
+    # time, where PyInstaller's static analysis cannot follow. mutagen is the
+    # sharpest case: mutagen.File() imports twenty-odd format modules from
+    # inside its own body, so a bundle without them reads tags fine in
+    # development and returns None for every file once packaged.
     $runPyInstaller = {
         Push-Location $root
         try {
             python -m PyInstaller --noconfirm --clean --onedir --noconsole --name RainetteMusic `
                 --distpath $stage --workpath (Join-Path $stage 'work') --specpath (Join-Path $stage 'spec') `
                 --icon $icon --version-file $versionFile `
-                --add-data "$webDir;web" --collect-all webview --collect-all ytmusicapi --collect-all yt_dlp --collect-all qrcode $entryPoint
+                --add-data "$webDir;web" --collect-all webview --collect-all ytmusicapi --collect-all yt_dlp --collect-all qrcode --collect-all mutagen $entryPoint
             if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed to build RainetteMusic.exe.' }
         } finally {
             Pop-Location

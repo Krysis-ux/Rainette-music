@@ -8,13 +8,19 @@ import { $, el, icon, iconButton, toast, stagger } from './src/dom.js';
 import { configureBridge, isUnsupportedCommand } from './src/bridge.js';
 import { configurePlayer, subscribe, playTrack, toggle, skip, currentTrack, isPlaying, isLoading, currentTime, duration, resetPlayback, isLinked } from './src/player.js';
 import { renderTracks, markPlayingRows, configureTracks } from './src/tracks.js';
-import { configureSync, startEventLoop, stopEventLoop } from './src/sync.js';
+import { configureSync, startEventLoop, stopEventLoop, restartEventLoop } from './src/sync.js';
+import { configureConnection, startConnectionWatch } from './src/connection.js';
+import { rememberSession, forgetAllSessions, recentSessions, sessionToken, markSessionStale } from './src/sessions.js';
+import { configureTarget, playbackSourceLabel } from './src/target.js';
+import { observePrefs } from './src/prefs.js';
+import { syncPrefs, markPrefChanged, flushPrefs } from './src/prefsync.js';
+import { reportCodecSupport } from './src/codecs.js';
 import { wireMiniBar } from './src/nowplaying.js';
 import { openQueueSheet } from './src/queue.js';
 import { configureExtras, setLinked, openOutputPicker, sleepShouldStopAfterTrack, openTrackMenu, openSleepTimer, sleepLabel } from './src/extras.js';
 import { closeAllSheets } from './src/sheets.js';
 import { openScanner, scanningIsPossible } from './src/scanner.js';
-import { artistRow, albumRow, openArtist, openFollowedArtists, loadFollowed, hydrateArtistArt } from './src/catalog.js';
+import { artistRow, albumRow, openArtist, openFollowedArtists, loadFollowed, hydrateArtistArt, artistLink, trackArtist } from './src/catalog.js';
 import { artistsFromTracks, searchArtists } from './src/artists.js';
 import { sortControl, sortTracks, sortArtists, ARTIST_SORTS } from './src/sorting.js';
 import { openEqualizer, eqSummary, eqOnTrackLoaded } from './src/eq.js';
@@ -133,6 +139,65 @@ function isStandalone() {
 	return window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
 }
 
+/* The reconnect list on the setup screen.
+ *
+ * Nothing here asks the computer anything until the user picks a row: probing
+ * every stored address on every visit would be a burst of requests at a set of
+ * tunnels that are mostly not running. */
+function renderRecentSessions() {
+	const panel = $('#recentSessions');
+	const list = $('#sessionsList');
+	const rows = recentSessions().filter(row => row.token_present);
+	panel.hidden = rows.length === 0;
+	if (!rows.length) return;
+
+	list.replaceChildren(...rows.map(row => {
+		const button = el('button', 'session-row');
+		button.type = 'button';
+		const copy = el('span', 'session-copy');
+		copy.append(
+			el('b', '', row.computer_name),
+			el('span', '', row.stale ? 'Could not be reached last time' : 'Paired'),
+		);
+		const mark = el('span', 'session-icon');
+		mark.innerHTML = icon('laptop', 20);
+		mark.setAttribute('aria-hidden', 'true');
+		button.append(mark, copy);
+		button.setAttribute('aria-label', `Reconnect to ${row.computer_name}`);
+		button.classList.toggle('is-stale', Boolean(row.stale));
+		button.addEventListener('click', () => reconnectSession(row));
+		return button;
+	}));
+}
+
+/** Try a stored session. Reuses the credential we already hold rather than
+ *  asking the computer to approve this phone again — pairing survives an
+ *  address change, so a moved computer is a lookup, not a re-pair. */
+async function reconnectSession(row) {
+	setupError.textContent = '';
+	setStatus('busy', `Looking for ${row.computer_name}…`);
+	const token = sessionToken(row.device_id);
+	if (!token) { setupError.textContent = 'This phone no longer has a key for that computer. Pair it again.'; return; }
+
+	state.token = token;
+	state.deviceId = row.device_id;
+	localStorage.setItem(STORAGE.token, token);
+	localStorage.setItem(STORAGE.deviceId, row.device_id);
+
+	// force: the address may be unchanged while the credential we just loaded
+	// is not, and without it the probe would decline to try at all.
+	if (await adoptEndpoint(row.endpoint, { force: true })) {
+		markSessionStale(row.device_id, false);
+		await testConnection();
+		return;
+	}
+
+	markSessionStale(row.device_id, true);
+	renderRecentSessions();
+	setStatus('', 'Offline');
+	setupError.textContent = `Could not reach ${row.computer_name}. If it has restarted, its address may have changed — create a new pairing code there.`;
+}
+
 function showSetup(message = '') {
 	state.connected = false;
 	stopEventLoop();
@@ -146,6 +211,7 @@ function showSetup(message = '') {
 	pairForm.hidden = false;
 	setupError.textContent = message;
 	$('#setupStandaloneNote').hidden = !(isStandalone() && !state.token);
+	renderRecentSessions();
 	setStatus('', 'Not connected');
 }
 
@@ -156,9 +222,12 @@ function showApp(status) {
 	setupView.hidden = true;
 	appView.hidden = false;
 	tabBar.hidden = false;
-	computerLabel.textContent = isLinked() ? `Linked to ${state.computerName}` : `Playing from ${state.computerName}`;
+	computerLabel.textContent = playbackSourceLabel();
 	setStatus('online', state.computerName);
 	startEventLoop();
+	// Otherwise the first honest label waits for whatever happens to change
+	// ownership next, which on a quiet computer is never.
+	command('music_playback_target_get').catch(() => {});
 }
 
 async function api(path, options = {}) {
@@ -231,8 +300,13 @@ async function pairPost(endpoint, path, body) {
  * The device credential it already holds is what proves the pairing, so if that
  * credential still authenticates at the new address there is nothing for anyone
  * to approve a second time. */
-async function adoptEndpoint(endpoint) {
-	if (!state.token || endpoint === state.endpoint) return false;
+async function adoptEndpoint(endpoint, { force = false } = {}) {
+	// `force` exists for the recent-sessions probe, which re-selects a computer
+	// whose address has not changed but whose *token* has just been swapped in.
+	// Without it that probe short-circuits to false and the session it was
+	// trying to resume looks unreachable.
+	if (!state.token) return false;
+	if (!force && endpoint === state.endpoint) return false;
 	const previous = state.endpoint;
 	state.endpoint = endpoint;
 	try {
@@ -325,6 +399,22 @@ async function testConnection({ reveal = true } = {}) {
 	try {
 		const status = await api('/status');
 		showApp(status);
+		// Every successful connection updates the address book, so the list is
+		// always what actually worked rather than what was once typed in.
+		rememberSession({
+			computerName: state.computerName,
+			endpoint: state.endpoint,
+			deviceId: state.deviceId,
+			token: state.token,
+		});
+		// Settle this phone's settings against the computer's copy once per
+		// connection, so reconnecting converges in one round trip rather than
+		// leaving the two to drift until the next toggle.
+		syncPrefs().catch(() => {});
+		// What this phone can decode. The computer holds files it may not be
+		// able to play — FLAC yes, Opus no, on iOS — and without this it offers
+		// them and the failure reads as a network problem.
+		reportCodecSupport();
 		// Which tab the app opens on is a preference, because "home" is the wrong
 		// answer for somebody who only ever uses search.
 		if (reveal) switchTab(pref('landingTab') || 'home');
@@ -820,7 +910,7 @@ function showPlaybackError(error) {
 /* Playback emits several times a second. Every write here is guarded and the
  * whole pass is coalesced onto one frame, because the main thread this loop
  * occupies is the same one that has to answer the next tap. */
-const shownMini = { art: '', title: '', artist: '', transport: '', elapsed: '', total: '' };
+const shownMini = { art: '', title: '', artist: '', artistIsLink: false, transport: '', elapsed: '', total: '' };
 let miniFrame = 0;
 
 function scheduleMiniBar() {
@@ -842,10 +932,19 @@ function renderMiniBar() {
 	const loading = isLoading();
 	const playing = isPlaying();
 	const linked = isLinked();
+	// Only a real artist becomes a link. While loading this line is a status
+	// message, and in linked mode it may be the computer's name — neither is
+	// somewhere to navigate to, and drawing them as tappable would be a lie.
+	const who = loading ? null : trackArtist(track);
 	const artist = loading
 		? 'Preparing on your computer…'
 		: (artistName(track) || (linked ? state.computerName : 'Unknown artist'));
-	if (artist !== shownMini.artist) { shownMini.artist = artist; $('#playerArtist').textContent = artist; }
+	if (artist !== shownMini.artist || Boolean(who) !== shownMini.artistIsLink) {
+		shownMini.artist = artist;
+		shownMini.artistIsLink = Boolean(who);
+		const slot = $('#playerArtist');
+		slot.replaceChildren(who ? artistLink(track) : document.createTextNode(artist));
+	}
 
 	const transport = loading ? 'loading' : (playing ? 'playing' : 'paused');
 	if (transport !== shownMini.transport) {
@@ -942,9 +1041,21 @@ configureSync({
 	},
 	onAuthLost: error => showSetup(connectionError(error)),
 });
+/* Ownership can move because of something that happened on another device
+ * entirely, so the label repaints from the broadcast rather than only from
+ * this phone's own actions. */
+/* Every settings change is mirrored to the computer, keyed to this phone. */
+observePrefs(markPrefChanged);
+
+configureTarget({
+	onChange: () => {
+		computerLabel.textContent = playbackSourceLabel();
+		renderMiniBar();
+	},
+});
 configureExtras({
 	onLinkChange: linked => {
-		computerLabel.textContent = linked ? `Linked to ${state.computerName}` : `Playing from ${state.computerName}`;
+		computerLabel.textContent = playbackSourceLabel();
 		renderSettings();
 		renderMiniBar();
 		toast(linked ? `Following ${state.computerName}` : 'Playing on this phone', { icon: linked ? 'link' : 'phone' });
@@ -1050,6 +1161,9 @@ wireSettings({
 	// Adding files or restoring a backup changes what the library holds, so the
 	// panel behind the sheet is rebuilt rather than left showing the old list.
 	onLibraryChanged: () => { if (activeTab === 'library') renderLibraryPanel().catch(() => {}); },
+	// The computer's own files are already playable here, so the honest answer
+	// to "bring my music over" is to show it rather than to copy it.
+	onShowLibrary: () => switchTab('library'),
 });
 
 $('#testConnectionButton').addEventListener('click', () => testConnection({ reveal: false }));
@@ -1068,6 +1182,11 @@ $('#disconnectButton').addEventListener('click', () => {
 	localStorage.removeItem(STORAGE.endpoint);
 	localStorage.removeItem(STORAGE.token);
 	localStorage.removeItem(STORAGE.deviceId);
+	// Disconnect is the one action that means "forget this phone knew you", so
+	// the address book and its credentials go with it. Anything less would
+	// leave a one-tap route back into a computer the user just stepped away
+	// from.
+	forgetAllSessions();
 	resetPlayback();
 	showSetup('This phone is disconnected. Your computer still has it listed until you revoke it there.');
 });
@@ -1089,8 +1208,20 @@ subscribe(() => {
 	if (!isPlaying() && sleepShouldStopAfterTrack()) toast('Stopped for the night', { icon: 'moon' });
 });
 
-window.addEventListener('online', () => state.connected && testConnection({ reveal: false }));
 window.addEventListener('offline', () => setStatus('', 'Phone offline'));
+
+/* Waking the phone up. The `online` case is folded in here rather than left as
+ * its own listener, so every way a session can come back runs the same two
+ * steps: restart the poll that died while we were away, and — only when we have
+ * been away long enough for the answer to have changed — re-ask the computer
+ * who it is. */
+configureConnection({
+	isConnected: () => state.connected,
+	onResume: () => restartEventLoop(),
+	onSuspend: () => flushPrefs(),
+	onRecheck: () => { testConnection({ reveal: false }).catch(() => {}); },
+});
+startConnectionWatch();
 
 if ('serviceWorker' in navigator) {
 	window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));

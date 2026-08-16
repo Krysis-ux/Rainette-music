@@ -92,7 +92,7 @@ class CompanionRegistryTests(unittest.TestCase):
         device = pair_device(registry)
         grant = registry.create_relay_grant(device["device_id"], "https://audio.example/track", ttl_s=30)
 
-        self.assertEqual(registry.resolve_relay(grant["token"]), "https://audio.example/track")
+        self.assertEqual(registry.resolve_relay(grant["token"]).upstream_url, "https://audio.example/track")
         registry.revoke(device["device_id"])
         self.assertIsNone(registry.resolve_relay(grant["token"]))
 
@@ -107,6 +107,45 @@ class CompanionRegistryTests(unittest.TestCase):
         pair_device(registry)
 
         self.assertIsNone(registry.resolve_relay("made-up-grant"))
+
+    def test_a_grant_remembers_what_it_was_resolved_from(self):
+        """So a stale googlevideo URL can be replaced without the phone noticing.
+
+        Those URLs are bound to the IP and time that produced them, so a VPN
+        toggle kills one while the grant around it is still perfectly valid.
+        """
+        registry = CompanionRegistry(now=lambda: 1_000)
+        device = pair_device(registry)
+        grant = registry.create_relay_grant(
+            device["device_id"], "https://a.googlevideo.com/old",
+            ttl_s=30, source_id="dQw4w9WgXcQ",
+        )
+
+        resolved = registry.resolve_relay(grant["token"])
+        self.assertEqual(resolved.source_id, "dQw4w9WgXcQ")
+
+        registry.refresh_relay_grant(grant["token"], "https://a.googlevideo.com/fresh")
+        # Same token, new bytes behind it.
+        self.assertEqual(
+            registry.resolve_relay(grant["token"]).upstream_url,
+            "https://a.googlevideo.com/fresh",
+        )
+
+    def test_expired_grants_are_reclaimed_rather_than_accumulating(self):
+        """Expiry used to be checked only on redemption, so a long listening
+        session leaked one dead grant per track and never gave any back."""
+        clock = [1_000]
+        registry = CompanionRegistry(now=lambda: clock[0])
+        device = pair_device(registry)
+        for index in range(5):
+            registry.create_relay_grant(
+                device["device_id"], f"https://a.googlevideo.com/{index}", ttl_s=30,
+            )
+        self.assertEqual(len(registry._relay_grants), 5)
+
+        clock[0] += 31
+        registry.create_relay_grant(device["device_id"], "https://a.googlevideo.com/live", ttl_s=30)
+        self.assertEqual(len(registry._relay_grants), 1)
 
     def test_pending_requests_can_be_rejected(self):
         registry = CompanionRegistry(now=lambda: 1_000)
@@ -225,7 +264,15 @@ class CompanionSessionIsolationTests(unittest.TestCase):
         for event_type in ("music_progress", "music_remote_control", "music_remote_play"):
             self.broker.publish({"type": event_type}, "phone-a")
 
-        self.assertEqual(len(self.events_for("phone-a")), 3)
+        # Session state comes back to its own phone so its UI can settle.
+        self.assertEqual(
+            [m["type"] for m in self.events_for("phone-a")],
+            ["music_progress", "music_remote_play"],
+        )
+        # music_remote_control is routed at whoever owns the audio rather than
+        # returned to its sender: an unaddressed one means "the desktop", and
+        # the sender has no use for a copy of an instruction it just issued.
+        # Echoing it would double-apply the verbs that are not idempotent.
         self.assertEqual(self.events_for("phone-b"), [])
 
     def test_shared_library_changes_still_reach_every_phone(self):

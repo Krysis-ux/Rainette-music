@@ -80,7 +80,10 @@ const pageState = {
 	// `name` is the human-readable output the picker last selected (a speaker, a
 	// headset, a phone). It is what the docked bar shows, so "Play on" can say
 	// where the music is actually going instead of only that it is going.
-	output: { device: 'desktop', name: '', transferPending: false, status: '' },
+	/* A view of the computer's playback-target record, not a local opinion.
+	 * `revision` gates it: a reconnect drains a backlog, so an older record can
+	 * arrive after a newer one and would otherwise win by arriving last. */
+	output: { device: 'desktop', name: '', revision: 0, transferPending: false, status: '' },
 	lyrics: { source_id: '', reqId: '', loading: false, text: '', notFound: false, instrumental: false, error: '', open: false, synced: false, lines: [], activeIndex: -1, userScrollUntil: 0 },
 	_autoplayOnLoad: false,
 };
@@ -3190,6 +3193,26 @@ function onHelperMessage(msg) {
 			pageState.queueSessionStatus = msg.ok ? '' : ('Queue sessions failed: ' + (msg.msg || ''));
 			if (pageState.tab === 'queue' && !pageState.view) renderQueue();
 			break;
+		/* Who owns the audio, decided by the computer and broadcast to every
+		 * device. pageState.output used to be written only by this window's own
+		 * actions and read by nobody else, so it said "This desktop" until
+		 * somebody performed a transfer by hand — and reverted on reload. Now it
+		 * is a view of the shared record. */
+		case 'music_playback_target': {
+			const revision = Number(msg.revision || 0);
+			if (revision && revision <= (pageState.output.revision || 0)) break;
+			const ownedHere = String(msg.owner_kind || 'desktop') === 'desktop';
+			pageState.output = {
+				...pageState.output,
+				revision,
+				device: ownedHere ? 'desktop' : 'phone',
+				// The owner's name is server-stamped, so this is the one string
+				// safe to show without guessing.
+				name: ownedHere ? (msg.sink_name || '') : (msg.owner_name || 'a phone'),
+			};
+			renderDockedOutputControl();
+			break;
+		}
 		case 'music_now_playing': {
 			const banner = _host?.querySelector('#rwMusicBanner');
 			if (banner) {

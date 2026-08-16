@@ -158,7 +158,24 @@ if (typeof window !== 'undefined' && window.RW_REMOTE) {
 			_showPlayerIfEnabled();
 		},
 		playTrack(track) { this.playQueue([track], 0); },
-		toggle() { sendHelper({ type: 'music_remote_control', action: 'toggle' }); },
+		/* Sends what the user asked for, not "the other one".
+		 *
+		 * `playing` here is whatever the last broadcast said, and broadcasts can
+		 * lag a press or be missed entirely while the player window is parked.
+		 * With `toggle` a stale flag means the button does the opposite of its
+		 * own icon; with an absolute verb the worst case is a no-op. */
+		toggle() {
+			// Derived from the same thing the button's icon is derived from, or
+			// the verb and the glyph disagree. A loading row shows a pause
+			// affordance while `playing` is still false, so asking for "the
+			// opposite of playing" there would ask to start what is already
+			// starting instead of cancelling it.
+			const queue = app.musicQueue || {};
+			const showsPause = !!queue.playing || queue.state === 'loading';
+			sendHelper({ type: 'music_remote_control', action: showsPause ? 'pause' : 'play' });
+		},
+		play() { sendHelper({ type: 'music_remote_control', action: 'play' }); },
+		pause() { sendHelper({ type: 'music_remote_control', action: 'pause' }); },
 		next() { sendHelper({ type: 'music_remote_control', action: 'next' }); },
 		prev() { sendHelper({ type: 'music_remote_control', action: 'prev' }); },
 		toggleLoop() { sendHelper({ type: 'music_remote_control', action: 'loop' }); },

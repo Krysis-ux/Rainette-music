@@ -141,11 +141,27 @@ function remoteControl(action, payload = {}) {
 const HALF_LIFE = 0.9;   // refresh before the grant expires, not at the edge
 const PREFETCH_AHEAD = 2;
 
+/* Retry budget for a track whose stream fails mid-play. Two, because the common
+ * shape is one expired link plus one race against its replacement. */
+const STREAM_RETRY_MAX = 2;
+const STREAM_RETRY_BACKOFF_MS = [0, 1500];
+/* Play cleanly for this long and the budget is refilled: a track that dies
+ * three minutes in is a fresh problem, not a continuation of the last one. */
+const STREAM_RETRY_RESET_AFTER_MS = 30000;
+let cleanSince = 0;
+
 const streams = new Map();
 const prefetching = new Set();
 
 function rememberStream(track, result) {
-	const seconds = Math.min(Math.max(Number(result?.expires_hint_s) || 3600, 60), 21600);
+	// The grant is the thing that stops resolving, so the grant's life is what
+	// this window has to track. `expires_hint_s` describes the upstream URL
+	// behind it, which the computer now refreshes on our behalf — and on a
+	// cache hit that number used to be the few seconds the entry had left,
+	// which collapsed this window to nothing and made a healthy track look
+	// expired. Older desktops only send the hint, so it stays as the fallback.
+	const seconds = Number(result?.grant_expires_in_s)
+		|| Math.min(Math.max(Number(result?.expires_hint_s) || 3600, 60), 21600);
 	streams.set(trackKey(track), { url: result.url, expiresAt: Date.now() + seconds * 1000 * HALF_LIFE });
 }
 
@@ -157,7 +173,7 @@ function readyStream(track) {
 	return entry.url;
 }
 
-async function resolveStream(track, forceRefresh) {
+async function resolveStream(track, forceRefresh, { prefetch = false } = {}) {
 	// A file on this phone needs no computer and no network: the blob is right
 	// here, and asking the companion for it would fail on a source_id it has
 	// never heard of.
@@ -167,6 +183,10 @@ async function resolveStream(track, forceRefresh) {
 		source_id: track.source_id,
 		track,
 		force_refresh: !!forceRefresh,
+		// Warming a URL is not listening to it. Without this the computer logs
+		// a play for every track we look ahead at, so the history fills with
+		// songs that were never heard and "recently played" stops being true.
+		prefetch,
 	}, 50000);
 	if (!result.url) throw new Error('The computer did not return an audio stream.');
 	rememberStream(track, result);
@@ -175,14 +195,26 @@ async function resolveStream(track, forceRefresh) {
 
 /** Resolve what is coming up, so advancing needs no round trip. */
 function prefetchUpcoming() {
+	// Only what is still coming up. A queue edit can move or remove the tracks
+	// a previous pass was warming, and paying a yt-dlp resolve for a track the
+	// user has already skipped past is the waste this guard exists to stop.
+	const wanted = new Set();
 	for (let offset = 1; offset <= PREFETCH_AHEAD; offset += 1) {
 		const next = state.queue[state.queueIndex + offset];
-		if (!next?.source_id || readyStream(next)) continue;
+		if (!next?.source_id) continue;
+		wanted.add(trackKey(next));
+		if (readyStream(next)) continue;
 		const key = trackKey(next);
 		if (prefetching.has(key)) continue;
 		prefetching.add(key);
-		resolveStream(next, false).catch(() => {}).finally(() => prefetching.delete(key));
+		resolveStream(next, false, { prefetch: true })
+			.catch(() => {})
+			.finally(() => prefetching.delete(key));
 	}
+	// Anything in flight that is no longer up next is forgotten rather than
+	// awaited: the request cannot be recalled, but its slot can be freed so a
+	// track that comes back into range is not blocked behind it.
+	for (const key of [...prefetching]) if (!wanted.has(key)) prefetching.delete(key);
 }
 
 /* ── Playback ──────────────────────────────────────────────────────────────*/
@@ -193,11 +225,19 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 	// Playing something from the phone takes ownership of the session back from
 	// the desktop, which is the only sane reading of "I pressed play here".
 	state.remote = null;
+	// And say so, so every other surface stops claiming the computer is
+	// playing. Starting playback *is* the claim — there is nothing to hand
+	// over, so it needs no handshake, which is why pressing play here works
+	// without performing a transfer first.
+	if (!isLinked() && !options.forceRefresh) claimPlaybackHere();
 	state.queue = queue.slice();
 	state.queueIndex = Math.max(0, Math.min(index, state.queue.length - 1));
 	state.currentTrack = track;
 	endGuardKey = '';
-	state.streamRefreshAttempted = !!options.forceRefresh;
+	// A retry re-enters here, so the budget must survive it; only a genuinely
+	// new play resets it.
+	if (!options.forceRefresh) state.streamRetries = 0;
+	cleanSince = 0;
 
 	// Only a track whose URL still has to be fetched is "loading"; one already
 	// resolved starts now and never shows a spinner.
@@ -373,6 +413,7 @@ export function queueAddNext(track) {
 	const at = state.queueIndex < 0 ? state.queue.length : state.queueIndex + 1;
 	state.queue = [...state.queue.slice(0, at), track, ...state.queue.slice(at)];
 	publishNowPlaying(audio.paused ? 'paused' : 'playing');
+	prefetchUpcoming();
 	emit();
 }
 
@@ -380,6 +421,7 @@ export function queueAddEnd(track) {
 	if (isLinked()) { remoteControl('queue_add_end', { track }); return; }
 	state.queue = [...state.queue, track];
 	publishNowPlaying(audio.paused ? 'paused' : 'playing');
+	prefetchUpcoming();
 	emit();
 }
 
@@ -390,6 +432,7 @@ export function queueRemove(index) {
 	if (index < state.queueIndex) state.queueIndex -= 1;
 	else if (index === state.queueIndex) state.queueIndex = Math.min(state.queueIndex, state.queue.length - 1);
 	publishNowPlaying(audio.paused ? 'paused' : 'playing');
+	prefetchUpcoming();
 	emit();
 }
 
@@ -404,6 +447,7 @@ export function queueMove(from, to) {
 	// silently change what is playing.
 	state.queueIndex = playing ? next.indexOf(playing) : state.queueIndex;
 	publishNowPlaying(audio.paused ? 'paused' : 'playing');
+	prefetchUpcoming();
 	emit();
 }
 
@@ -417,6 +461,7 @@ export function queueClearUpNext() {
 	if (isLinked()) { remoteControl('queue_clear_up_next'); return; }
 	state.queue = state.queue.slice(0, Math.max(0, state.queueIndex + 1));
 	publishNowPlaying(audio.paused ? 'paused' : 'playing');
+	prefetchUpcoming();
 	emit();
 }
 
@@ -511,7 +556,24 @@ for (const event of ['play', 'pause']) {
 }
 
 audio.addEventListener('loadedmetadata', () => { publishPosition(true); emit(); });
-audio.addEventListener('timeupdate', () => { guardTrueEnd(); publishProgress(); publishPosition(); emit(); });
+audio.addEventListener('timeupdate', () => {
+	refillRetryBudget();
+	guardTrueEnd();
+	publishProgress();
+	publishPosition();
+	emit();
+});
+
+/* Audio that has been flowing for a while proves the stream is healthy, so the
+ * retries spent getting here are no longer owed against the next failure. */
+function refillRetryBudget() {
+	if (audio.paused || !state.streamRetries) { cleanSince = cleanSince || Date.now(); return; }
+	if (!cleanSince) { cleanSince = Date.now(); return; }
+	if (Date.now() - cleanSince >= STREAM_RETRY_RESET_AFTER_MS) {
+		state.streamRetries = 0;
+		cleanSince = Date.now();
+	}
+}
 
 function finishTrack() {
 	if (state.repeat === 'one') {
@@ -537,15 +599,34 @@ function guardTrueEnd() {
 
 audio.addEventListener('ended', finishTrack);
 
+/* A media `error` event carries nothing usable — no status, no reason. Asking
+ * the grant directly is the only way to tell "this link died" from "your phone
+ * cannot decode this", and those want opposite messages. */
+async function diagnoseStreamFailure(url) {
+	if (!url || url.startsWith('blob:')) return 'This file could not be played on this phone.';
+	try {
+		const response = await fetch(url, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
+		if (response.status === 404) return 'That audio link expired. Reconnecting to your computer…';
+		if (response.status === 502) return 'Your computer could not reach the audio source.';
+		if (response.ok || response.status === 206) return 'Your phone could not play this format.';
+		return `Your computer answered ${response.status}.`;
+	} catch {
+		return 'The audio stream expired or became unavailable.';
+	}
+}
+
 audio.addEventListener('error', async () => {
 	// A stream URL the computer resolved earlier can expire mid-session. That is
-	// expected, and recoverable exactly once per track before it counts as a
-	// real failure worth telling the user about.
-	if (!state.currentTrack || state.streamRefreshAttempted) {
-		reportError(new Error('The audio stream expired or became unavailable.'));
+	// expected and recoverable, so it is retried rather than reported — but a
+	// bounded number of times, because a track that cannot play at all must not
+	// loop forever pretending to recover.
+	if (!state.currentTrack || state.streamRetries >= STREAM_RETRY_MAX) {
+		reportError(new Error(await diagnoseStreamFailure(audio.currentSrc || audio.src)));
 		return;
 	}
-	state.streamRefreshAttempted = true;
+	const wait = STREAM_RETRY_BACKOFF_MS[Math.min(state.streamRetries, STREAM_RETRY_BACKOFF_MS.length - 1)];
+	state.streamRetries += 1;
+	if (wait) await new Promise(resolve => setTimeout(resolve, wait));
 	try {
 		await playTrack(state.currentTrack, state.queue, state.queueIndex, {
 			forceRefresh: true,
@@ -607,6 +688,76 @@ export function resetPlayback() {
 	state.currentTrack = null;
 	state.remote = null;
 	emit();
+}
+
+/* ── Transport arriving from the computer ──────────────────────────────────
+ *
+ * Deliberately at the end of the file: a test slices player.js from
+ * `export async function playTrack` to the next `export ` and asserts on what
+ * is inside, so a new export placed between them silently truncates it.
+ *
+ * The guards below are the difference between "the computer can control this
+ * phone" and "any device can control any device". The broker already routes,
+ * but routing is delivery, not authorisation. */
+export async function applyRemoteVerb(message) {
+	if (!message || typeof message !== 'object') return;
+
+	// Addressed at this phone specifically. An absent target means the desktop
+	// engine, which is never us.
+	const target = String(message.target_device_id || 'desktop');
+	if (!state.deviceId || target !== state.deviceId) return;
+
+	// Our own command coming back around. Non-idempotent verbs double-apply:
+	// `next` would skip two tracks.
+	if (message.origin_device_id && message.origin_device_id === state.deviceId) return;
+
+	// Following the computer means it owns the audio; a verb aimed at this
+	// phone's own element while mirroring would fight the mirror.
+	if (state.linked) return;
+
+	switch (String(message.action || '')) {
+		case 'play':
+			if (audio.paused && state.currentTrack) await audio.play().catch(reportError);
+			return;
+		case 'pause':
+			pauseLocal();
+			return;
+		case 'toggle':
+			await toggle();
+			return;
+		case 'next':
+			await skip(1).catch(reportError);
+			return;
+		case 'prev':
+			await skip(-1).catch(reportError);
+			return;
+		case 'seek': {
+			const length = duration();
+			if (!length) return;
+			const ratio = Number(message.ratio);
+			const seconds = Number.isFinite(Number(message.position_s))
+				? Number(message.position_s)
+				: (Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) * length : NaN);
+			if (Number.isFinite(seconds)) seekTo(seconds);
+			return;
+		}
+		case 'set_repeat':
+			if (message.mode) { state.repeat = message.mode; persist(STORAGE.repeat, state.repeat); emit(); }
+			return;
+		default:
+	}
+}
+
+/* Tell the computer this phone is the one making the sound now.
+ *
+ * Fire-and-forget: the authoritative answer comes back as a broadcast that
+ * every device receives, so waiting on this response would only delay the very
+ * thing it is announcing. An older computer that does not know the command
+ * simply refuses it, and the phone falls back to its own linked flag. */
+function claimPlaybackHere() {
+	if (!state.deviceId) return;
+	command('music_playback_target_set', { owner_kind: 'phone', reason: 'claim_by_play' })
+		.catch(() => { /* older desktop, or offline; the local label still holds */ });
 }
 
 export { emit as notifyPlayerChanged };

@@ -309,3 +309,32 @@ def test_github_actions_are_pinned_to_full_commit_shas():
 
     assert action_refs
     assert all(re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", ref) for ref in action_refs)
+
+
+def test_dynamically_loading_packages_are_collected_on_both_platforms():
+    """Packages that import part of themselves at run time need --collect-all.
+
+    PyInstaller works from static analysis, so a package that reaches for its
+    own submodules from inside a function body is invisible to it. mutagen is
+    the sharp case behind this test: ``mutagen.File()`` imports twenty-odd
+    format handlers from within its own body, so a bundle missing them reads
+    tags perfectly in development and then returns None for every file once
+    packaged — a failure that only ever shows up in the shipped app.
+
+    Asserted for both builds together, because the two scripts are deliberately
+    separate and drift is the normal failure here.
+    """
+    windows = (ROOT / "release" / "build-windows-release.ps1").read_text(encoding="utf-8")
+    macos = (ROOT / "release" / "build-macos-release.sh").read_text(encoding="utf-8")
+
+    for package in ("webview", "ytmusicapi", "yt_dlp", "qrcode", "mutagen"):
+        assert f"--collect-all {package}" in windows, f"{package} is not collected in the Windows build"
+        assert f"--collect-all {package}" in macos, f"{package} is not collected in the macOS build"
+
+
+def test_every_runtime_dependency_is_declared():
+    """A module the app imports but requirements.txt never names installs on a
+    developer's machine and is missing from a fresh checkout and from CI."""
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
+    for package in ("aiohttp", "cryptography", "filelock", "yt-dlp", "ytmusicapi", "mutagen"):
+        assert package in requirements, f"{package} is imported but not declared"

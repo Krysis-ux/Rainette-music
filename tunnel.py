@@ -12,7 +12,7 @@ request before it leaves the device and reports only "Failed to fetch"
 This module removes the research step.  It fetches Cloudflare's ``cloudflared``
 binary on demand, runs a Quick Tunnel in front of the loopback companion port,
 waits until the public hostname actually answers *this* gateway, and supervises
-the process for as long as Rainette is running.
+it for as long as Rainette is running.
 
 Trust model: the binary is downloaded over TLS from Cloudflare's own GitHub
 release channel and from nowhere else — the host allowlist below is enforced on
@@ -25,13 +25,19 @@ every start.  That is the trade for needing no Cloudflare account; the desktop
 persists whichever hostname is currently live, and a phone that already holds a
 device credential only has to re-scan the QR to learn the new address (its
 credential still authenticates, so no re-approval is required).
+
+*What lives where.*  This module owns the download policy above, the
+reachability probe, and the supervisor — the parts that are the same no matter
+how the computer became reachable.  How it becomes reachable is a
+:mod:`transport` provider, and the Quick Tunnel is one of them.  It is still
+the default and still behaves exactly as described above; the other providers
+are extra options, never a replacement.
 """
 
 from __future__ import annotations
 
 import io
 import os
-import re
 import shutil
 import ssl
 import subprocess
@@ -45,6 +51,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
+
+import transport
 
 # Cloudflare publishes cloudflared here for every platform Rainette runs on.
 # "latest/download" always resolves to the newest release, which matters because
@@ -64,8 +72,11 @@ _ALLOWED_DOWNLOAD_HOSTS = (
 
 _MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
 _DOWNLOAD_CHUNK_BYTES = 256 * 1024
-_QUICK_TUNNEL_RE = re.compile(r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com")
-_REGISTERED_MARKER = "registered tunnel connection"
+# The hostname pattern and the "we are connected" log marker moved to the
+# Cloudflare provider; kept here as names because they describe this module's
+# subject matter and callers have referred to them.
+_QUICK_TUNNEL_RE = transport._QUICK_TUNNEL_RE
+_REGISTERED_MARKER = transport._REGISTERED_MARKER
 # cloudflared prints the assigned hostname within a few seconds; the generous
 # ceiling covers a cold start on a slow connection before we call it a failure.
 _URL_DISCOVERY_TIMEOUT_S = 60.0
@@ -87,8 +98,16 @@ _SUPERVISOR_POLL_S = 2.0
 _RESTART_BACKOFF_S = 5.0
 _LOG_TAIL_LINES = 40
 
+# A helper that is alive but no longer carrying traffic is invisible to
+# `poll()` — it stays `None` forever while the phone silently times out. So the
+# address itself is re-checked on a slow cadence, and only a run of failures
+# counts, because one failed probe is far more likely to be the desktop's own
+# network hiccupping than the tunnel being gone.
+_HEALTH_PROBE_INTERVAL_S = 120.0
+_HEALTH_PROBE_FAILURES = 3
 
-class TunnelError(RuntimeError):
+
+class TunnelError(transport.TransportError):
     """A tunnel could not be prepared, started, or reached."""
 
 
@@ -100,7 +119,16 @@ class TunnelStatus:
     url: str = ""
     message: str = ""
     port: int = 0
-    provider: str = "cloudflare-quick"
+    provider: str = transport.DEFAULT_PROVIDER
+    provider_label: str = "Limited tunnel"
+    stable_hostname: bool = False
+    public: bool = True
+    # Unfinished setup is not a failure. These three carry the next human step —
+    # install this, sign in there, approve this once — so the settings page can
+    # render a checklist with a button instead of an error nobody can act on.
+    setup_action: str = ""  # "" | "install" | "login" | "consent" | "configure"
+    setup_message: str = ""
+    setup_url: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -109,8 +137,15 @@ class TunnelStatus:
             "message": self.message,
             "port": self.port,
             "provider": self.provider,
+            "provider_label": self.provider_label,
+            "stable_hostname": self.stable_hostname,
+            "public": self.public,
+            "setup_action": self.setup_action,
+            "setup_message": self.setup_message,
+            "setup_url": self.setup_url,
             "running": self.phase == "running",
             "busy": self.phase == "starting",
+            "needs_setup": self.phase == "setup",
         }
 
 
@@ -126,12 +161,16 @@ class HelperStatus:
     phase: str = "missing"
     path: str = ""
     message: str = ""
+    # False for a transport that brings its own binary or none at all, so the
+    # panel can hide a download button that would do nothing.
+    required: bool = True
 
     def as_dict(self) -> dict:
         return {
             "phase": self.phase,
             "path": self.path,
             "message": self.message,
+            "required": self.required,
             "ready": self.phase == "ready",
             "busy": self.phase == "downloading",
         }
@@ -325,11 +364,15 @@ def _probe_reachable(url: str) -> bool:
 
 
 class TunnelManager:
-    """Owns one cloudflared Quick Tunnel and the thread that supervises it.
+    """Owns whichever transport is selected and the thread that supervises it.
 
     Every public method returns immediately.  Downloading and starting happen on
     a worker thread so a pywebview API call from the settings page never blocks
     the UI, and callers poll :meth:`status` instead.
+
+    The manager knows nothing about Cloudflare or Tailscale specifically.  It
+    knows how to bring *a* transport up, prove the address answers this gateway,
+    and keep it that way — the provider supplies the rest.
     """
 
     def __init__(
@@ -340,6 +383,10 @@ class TunnelManager:
         binary_locator: Callable[[], Path | None] | None = None,
         binary_installer: Callable[[Callable[[str], None] | None], Path] | None = None,
         reachable_probe: Callable[[str], bool] = _probe_reachable,
+        provider: str = "",
+        provider_config: dict | None = None,
+        legacy_public_url: Callable[[], str] | None = None,
+        provider_factory: Callable[..., transport._BaseProvider] | None = None,
     ) -> None:
         self._app_data_dir = Path(app_data_dir)
         self._on_url = on_url
@@ -352,17 +399,122 @@ class TunnelManager:
         self._status = TunnelStatus()
         self._helper = HelperStatus()
         self._process: subprocess.Popen | None = None
+        self._handle: transport.ProviderHandle | None = None
         self._worker: threading.Thread | None = None
         self._helper_worker: threading.Thread | None = None
         self._supervisor: threading.Thread | None = None
         self._log: list[str] = []
         self._generation = 0
         self._stop_requested = threading.Event()
+        self._probe_failures = 0
+        self._next_probe_at = 0.0
+        # An address written by a build that predates this seam is the only
+        # evidence such an install has of which transport it was using.
+        self._legacy_public_url = legacy_public_url
+        self._provider_factory = provider_factory or transport.build_provider
+        self._provider_id = str(provider or "")
+        self._provider_config = dict(provider_config or {})
+        self._provider: transport._BaseProvider | None = None
+
+    # ── the selected transport ────────────────────────────────────────────
+
+    def _selection(self) -> transport.TransportSelection:
+        if transport.known_provider(self._provider_id):
+            return transport.TransportSelection(self._provider_id, dict(self._provider_config))
+        legacy = ""
+        if self._legacy_public_url is not None:
+            try:
+                legacy = str(self._legacy_public_url() or "")
+            except Exception:
+                legacy = ""
+        return transport.read_selection(self._app_data_dir, legacy_public_url=legacy)
+
+    def provider(self) -> transport._BaseProvider:
+        """The live provider, built once and reused until the choice changes."""
+        with self._lock:
+            if self._provider is not None:
+                return self._provider
+        selection = self._selection()
+        built = self._provider_factory(
+            selection.provider,
+            config=selection.config,
+            probe=self._reachable_probe,
+            record=self._record,
+            locate_cloudflared=self._binary_locator,
+            install_cloudflared=self._binary_installer,
+        )
+        with self._lock:
+            if self._provider is None:
+                self._provider = built
+                self._provider_id = selection.provider
+                self._provider_config = dict(selection.config)
+            return self._provider
+
+    def providers(self) -> list[dict]:
+        """Every transport this build can offer, in the order to show them."""
+        return transport.catalogue()
+
+    def provider_config(self) -> dict:
+        """The settings the selected transport was given, for the UI to prefill."""
+        self.provider()  # resolves the selection, populating the cache
+        with self._lock:
+            return dict(self._provider_config)
+
+    def set_provider(self, provider_id: str, config: dict | None = None) -> dict:
+        """Choose a transport and persist the choice.
+
+        Anything currently running is torn down through its *own* provider
+        first — swapping the selection out from under a live transport would
+        leave a daemon still publishing this computer with nothing left that
+        knows how to turn it off.
+        """
+        if self.status().get("running") or self.status().get("busy"):
+            self.stop()
+        selection = transport.write_selection(self._app_data_dir, provider_id, config)
+        with self._lock:
+            self._provider = None
+            self._provider_id = selection.provider
+            self._provider_config = dict(selection.config)
+            self._status = TunnelStatus()
+        return self.status()
+
+    def preflight(self) -> dict:
+        """Ask the selected transport what the user still has to do, if anything."""
+        provider = self.provider()
+        try:
+            result = provider.preflight()
+        except Exception as exc:
+            result = transport.PreflightResult(ok=False, message=str(exc))
+        if not result.ok:
+            self._set_status(
+                setup_action=result.action,
+                setup_message=result.message,
+                setup_url=result.url,
+            )
+        else:
+            self._set_status(setup_action="", setup_message="", setup_url="")
+        # Deliberately not the result's own ``ok``: "this needs setup" is a
+        # perfectly successful answer to the question, and a caller that reads
+        # ``ok`` as "the call worked" must not see it as a failure.
+        return {**self.status(), "preflight_ok": result.ok}
 
     # ── status ────────────────────────────────────────────────────────────
 
     def status(self) -> dict:
+        try:
+            provider = self.provider()
+        except Exception:
+            with self._lock:
+                return self._status.as_dict()
+        capabilities = provider.capabilities
         with self._lock:
+            self._status = replace(
+                self._status,
+                provider=provider.id,
+                provider_label=provider.label,
+                stable_hostname=capabilities.stable_hostname,
+                public=capabilities.public,
+            )
             return self._status.as_dict()
 
     def _set_status(self, **fields) -> None:
@@ -384,6 +536,15 @@ class TunnelManager:
         with this panel already open.  :meth:`start` re-locates the binary
         anyway, so a stale "ready" can never turn into a confusing launch.
         """
+        if not self.provider().capabilities.auto_installable:
+            # Nothing to download, and the tunnel button must not be gated on a
+            # step that does not exist for this transport.
+            return HelperStatus(
+                phase="ready",
+                message="This option does not need a download.",
+                required=False,
+            ).as_dict()
+
         with self._lock:
             settled = self._helper if self._helper.phase in {"downloading", "ready"} else None
         if settled is not None:
@@ -403,6 +564,8 @@ class TunnelManager:
 
     def download_helper(self) -> dict:
         """Fetch cloudflared on a worker thread; returns immediately."""
+        if not self.provider().capabilities.auto_installable:
+            return self.helper_status()
         with self._lock:
             if self._helper.phase == "downloading":
                 return self._helper.as_dict()
@@ -441,17 +604,23 @@ class TunnelManager:
     def start(self, port: int) -> dict:
         """Begin bringing a tunnel up in front of ``port``; returns immediately.
 
-        The helper has to already be present.  Downloading is a separate, named
-        step so the one action that reaches the network stays something the user
-        chose rather than a side effect of pressing "generate".
+        A transport that can install itself has to already be installed:
+        downloading is a separate, named step so the one action that reaches the
+        network stays something the user chose rather than a side effect of
+        pressing "generate".  A transport that *cannot* install itself reports
+        the missing pieces as setup instead, because "install Tailscale and sign
+        in" is a checklist, not an error.
         """
         selected = int(port)
         if selected <= 0 or selected > 65535:
             raise ValueError("companion port must be between 1 and 65535")
-        binary = self._binary_locator()
-        if binary is None:
+        provider = self.provider()
+        if provider.capabilities.auto_installable and provider.ensure_binary(None) is None:
             self._set_helper(message="cloudflared has not been downloaded yet.")
             raise TunnelError("download the Cloudflare helper first, then generate the tunnel")
+        ready = provider.preflight()
+        if not ready.ok:
+            return self._require_setup(None, ready)
         with self._lock:
             if self._status.phase == "starting":
                 return self._status.as_dict()
@@ -464,10 +633,14 @@ class TunnelManager:
                 phase="starting",
                 port=selected,
                 message="Opening the secure tunnel…",
+                provider=provider.id,
+                provider_label=provider.label,
+                stable_hostname=provider.capabilities.stable_hostname,
+                public=provider.capabilities.public,
             )
             self._worker = threading.Thread(
                 target=self._run,
-                args=(binary, selected, generation),
+                args=(selected, generation),
                 name="rainette-tunnel-start",
                 daemon=True,
             )
@@ -480,13 +653,29 @@ class TunnelManager:
             self._generation += 1
             self._stop_requested.set()
             process = self._process
+            handle = self._handle
             self._process = None
+            self._handle = None
             supervisor = self._supervisor
             self._supervisor = None
+        if handle is not None:
+            # A transport whose config lives in a daemon has nothing to kill, so
+            # this is the only thing that stops it publishing this computer.
+            try:
+                self.provider().stop(handle)
+            except Exception:
+                pass
         self._terminate(process, timeout_s=timeout_s)
         if supervisor is not None and supervisor is not threading.current_thread():
             supervisor.join(timeout=timeout_s)
-        self._set_status(phase="stopped", url="", message="The tunnel is stopped.")
+        self._set_status(
+            phase="stopped",
+            url="",
+            message="The tunnel is stopped.",
+            setup_action="",
+            setup_message="",
+            setup_url="",
+        )
         return self.status()
 
     def _alive(self) -> bool:
@@ -516,23 +705,47 @@ class TunnelManager:
         with self._lock:
             return generation == self._generation and not self._stop_requested.is_set()
 
-    def _run(self, binary: Path, port: int, generation: int) -> None:
+    def _run(self, port: int, generation: int) -> None:
         try:
-            url = self._launch(binary, port, generation)
+            url = self._launch(port, generation)
             if not self._is_current(generation):
                 return
             self._set_status(
                 phase="running",
                 url=url,
                 message="The tunnel is live. Your phone can reach this computer.",
+                setup_action="",
+                setup_message="",
+                setup_url="",
             )
             if self._on_url is not None:
                 self._on_url(url)
-            self._start_supervisor(binary, port, generation)
-        except TunnelError as exc:
+            self._start_supervisor(port, generation)
+        except transport.SetupRequired as exc:
+            self._require_setup(generation, exc.result)
+        except transport.TransportError as exc:
             self._fail(generation, str(exc))
         except Exception as exc:  # a helper we launched misbehaving must not kill the app
             self._fail(generation, f"the tunnel could not be started: {exc}")
+
+    def _require_setup(self, generation: int | None, result: transport.PreflightResult) -> dict:
+        """Report an unfinished human step as a checklist, never as a failure."""
+        if generation is not None and not self._is_current(generation):
+            return self.status()
+        with self._lock:
+            process = self._process
+            self._process = None
+            self._handle = None
+        self._terminate(process)
+        self._set_status(
+            phase="setup",
+            url="",
+            message=result.message or "This option needs a little setup first.",
+            setup_action=result.action,
+            setup_message=result.message,
+            setup_url=result.url,
+        )
+        return self.status()
 
     def _fail(self, generation: int, message: str) -> None:
         if not self._is_current(generation):
@@ -540,6 +753,7 @@ class TunnelManager:
         with self._lock:
             process = self._process
             self._process = None
+            self._handle = None
         self._terminate(process)
         detail = self._log_tail()
         self._set_status(
@@ -548,130 +762,84 @@ class TunnelManager:
             message=f"{message} ({detail})" if detail else message,
         )
 
-    def _launch(self, binary: Path, port: int, generation: int) -> str:
-        command = [
-            str(binary),
-            "tunnel",
-            "--no-autoupdate",
-            "--loglevel", "info",
-            "--url", f"http://127.0.0.1:{port}",
-        ]
-        try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                text=True,
-                bufsize=1,
-                encoding="utf-8",
-                errors="replace",
-                **_no_window_kwargs(),
-            )
-        except OSError as exc:
-            raise TunnelError(f"the tunnel helper would not run: {exc}") from exc
-
+    def _launch(self, port: int, generation: int) -> str:
+        provider = self.provider()
         with self._lock:
-            self._process = process
             self._log.clear()
 
-        url = self._read_url(process, generation)
+        handle = provider.launch(port)
+        # The provider's own loops need to know when this launch stopped being
+        # the one anybody is waiting for, without taking a generation counter
+        # into its signature.
+        handle.state["cancelled"] = lambda: not self._is_current(generation)
+        with self._lock:
+            self._handle = handle
+            self._process = handle.process
+
+        url = provider.discover_url(handle, time.monotonic() + _URL_DISCOVERY_TIMEOUT_S)
         if not url:
-            raise TunnelError("Cloudflare did not hand out a tunnel address")
+            raise TunnelError(f"{provider.label} did not produce an address")
 
         self._set_status(message="Waiting for the tunnel to come online…")
-        self._wait_registered(process, generation)
-        if not self._wait_reachable(url, process, generation):
+        provider.await_ready(handle, time.monotonic() + _REGISTRATION_TIMEOUT_S)
+        if not self._wait_reachable(url, handle, generation):
             raise TunnelError(
-                "the tunnel address never answered; check that this computer can reach Cloudflare"
+                "the tunnel address never answered; check that this computer can reach the internet"
             )
         return url
 
-    def _read_url(self, process: subprocess.Popen, generation: int) -> str:
-        """Read cloudflared's log until it announces the Quick Tunnel hostname."""
-        found: dict[str, str] = {}
-        deadline = time.monotonic() + _URL_DISCOVERY_TIMEOUT_S
+    @staticmethod
+    def _exited(process: subprocess.Popen | None) -> bool:
+        """True only for a process that existed and has since stopped."""
+        return process is not None and process.poll() is not None
 
-        def pump() -> None:
-            stream = process.stdout
-            if stream is None:
-                return
-            for line in stream:
-                self._record(line)
-                if "url" not in found:
-                    match = _QUICK_TUNNEL_RE.search(line)
-                    if match:
-                        found["url"] = match.group(0)
+    def _raise_if_exited(self, process: subprocess.Popen | None) -> None:
+        if self._exited(process):
+            raise TunnelError("the tunnel helper stopped while the address was warming up")
 
-        reader = threading.Thread(target=pump, name="rainette-tunnel-log", daemon=True)
-        reader.start()
-
-        while time.monotonic() < deadline:
-            if "url" in found:
-                return found["url"]
-            if process.poll() is not None:
-                raise TunnelError("the tunnel helper exited before it opened a tunnel")
-            if not self._is_current(generation):
-                return ""
-            time.sleep(0.25)
-        return found.get("url", "")
-
-    def _wait_registered(self, process: subprocess.Popen, generation: int) -> None:
-        """Wait for cloudflared to report an edge connection, if it says so.
-
-        This is a better starting gun than a bare sleep, but it is advisory:
-        the log wording is not a stable interface, so a miss just falls through
-        to the grace period below rather than failing the launch.
-        """
-        deadline = time.monotonic() + _REGISTRATION_TIMEOUT_S
-        while time.monotonic() < deadline:
-            if not self._is_current(generation) or process.poll() is not None:
-                return
-            with self._lock:
-                if any(_REGISTERED_MARKER in line.lower() for line in self._log):
-                    return
-            time.sleep(0.5)
-
-    def _sleep_watching(self, seconds: float, process: subprocess.Popen, generation: int) -> bool:
+    def _sleep_watching(
+        self, seconds: float, process: subprocess.Popen | None, generation: int
+    ) -> bool:
         """Sleep in short slices so a stop or a dead helper is noticed promptly."""
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            if not self._is_current(generation) or process.poll() is not None:
+            if not self._is_current(generation) or self._exited(process):
                 return False
             time.sleep(min(0.5, max(0.05, deadline - time.monotonic())))
         return True
 
-    def _wait_reachable(self, url: str, process: subprocess.Popen, generation: int) -> bool:
+    def _wait_reachable(
+        self, url: str, handle: transport.ProviderHandle, generation: int
+    ) -> bool:
+        process = handle.process
         # Never probe before the grace period: the first lookup of a name that
         # does not exist yet is what makes it stay unresolvable (see
         # _REACHABLE_GRACE_S).
         if not self._sleep_watching(_REACHABLE_GRACE_S, process, generation):
-            if process.poll() is not None:
-                raise TunnelError("the tunnel helper stopped while the address was warming up")
+            self._raise_if_exited(process)
             return False
 
+        provider = self.provider()
         deadline = time.monotonic() + _REACHABLE_TIMEOUT_S
         interval = _PROBE_INTERVAL_S
         while time.monotonic() < deadline:
             if not self._is_current(generation):
                 return False
-            if process.poll() is not None:
-                raise TunnelError("the tunnel helper stopped while the address was warming up")
-            if self._reachable_probe(url):
+            self._raise_if_exited(process)
+            if provider.probe(url):
                 return True
             if not self._sleep_watching(interval, process, generation):
-                if process.poll() is not None:
-                    raise TunnelError("the tunnel helper stopped while the address was warming up")
+                self._raise_if_exited(process)
                 return False
             interval = min(interval * _PROBE_BACKOFF, _PROBE_INTERVAL_MAX_S)
         return False
 
     # ── supervision ───────────────────────────────────────────────────────
 
-    def _start_supervisor(self, binary: Path, port: int, generation: int) -> None:
+    def _start_supervisor(self, port: int, generation: int) -> None:
         supervisor = threading.Thread(
             target=self._supervise,
-            args=(binary, port, generation),
+            args=(port, generation),
             name="rainette-tunnel-supervisor",
             daemon=True,
         )
@@ -679,40 +847,86 @@ class TunnelManager:
             self._supervisor = supervisor
         supervisor.start()
 
-    def _supervise(self, binary: Path, port: int, generation: int) -> None:
-        """Restart the tunnel if cloudflared dies while Rainette is still up.
+    def _is_down(self) -> bool:
+        """Decide whether the transport still works, by two different means.
 
-        A Quick Tunnel gets a new hostname on every start, so a restart also
-        republishes the address through ``on_url``; a phone that was mid-session
-        reconnects by re-scanning, and one that is idle simply picks it up the
-        next time it pairs.
+        A helper process that has exited is the obvious case and the only one
+        the old supervisor could see.  The other — a helper that is still alive
+        but no longer carrying traffic — looked identical to "healthy" and the
+        phone was left to time out.  And a transport whose config lives in a
+        daemon has no process at all, so probing is the *only* thing that can
+        tell us anything about it.
         """
+        with self._lock:
+            handle = self._handle
+            process = self._process
+            url = self._status.url
+        if handle is None:
+            return False
+        if self.provider().capabilities.long_lived_process and self._exited(process):
+            return True
+        if not url or time.monotonic() < self._next_probe_at:
+            return False
+        self._next_probe_at = time.monotonic() + _HEALTH_PROBE_INTERVAL_S
+        if self.provider().probe(url):
+            self._probe_failures = 0
+            return False
+        # One failed probe is far likelier to be this computer's own network
+        # blinking than the tunnel being gone, so only a run of them counts.
+        self._probe_failures += 1
+        return self._probe_failures >= _HEALTH_PROBE_FAILURES
+
+    def _supervise(self, port: int, generation: int) -> None:
+        """Keep the transport up for as long as Rainette is.
+
+        A Quick Tunnel gets a new hostname on every start, so a restart there
+        also republishes the address through ``on_url``; a phone that was
+        mid-session reconnects by re-scanning, and one that is idle picks it up
+        the next time it pairs.  A transport with a stable hostname comes back
+        on the *same* address, and republishing that would rewrite the config
+        and flash "new address" at the user for nothing — so the republish is
+        conditional on the address having actually changed.
+        """
+        self._probe_failures = 0
+        self._next_probe_at = time.monotonic() + _HEALTH_PROBE_INTERVAL_S
         while self._is_current(generation):
             with self._lock:
+                handle = self._handle
                 process = self._process
-            if process is None:
+                previous_url = self._status.url
+            if handle is None:
                 return
-            if process.poll() is None:
+            if not self._is_down():
                 time.sleep(_SUPERVISOR_POLL_S)
                 continue
 
             if not self._is_current(generation):
                 return
+            self._probe_failures = 0
             self._set_status(phase="starting", url="", message="The tunnel dropped. Reconnecting…")
+            # A hung-but-alive helper has to be cleared out before its
+            # replacement can bind the same tunnel.
+            self._terminate(process)
             time.sleep(_RESTART_BACKOFF_S)
             if not self._is_current(generation):
                 return
             try:
-                url = self._launch(binary, port, generation)
-            except TunnelError as exc:
+                url = self._launch(port, generation)
+            except transport.SetupRequired as exc:
+                self._require_setup(generation, exc.result)
+                return
+            except transport.TransportError as exc:
                 self._fail(generation, str(exc))
                 return
             if not self._is_current(generation):
                 return
+            self._next_probe_at = time.monotonic() + _HEALTH_PROBE_INTERVAL_S
+            changed = bool(url) and url != previous_url
             self._set_status(
                 phase="running",
                 url=url,
-                message="The tunnel is live again on a new address.",
+                message="The tunnel is live again on a new address." if changed
+                else "The tunnel is live again.",
             )
-            if self._on_url is not None:
+            if changed and self._on_url is not None:
                 self._on_url(url)

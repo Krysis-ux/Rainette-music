@@ -31,6 +31,7 @@ from aiohttp import WSMsgType, web
 
 import shared
 import music_bridge
+import transport
 import tunnel
 from companion import CompanionRegistry
 from state import MusicState
@@ -111,6 +112,33 @@ DEFAULT_PWA_URL = "https://music-pwa-web.vercel.app"
 # open relay even though it is bound to 127.0.0.1 only.
 _ALLOWED_AUDIO_HOSTS = ("googlevideo.com", "youtube.com", "ytimg.com", "ggpht.com")
 
+# How long an audio grant stays redeemable. Deliberately a constant rather than
+# something derived from the upstream URL's own lifetime: those are two
+# different clocks, and conflating them is what produced 60-second grants that
+# died a minute into a track. The upstream URL going stale is the relay's
+# problem to solve (it re-resolves), not something the phone should ever see.
+RELAY_GRANT_TTL_S = 21_600
+
+# Upstream statuses worth one silent re-resolve. googlevideo URLs are bound to
+# the IP and time that produced them, so a VPN toggle or a network change
+# invalidates them while our own grant is still perfectly valid.
+_RELAY_RETRY_STATUSES = frozenset({403, 404, 410})
+_RELAY_UPSTREAM_RETRY_MAX = 1
+
+# Commands whose `origin_device_id` is authority, not decoration: it decides
+# whether an event is echoed back to its sender and whose session it belongs to.
+# For these the server overwrites whatever the client sent.
+_DEVICE_STAMPED_TYPES = frozenset({
+    "music_remote_control", "music_playback_target_set",
+    "music_device_settings_get", "music_device_settings_put",
+    # `music_local_roots` is here for a stronger reason than the others: the
+    # bridge refuses to add or forget a folder when this field is present, and
+    # that refusal is only sound because the field is overwritten here. A phone
+    # that could suppress it could name any path on the computer as a music
+    # folder.
+    "music_local_roots", "music_client_capabilities", "music_library_index",
+})
+
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -167,10 +195,20 @@ COMPANION_COMMAND_TYPES = frozenset({
     "music_output_transfer",
     "music_output_transfer_result",
     "music_output_devices",
+    "music_playback_target_get",
+    "music_playback_target_set",
+    "music_device_settings_get",
+    "music_device_settings_put",
     "music_request_state",
     "music_open_artist",
     "music_lyrics",
     "music_status",
+    # Files on this computer. A phone may list folders and re-run a scan; it may
+    # not name a folder — see cmd_music_local_roots.
+    "music_local_roots",
+    "music_local_scan",
+    "music_local_status",
+    "music_client_capabilities",
 })
 
 # These playback messages are fan-out notifications, not request/response
@@ -186,6 +224,11 @@ COMPANION_ONE_WAY_COMMAND_TYPES = frozenset({
     "music_output_transfer_result",
     "music_request_state",
     "music_open_artist",
+    "music_playback_target_set",
+    # A scan of a large library outlives any request timeout, so the caller is
+    # acknowledged at dispatch and learns the outcome from the progress and
+    # result events instead.
+    "music_local_scan",
 })
 
 
@@ -246,16 +289,24 @@ class CompanionSyncBroker:
 
     _SESSION_TYPES = frozenset({
         "music_now_playing", "music_progress", "music_remote_play",
-        "music_remote_control", "music_request_state", "music_open_artist",
+        "music_request_state", "music_open_artist",
     })
 
     _TARGETED_TYPES = frozenset({
         "music_output_transfer", "music_output_transfer_result",
     })
 
+    # Transport is addressed at whoever owns the audio, not at whoever sent it.
+    # It used to sit in _SESSION_TYPES, which meant a desktop-originated pause
+    # had no originating device and so reached nobody: the computer's transport
+    # controls could not touch a phone at all. Kept out of _SESSION_TYPES rather
+    # than widening that set, so `music_now_playing` routing is untouched.
+    _TARGET_ROUTED_TYPES = frozenset({"music_remote_control"})
+
     _SYNC_TYPES = frozenset({
         "music_now_playing", "music_progress", "music_remote_play",
         "music_remote_control", "music_output_transfer",
+        "music_playback_target",
         "music_library_index_result", "music_playlist_list_result",
         "music_followed_artists_result", "music_recent_result",
         "music_top_artists_result", "music_insights_result",
@@ -270,6 +321,11 @@ class CompanionSyncBroker:
         "music_smart_playlist_deleted", "music_playlist_track_added",
         "music_playlist_track_removed", "music_queue_session_saved",
         "music_queue_session_deleted",
+        # The local library is one shared library on one computer, so a scan
+        # started anywhere is news everywhere. These fan out for the same reason
+        # a new playlist does.
+        "music_local_roots_result", "music_local_scan_result",
+        "music_local_scan_progress", "music_local_status_result",
     })
 
     # A log is dropped once its phone has not polled for this long.  Phones
@@ -282,13 +338,34 @@ class CompanionSyncBroker:
         self._logs: dict[str, _DeviceEventLog] = {}
 
     def _log_for(self, device_id: str) -> _DeviceEventLog:
-        """Return (creating if needed) the log belonging to one device."""
+        """Return (creating if needed) the log belonging to one device.
+
+        A new log starts from what this computer already knows about the
+        device, not from defaults. Linked mode lived only inside this object,
+        so evicting an idle log — or restarting — used to silently unlink a
+        phone, and the only reason it recovered at all was that the phone
+        re-asserted the mode on its next poll. Rehydrating makes losing a log a
+        resync rather than a change of behaviour.
+        """
         with self._lock:
             log = self._logs.get(device_id)
             if log is None:
                 log = _DeviceEventLog(history_limit=self._history_limit)
+                log.follows_desktop = self._remembered_follow(device_id)
                 self._logs[device_id] = log
             return log
+
+    @staticmethod
+    def _remembered_follow(device_id: str) -> bool:
+        """Persisted linked mode, if this build has somewhere to keep it.
+
+        Tolerant on purpose: the broker is constructed in tests without any
+        state at all, and a missing store means "no preference recorded", not
+        a failure worth propagating into a poll."""
+        try:
+            return bool(shared.STATE.device_follow(str(device_id)))
+        except Exception:
+            return False
 
     def _evict_idle_locked(self) -> None:
         cutoff = time.monotonic() - self._IDLE_EVICTION_S
@@ -308,6 +385,22 @@ class CompanionSyncBroker:
                 target = str(message.get("target_device_id") or "")
                 # An unaddressed transfer is a desktop-only broadcast; a phone
                 # with no matching log simply has nothing to receive.
+                log = self._logs.get(target)
+                return [log] if log is not None else []
+            if message_type in self._TARGET_ROUTED_TYPES:
+                # Absent target means the desktop engine, which is how every
+                # existing caller behaves and so keeps older clients working.
+                target = str(message.get("target_device_id") or "desktop")
+                if target == "desktop":
+                    # The desktop acts on this over its own WebSocket, so no
+                    # phone needs a copy to make it happen. A linked phone still
+                    # gets one so its optimistic UI can settle.
+                    return [log for log in self._logs.values() if log.follows_desktop]
+                if origin_device_id and target == origin_device_id:
+                    # The owner issued this to itself and has already applied it.
+                    # Echoing it back double-applies the verbs that are not
+                    # idempotent: `next` would skip two tracks, not one.
+                    return []
                 log = self._logs.get(target)
                 return [log] if log is not None else []
             if message_type in self._SESSION_TYPES:
@@ -346,8 +439,13 @@ class CompanionSyncBroker:
         log = self._log_for(str(device_id))
         with log.condition:
             log.last_read_at = time.monotonic()
-            if follow_desktop is not None:
+            if follow_desktop is not None and bool(follow_desktop) != log.follows_desktop:
                 log.follows_desktop = bool(follow_desktop)
+                # Written through, so the answer outlives this object.
+                try:
+                    shared.STATE.set_device_follow(str(device_id), log.follows_desktop)
+                except Exception:
+                    pass   # no store configured; in-memory remains authoritative
             result = log.read_after_locked(after)
             if result["events"] or result["reset_required"] or wait_s <= 0:
                 return {**result, "follows_desktop": log.follows_desktop}
@@ -908,6 +1006,12 @@ async def companion_command(request: web.Request) -> web.StreamResponse:
     elif not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 200:
         return _json_error(400, "command id is invalid")
     device_id = request["companion_device_id"]
+    # The caller's identity comes from its authenticated token, never from the
+    # body. Popping first matters: without it a phone can name a different
+    # device as the origin and have its transport treated as that device's.
+    if command_type in _DEVICE_STAMPED_TYPES:
+        payload.pop("origin_device_id", None)
+        payload["origin_device_id"] = device_id
     # Everything this command fans out is attributed to the calling phone, so
     # its playback events come back to it and to no other paired device.
     token = _origin_device.set(device_id)
@@ -934,34 +1038,128 @@ async def companion_command(request: web.Request) -> web.StreamResponse:
     # A phone never receives a raw googlevideo URL. Swap it for an opaque grant
     # that only this device's token can redeem, so a leaked media URL is not a
     # usable credential and cannot be replayed by another paired phone.
-    if command_type == "music_stream_url" and result.get("ok") and result.get("url"):
+    if command_type == "music_stream_url" and result.get("ok") and (result.get("url") or result.get("local")):
+        # A local track has no upstream at all; the grant names the row and the
+        # route reads the file. Same route, same capability shape — the phone
+        # cannot tell the two apart and does not need to.
+        is_local = bool(result.get("local"))
         try:
-            ttl = min(max(int(result.get("expires_hint_s") or 3600), 60), 21_600)
             grant = request.app[COMPANION_REGISTRY_KEY].create_relay_grant(
-                device_id, str(result["url"]), ttl_s=ttl
+                device_id,
+                "" if is_local else str(result["url"]),
+                ttl_s=RELAY_GRANT_TTL_S,
+                source_id=str(payload.get("source_id") or ""),
+                kind="local" if is_local else "youtube",
+                track_id=str(result.get("track_id") or "") if is_local else "",
             )
         except (TypeError, ValueError) as exc:
             return _json_error(502, str(exc))
         result = dict(result)
         result["url"] = "/audio/" + grant["token"]
+        # The grant is the thing that 404s, so the grant's life is what the
+        # phone's refresh window has to track. `expires_hint_s` describes the
+        # upstream URL behind it, which this computer now refreshes on the
+        # phone's behalf — so it is no longer the number to schedule against.
+        result["grant_expires_in_s"] = RELAY_GRANT_TTL_S
         result["relayed_by"] = "user-pc"
     return web.json_response(result)
 
 
+async def _reresolve_upstream(registry, grant_token: str, grant) -> str | None:
+    """Fetch a fresh upstream URL for a grant whose current one has gone stale.
+
+    Runs off the event loop because yt-dlp is blocking. Returns None when there
+    is nothing to re-resolve from — an older grant minted before the source was
+    recorded, for instance — so the caller can fall back to the original error.
+    """
+    if not grant.source_id:
+        return None
+    try:
+        fresh = await asyncio.to_thread(
+            music_bridge.resolve_stream_url_sync,
+            grant.source_id,
+            force_refresh=True,
+        )
+    except Exception:
+        return None
+    if not fresh or not _audio_host_allowed(fresh):
+        return None
+    registry.refresh_relay_grant(grant_token, fresh)
+    return fresh
+
+
+async def _serve_local_grant(request: web.Request, grant) -> web.StreamResponse:
+    """Serve one of this computer's own files against a local grant.
+
+    ``web.FileResponse`` already implements Range, If-Range, 206 and 416
+    correctly, so none of that is re-derived here — hand-rolled Range parsing is
+    exactly where the bugs would live.
+
+    The path is read from the row rather than carried in the grant, so the
+    capability the phone holds names a track and can never name a file.
+    """
+    row = await asyncio.to_thread(shared.STATE.get_local_track, track_id=grant.track_id)
+    stored = str((row or {}).get("file_path") or "")
+    # Guarded explicitly: Path("") is Path("."), which is a real directory, so
+    # letting an empty column reach is_file() would be asking the wrong question.
+    path = Path(stored) if stored else None
+    if not row or path is None or not await asyncio.to_thread(path.is_file):
+        # Record the absence so the library stops claiming the track is here,
+        # rather than waiting for the next scan to notice.
+        if row:
+            await asyncio.to_thread(shared.STATE.mark_track_missing, grant.track_id)
+        return _json_error(404, "that file is no longer on this computer")
+    headers = {
+        "Content-Type": str(row.get("content_type") or "application/octet-stream"),
+        "Cache-Control": "no-store",
+        # Before the response is built, for the same reason as the relay below:
+        # without them the phone's <audio crossorigin> load fails outright and
+        # Web Audio — the equalizer and the volume gain — can never be built.
+        **_cors_headers(request),
+    }
+    return web.FileResponse(path, chunk_size=65536, headers=headers)
+
+
 async def companion_audio_relay(request: web.Request) -> web.StreamResponse:
     """Relay an opaque, short-lived, device-bound grant with Range support."""
-    upstream_url = request.app[COMPANION_REGISTRY_KEY].resolve_relay(
-        request.match_info.get("grant", "")
-    )
-    if not upstream_url or not _audio_host_allowed(upstream_url):
+    registry = request.app[COMPANION_REGISTRY_KEY]
+    grant_token = request.match_info.get("grant", "")
+    grant = registry.resolve_relay(grant_token)
+    if grant is None:
         return _json_error(404, "relay grant is not available")
+    if getattr(grant, "kind", "youtube") == "local":
+        return await _serve_local_grant(request, grant)
+    if not _audio_host_allowed(grant.upstream_url):
+        return _json_error(404, "relay grant is not available")
+    upstream_url = grant.upstream_url
     forward = {"User-Agent": request.headers.get("User-Agent", "Rainette Mobile")}
     if "Range" in request.headers:
         forward["Range"] = request.headers["Range"]
-    try:
-        upstream = await request.app[CLIENT_KEY].get(upstream_url, headers=forward)
-    except Exception as exc:
-        return _json_error(502, str(exc))
+
+    # The upstream status is known before any header reaches the phone, so a
+    # retry here is free and completely invisible. This is the VPN / network-
+    # change case: the grant is fine, the googlevideo URL behind it is not.
+    attempt = 0
+    while True:
+        try:
+            upstream = await request.app[CLIENT_KEY].get(upstream_url, headers=forward)
+        except Exception as exc:
+            return _json_error(502, str(exc))
+        if upstream.status not in _RELAY_RETRY_STATUSES or attempt >= _RELAY_UPSTREAM_RETRY_MAX:
+            break
+        upstream.release()
+        attempt += 1
+        fresh = await _reresolve_upstream(registry, grant_token, grant)
+        if not fresh:
+            # Nothing better to offer; re-request the original so the phone gets
+            # the real upstream status rather than a synthesised one.
+            try:
+                upstream = await request.app[CLIENT_KEY].get(upstream_url, headers=forward)
+            except Exception as exc:
+                return _json_error(502, str(exc))
+            break
+        upstream_url = fresh
+
     response = web.StreamResponse(status=upstream.status)
     for header in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
         if header in upstream.headers:
@@ -1178,8 +1376,10 @@ def is_managed_tunnel_url(value: str) -> bool:
     Only these are cleared automatically.  A user who pointed Rainette at their
     own named tunnel or reverse proxy keeps that address across restarts.
     """
-    host = (urlparse(str(value or "")).hostname or "").lower()
-    return host.endswith(".trycloudflare.com")
+    selection = transport.read_selection(
+        APP_DATA_DIR, legacy_public_url=read_pwa_config().get("public_url") or ""
+    )
+    return transport.is_managed_url(value, provider=selection.provider, config=selection.config)
 
 
 def _remember_tunnel_url(url: str) -> None:
@@ -1196,7 +1396,13 @@ def tunnel_manager() -> tunnel.TunnelManager:
     global _tunnel_manager
     with _tunnel_manager_lock:
         if _tunnel_manager is None:
-            _tunnel_manager = tunnel.TunnelManager(APP_DATA_DIR, on_url=_remember_tunnel_url)
+            _tunnel_manager = tunnel.TunnelManager(
+                APP_DATA_DIR,
+                on_url=_remember_tunnel_url,
+                # An install that predates the transport seam has only its saved
+                # address to say which transport it was using.
+                legacy_public_url=lambda: read_pwa_config().get("public_url") or "",
+            )
         return _tunnel_manager
 
 

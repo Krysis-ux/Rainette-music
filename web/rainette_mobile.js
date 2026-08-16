@@ -15,11 +15,35 @@ let pywebviewReadyHandler = null;
 let tunnelTimer = null;
 let tunnelPhase = '';
 let helperReady = false;
+let helperRequired = true;
+let providers = [];
+let selectedProvider = '';
+let providerConfig = {};
 
 // The first run downloads a helper binary, so the poll has to stay patient
 // while the phase is "downloading" or "starting" and go quiet once it settles.
 const TUNNEL_BUSY_POLL_MS = 1200;
 const TUNNEL_IDLE_POLL_MS = 15000;
+
+// Every provider that needs something typed in, and what to call it on screen.
+// A provider missing from here simply has no settings of its own.
+const PROVIDER_FIELDS = {
+	'cloudflare-named': [
+		{ key: 'tunnel_name', label: 'Cloudflare tunnel name', placeholder: 'my-music-tunnel' },
+		{ key: 'hostname', label: 'Hostname it serves', placeholder: 'music.example.com' },
+	],
+	manual: [
+		{ key: 'public_url', label: 'Your HTTPS address for this computer', placeholder: 'https://music-pc.example.com' },
+	],
+};
+
+// What the button under a setup step should say, per the action the desktop
+// reported. An action with no entry here renders the message without a button.
+const SETUP_ACTIONS = {
+	install: 'Get it',
+	login: 'Sign in',
+	consent: 'Allow it',
+};
 
 function isCurrentMount(generation, host) {
 	return generation === mountGeneration && !!host && mountedHost === host;
@@ -255,20 +279,76 @@ function tunnelTone(phase) {
 	return '';
 }
 
+// A provider that brings no binary of its own has nothing to download, and the
+// panel must not ask for a step that does not exist.
+function isHelperRequired(helper) {
+	return helper?.required !== false;
+}
+
 function helperMessage(helper) {
-	if (helper.phase === 'ready') return 'cloudflared is ready on this computer.';
-	if (helper.phase === 'error') return helper.message || 'cloudflared could not be downloaded.';
-	if (helper.busy) return helper.message || 'Downloading cloudflared…';
-	return 'cloudflared is not here yet. Download it once, then generate a tunnel.';
+	if (!isHelperRequired(helper)) return helper.message || 'This option needs no download.';
+	if (helper.phase === 'ready') return 'The Cloudflare helper is ready on this computer.';
+	if (helper.phase === 'error') return helper.message || 'The Cloudflare helper could not be downloaded.';
+	if (helper.busy) return helper.message || 'Downloading the Cloudflare helper…';
+	return 'The Cloudflare helper is not here yet. Download it once, then turn the connection on.';
 }
 
 function tunnelMessage(status) {
-	if (status.phase === 'running') return `Tunnel is live at ${status.url} — your phone can reach this computer.`;
-	if (status.phase === 'error') return status.message || 'The tunnel could not be started.';
-	if (status.busy) return status.message || 'Opening the tunnel…';
-	if (!status.helper?.ready) return 'Download cloudflared first.';
+	const label = status.provider_label || 'This connection';
+	const helper = status.helper;
+	if (status.phase === 'setup') {
+		return status.setup_message || `${label} needs a little setup on this computer first.`;
+	}
+	if (status.phase === 'running') return `${label} is live at ${status.url} — your phone can reach this computer.`;
+	if (status.phase === 'error') return status.message || `${label} could not be started.`;
+	if (status.busy) return status.message || 'Opening the connection…';
+	if (isHelperRequired(helper) && !helper?.ready) return 'Download the Cloudflare helper first.';
 	if (status.public_url && !status.public_url_is_managed) return `Using your own address: ${status.public_url}`;
-	return 'Ready to generate a tunnel for this computer.';
+	return `Ready to turn on ${label} for this computer.`;
+}
+
+// The honest version of the "Limited" / "High-quality" labels: what a person
+// actually notices is whether they have to rescan the code after every restart.
+function stabilityMessage(status) {
+	if (!status.provider) return '';
+	const address = status.stable_hostname
+		? 'Address stays the same, so your phone only scans the code once.'
+		: 'Address changes each time you restart Rainette, so your phone has to scan a new code.';
+	return status.public === false
+		? `${address} Reachable only from your own devices, never from the public internet.`
+		: address;
+}
+
+function renderProviderDetail(status, generation, host) {
+	if (!isCurrentMount(generation, host)) return;
+	const description = host.querySelector('#rwProviderDescription');
+	const stability = host.querySelector('#rwProviderStability');
+	const chosen = providers.find(entry => entry.id === (status.provider || selectedProvider));
+	if (description) description.textContent = chosen?.description || '';
+	if (stability) stability.textContent = stabilityMessage(status);
+}
+
+// The setup step is rendered as a checklist with a button, never as an error:
+// "install Tailscale" and "allow Funnel once" are things a person does, and a
+// failure message is the one shape that makes them look impossible.
+function renderSetupChecklist(status, generation, host) {
+	if (!isCurrentMount(generation, host)) return;
+	const block = host.querySelector('#rwTunnelSetup');
+	const message = host.querySelector('#rwTunnelSetupMessage');
+	const link = host.querySelector('#rwTunnelSetupLink');
+	if (!block || !message || !link) return;
+	const action = status.setup_action || '';
+	const text = status.setup_message || '';
+	block.hidden = !action && !text;
+	message.textContent = text;
+	// The URL can come from a helper's own output, so it is placed as an
+	// attribute after a scheme check rather than interpolated into markup.
+	const url = String(status.setup_url || '');
+	const safe = url.startsWith('https://') ? url : '';
+	link.hidden = !safe || !SETUP_ACTIONS[action];
+	link.textContent = SETUP_ACTIONS[action] || '';
+	if (safe) link.setAttribute('href', safe);
+	else link.removeAttribute('href');
 }
 
 function renderTunnel(status, generation, host) {
@@ -276,9 +356,15 @@ function renderTunnel(status, generation, host) {
 	tunnelPhase = status.phase || '';
 	const helper = status.helper || { phase: 'missing', ready: false, busy: false };
 	helperReady = !!helper.ready;
+	helperRequired = isHelperRequired(helper);
+	if (status.provider) selectedProvider = status.provider;
+
+	const picker = host.querySelector('#rwTunnelProvider');
+	if (picker && status.provider && picker.value !== status.provider) picker.value = status.provider;
 
 	const download = host.querySelector('#rwDownloadHelper');
 	if (download) {
+		download.hidden = !helperRequired;
 		download.disabled = !!helper.busy || helper.ready;
 		download.textContent = helper.busy
 			? 'Downloading…'
@@ -288,15 +374,18 @@ function renderTunnel(status, generation, host) {
 					? 'Retry the download'
 					: 'Download cloudflared';
 	}
+	const helperLine = host.querySelector('#rwHelperStatus');
+	if (helperLine) helperLine.hidden = !helperRequired;
 
 	const toggle = host.querySelector('#rwTunnelToggle');
 	if (toggle) {
-		toggle.disabled = !!status.busy || (!helper.ready && !status.running);
+		toggle.disabled = !!status.busy || (helperRequired && !helper.ready && !status.running);
+		const startLabel = helperRequired ? 'Generate HTTPS tunnel' : 'Turn this connection on';
 		toggle.textContent = status.running
-			? 'Stop the HTTPS tunnel'
+			? (helperRequired ? 'Stop the HTTPS tunnel' : 'Turn this connection off')
 			: status.busy
-				? 'Generating…'
-				: 'Generate HTTPS tunnel';
+				? 'Working…'
+				: startLabel;
 	}
 
 	// The generated address lands in the same field somebody would paste their
@@ -306,6 +395,8 @@ function renderTunnel(status, generation, host) {
 		publicInput.value = status.url || status.public_url || '';
 	}
 
+	renderProviderDetail(status, generation, host);
+	renderSetupChecklist(status, generation, host);
 	setHelperStatus(
 		helperMessage(helper),
 		helper.phase === 'error' ? 'error' : helper.ready ? 'success' : '',
@@ -313,6 +404,106 @@ function renderTunnel(status, generation, host) {
 		host,
 	);
 	setTunnelStatus(tunnelMessage(status), tunnelTone(status.phase), generation, host);
+}
+
+function renderProviderOptions(generation, host) {
+	if (!isCurrentMount(generation, host)) return;
+	const picker = host.querySelector('#rwTunnelProvider');
+	if (!picker) return;
+	picker.innerHTML = '';
+	for (const entry of providers) {
+		const option = document.createElement('option');
+		option.value = entry.id;
+		option.textContent = entry.recommended ? `${entry.label} (recommended)` : entry.label;
+		picker.appendChild(option);
+	}
+	if (selectedProvider) picker.value = selectedProvider;
+}
+
+function renderProviderConfig(generation, host) {
+	if (!isCurrentMount(generation, host)) return;
+	const block = host.querySelector('#rwProviderConfig');
+	if (!block) return;
+	block.innerHTML = '';
+	const fields = PROVIDER_FIELDS[selectedProvider] || [];
+	block.hidden = !fields.length;
+	if (!fields.length) return;
+	for (const field of fields) {
+		const label = document.createElement('label');
+		label.className = 'rw-mobile-field';
+		const caption = document.createElement('span');
+		caption.textContent = field.label;
+		const input = document.createElement('input');
+		input.type = 'text';
+		input.spellcheck = false;
+		input.dataset.providerKey = field.key;
+		input.placeholder = field.placeholder;
+		input.value = String(providerConfig[field.key] || '');
+		label.append(caption, input);
+		block.appendChild(label);
+	}
+	const save = document.createElement('button');
+	save.type = 'button';
+	save.className = 'rw-btn rw-btn-ghost';
+	save.textContent = 'Save these details';
+	save.addEventListener('click', () => applyProvider(selectedProvider, generation, host));
+	block.appendChild(save);
+}
+
+function readProviderConfig(host) {
+	const settings = {};
+	for (const input of host.querySelectorAll('#rwProviderConfig input[data-provider-key]')) {
+		settings[input.dataset.providerKey] = input.value.trim();
+	}
+	return settings;
+}
+
+async function applyProvider(providerId, generation, host) {
+	if (!isCurrentMount(generation, host)) return;
+	setTunnelStatus('Saving this choice…', '', generation, host);
+	try {
+		const settings = readProviderConfig(host);
+		const result = await nativeCall('tunnel_set_provider', providerId, settings);
+		if (!isCurrentMount(generation, host)) return;
+		if (!result?.ok) throw new Error(result?.msg || 'Rainette could not switch to that option.');
+		selectedProvider = result.provider || providerId;
+		providerConfig = settings;
+		renderProviderConfig(generation, host);
+		// Ask what is still missing straight away, so the checklist appears
+		// without the user having to press "turn it on" to discover it.
+		await refreshPreflight(generation, host);
+	} catch (error) {
+		if (isCurrentMount(generation, host)) {
+			setTunnelStatus(error?.message || 'Rainette could not switch to that option.', 'error', generation, host);
+		}
+	}
+}
+
+async function refreshPreflight(generation, host) {
+	if (!isCurrentMount(generation, host) || !nativeApi()) return;
+	try {
+		await nativeCall('tunnel_preflight');
+	} catch {
+		/* Preflight is advisory; the status poll below still drives the panel. */
+	}
+	// Redraw from tunnel_status rather than the preflight reply: only the
+	// status call carries the helper state the buttons are gated on.
+	await refreshTunnel(generation, host);
+}
+
+async function loadProviders(generation, host) {
+	if (!isCurrentMount(generation, host) || !nativeApi()) return;
+	try {
+		const result = await nativeCall('tunnel_providers');
+		if (!isCurrentMount(generation, host) || !result?.ok) return;
+		providers = Array.isArray(result.providers) ? result.providers : [];
+		selectedProvider = result.selected || selectedProvider;
+		providerConfig = result.config && typeof result.config === 'object' ? result.config : {};
+		renderProviderOptions(generation, host);
+		renderProviderConfig(generation, host);
+	} catch {
+		/* Without the desktop bridge the picker stays empty and inert. */
+	}
 }
 
 function scheduleTunnelPoll(generation, host, delayMs) {
@@ -363,20 +554,20 @@ async function toggleTunnel(generation, host) {
 	if (!isCurrentMount(generation, host)) return;
 	const toggle = host.querySelector('#rwTunnelToggle');
 	const stopping = tunnelPhase === 'running';
-	if (!stopping && !helperReady) {
-		setTunnelStatus('Download cloudflared first.', 'error', generation, host);
+	if (!stopping && helperRequired && !helperReady) {
+		setTunnelStatus('Download the Cloudflare helper first.', 'error', generation, host);
 		return;
 	}
 	if (toggle) toggle.disabled = true;
-	setTunnelStatus(stopping ? 'Closing the tunnel…' : 'Opening the tunnel…', '', generation, host);
+	setTunnelStatus(stopping ? 'Closing the connection…' : 'Opening the connection…', '', generation, host);
 	try {
 		const result = await nativeCall(stopping ? 'tunnel_stop' : 'tunnel_start');
 		if (!isCurrentMount(generation, host)) return;
-		if (!result?.ok) throw new Error(result?.msg || 'The tunnel could not be started.');
+		if (!result?.ok) throw new Error(result?.msg || 'The connection could not be started.');
 		scheduleTunnelPoll(generation, host, TUNNEL_BUSY_POLL_MS);
 	} catch (error) {
 		if (!isCurrentMount(generation, host)) return;
-		setTunnelStatus(error?.message || 'The tunnel could not be started.', 'error', generation, host);
+		setTunnelStatus(error?.message || 'The connection could not be started.', 'error', generation, host);
 		if (toggle) toggle.disabled = false;
 	}
 }
@@ -426,7 +617,9 @@ function startNativeFeatures(generation, host) {
 	const fallback = host.querySelector('#rwNativePairingFallback');
 	if (fallback) fallback.hidden = true;
 	loadConfig(generation, host);
-	refreshTunnel(generation, host);
+	// The picker has to be populated before the first status lands, or the
+	// first render has no label to show for whichever provider is selected.
+	loadProviders(generation, host).then(() => refreshTunnel(generation, host));
 	refreshManagementState(true, generation, host);
 }
 
@@ -448,7 +641,18 @@ export function renderMobile(host) {
 			<section class="rw-mobile-card rw-bubble" data-mobile-step="reach">
 				<div class="rw-mobile-step-title">2. Make this computer reachable</div>
 				<h2>Secure address</h2>
-				<p>Your phone talks straight to this computer, so this computer needs an address on the internet that uses HTTPS. Rainette can make one for you in two steps.</p>
+				<p>Your phone talks straight to this computer, so this computer needs an address on the internet that uses HTTPS. Rainette can make one for you, or use one you already have.</p>
+					<label class="rw-mobile-field">
+						<span>How your phone reaches this computer</span>
+						<select id="rwTunnelProvider" style="min-width:0;border:1px solid var(--rw-border);border-radius:11px;padding:10px 12px;background:var(--rw-bg);color:var(--rw-text);font:inherit;font-size:13px;"></select>
+					</label>
+					<p id="rwProviderDescription" class="rw-mobile-note"></p>
+					<p id="rwProviderStability" class="rw-mobile-note"></p>
+					<div id="rwProviderConfig" class="rw-mobile-tunnel-steps" hidden></div>
+					<div id="rwTunnelSetup" class="rw-mobile-tunnel-steps" hidden>
+						<p id="rwTunnelSetupMessage" class="rw-mobile-status" role="status" aria-live="polite"></p>
+						<a id="rwTunnelSetupLink" class="rw-btn" target="_blank" rel="noopener noreferrer" hidden></a>
+					</div>
 				<div class="rw-mobile-tunnel-steps">
 					<button id="rwDownloadHelper" class="rw-btn" type="button" disabled>Download cloudflared</button>
 					<p id="rwHelperStatus" class="rw-mobile-status" role="status" aria-live="polite">Checking for cloudflared…</p>
@@ -492,6 +696,13 @@ export function renderMobile(host) {
 	host.querySelector('#rwSavePwaConfig')?.addEventListener('click', () => saveConfig(generation, host));
 	host.querySelector('#rwDownloadHelper')?.addEventListener('click', () => downloadHelper(generation, host));
 	host.querySelector('#rwTunnelToggle')?.addEventListener('click', () => toggleTunnel(generation, host));
+	host.querySelector('#rwTunnelProvider')?.addEventListener('change', event => {
+		selectedProvider = event.target.value || '';
+		// Redraw the settings first so the details typed for the *new* provider
+		// are what gets saved, never the previous one's.
+		renderProviderConfig(generation, host);
+		applyProvider(selectedProvider, generation, host);
+	});
 	host.querySelector('#rwCopyPairingLink')?.addEventListener('click', async () => {
 		const field = host.querySelector('#rwPairingLink');
 		if (!field?.value) return;
@@ -521,6 +732,10 @@ export function unmountMobile() {
 	tunnelTimer = null;
 	tunnelPhase = '';
 	helperReady = false;
+	helperRequired = true;
+	providers = [];
+	selectedProvider = '';
+	providerConfig = {};
 	invitation = null;
 	nativeStarted = false;
 	managementInFlight = false;

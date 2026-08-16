@@ -152,27 +152,77 @@ function looksPlayable(file) {
 	return (file.type || '').startsWith('audio/') || AUDIO_PATTERN.test(file.name || '');
 }
 
-/** Add files the user picked. Returns how many landed. `onProgress(done, total)`
- *  is called as each one is read, because tagging a hundred files is slow enough
- *  to need a progress line. */
-export async function importFiles(fileList, onProgress) {
+/** What an import will consist of, without touching a byte.
+ *
+ *  Reading a file is slow; deciding *which* files there are is not. Separating
+ *  the two lets the interface draw every card the moment the picker closes, so a
+ *  hundred-file folder shows a hundred rows immediately instead of one line that
+ *  grows. The user learns the size of what they started before it starts.
+ *
+ *  Indices here are indices into the filtered list, which is exactly what
+ *  `importFiles` reports against — the two line up by construction. */
+export function planImport(fileList) {
+	return [...fileList].filter(looksPlayable).map((file, index) => ({
+		index,
+		id: fileId(file),
+		name: file.name,
+		size: file.size,
+		path: file.webkitRelativePath || '',
+	}));
+}
+
+/** Add files the user picked. Returns how many landed.
+ *
+ *  `onProgress(done, total, event)` — the first two arguments are unchanged, so
+ *  callers that only wanted a progress line keep working. The third is new and
+ *  optional: `{ index, id, name, file, phase, row?, error? }`, where `phase` is
+ *  one of 'reading' | 'tagging' | 'stored' | 'failed'.
+ *
+ *  The phases are reported separately rather than once per file because reading
+ *  a 12 MB file and parsing its tags are different waits, and a card that says
+ *  which one it is currently in is the difference between "working" and
+ *  "frozen".
+ *
+ *  `signal` is an ordinary AbortSignal. It is checked between files, never
+ *  mid-file: abandoning a half-written row would leave the store holding a track
+ *  whose blob is a fragment. */
+export async function importFiles(fileList, onProgress, { signal } = {}) {
 	const files = [...fileList].filter(looksPlayable);
-	if (!files.length) return { added: 0, skipped: 0 };
+	if (!files.length) return { added: 0, skipped: 0, cancelled: false };
 
 	let added = 0;
 	let skipped = 0;
 	for (const [index, file] of files.entries()) {
+		if (signal?.aborted) return { added, skipped, cancelled: true };
+		// `file` travels with the event so a failed row can be retried without
+		// sending the user back through the picker for the whole folder.
+		const base = { index, id: fileId(file), name: file.name, file };
 		try {
-			const row = await buildRow(file);
+			onProgress?.(index, files.length, { ...base, phase: 'reading' });
+			const tags = await readTags(file).catch(() => ({}));
+			onProgress?.(index, files.length, { ...base, phase: 'tagging' });
+			const row = buildRowFrom(file, tags);
 			await transact('readwrite', store => store.put(row));
 			added += 1;
-		} catch {
+			onProgress?.(index + 1, files.length, { ...base, phase: 'stored', row });
+		} catch (error) {
 			// One unreadable file must not abandon the rest of the import.
 			skipped += 1;
+			onProgress?.(index + 1, files.length, { ...base, phase: 'failed', error });
 		}
-		onProgress?.(index + 1, files.length);
 	}
-	return { added, skipped };
+	return { added, skipped, cancelled: false };
+}
+
+/** Read and store exactly one file. This is the retry path: the File object a
+ *  card was built from stays live for as long as the sheet holds a reference to
+ *  it, so a row that failed on a bad tag block can be tried again in place
+ *  rather than by re-picking everything around it. */
+export async function importOne(file) {
+	const tags = await readTags(file).catch(() => ({}));
+	const row = buildRowFrom(file, tags);
+	await transact('readwrite', store => store.put(row));
+	return row;
 }
 
 /* An id that is stable for the same file picked twice, so re-importing a folder
@@ -185,8 +235,10 @@ function fileId(file) {
 	return `local-${hash.toString(36)}-${file.size.toString(36)}`;
 }
 
-async function buildRow(file) {
-	const tags = await readTags(file).catch(() => ({}));
+/* Kept apart from `readTags` so the two costs can be reported separately: the
+ * read is the slow half and the one worth showing a spinner for, while building
+ * the row is synchronous bookkeeping. */
+function buildRowFrom(file, tags = {}) {
 	const fallback = parseFilename(file.name);
 	return {
 		id: fileId(file),
@@ -390,8 +442,15 @@ function toTrack(row) {
 	};
 }
 
-/** Ask for files and import them. Returns the same summary `importFiles` does. */
-export function pickFiles({ directory = false } = {}) {
+/** Ask for files and import them. Returns the same summary `importFiles` does.
+ *
+ *  `onPlan(plan, files)` fires the instant the picker closes and before a single
+ *  byte is read — `plan` is `planImport`'s output and `files` are the matching
+ *  File objects in the same order, which is what a retry needs. `onProgress` and
+ *  `signal` are threaded straight through to `importFiles`; until now this
+ *  function called it with one argument, so the per-file reporting it has always
+ *  done had nowhere to go. */
+export function pickFiles({ directory = false, onPlan, onProgress, signal } = {}) {
 	return new Promise(resolve => {
 		const input = document.createElement('input');
 		input.type = 'file';
@@ -400,7 +459,8 @@ export function pickFiles({ directory = false } = {}) {
 		if (directory) {
 			// Not in the spec, but every browser that supports folder picking
 			// spells it this way. Ignored where it is not supported, which leaves
-			// an ordinary multi-file picker.
+			// an ordinary multi-file picker. It is also recursive, which most
+			// people do not expect — the copy on the button says so.
 			input.webkitdirectory = true;
 		}
 		input.style.display = 'none';
@@ -415,16 +475,29 @@ export function pickFiles({ directory = false } = {}) {
 		};
 
 		input.addEventListener('change', async () => {
-			if (!input.files?.length) { finish({ added: 0, skipped: 0 }); return; }
-			const total = input.files.length;
-			toast(`Reading ${total} file${total === 1 ? '' : 's'}…`, { icon: 'listAdd' });
-			finish(await importFiles(input.files));
+			const files = [...(input.files || [])].filter(looksPlayable);
+			if (!files.length) { finish({ added: 0, skipped: 0, cancelled: false }); return; }
+			// A caller that draws its own cards has already said everything this
+			// toast would, and better.
+			if (onPlan) onPlan(planImport(files), files);
+			else toast(`Reading ${files.length} file${files.length === 1 ? '' : 's'}…`, { icon: 'listAdd' });
+			finish(await importFiles(files, onProgress, { signal }));
 		});
-		// A cancelled picker fires nothing at all on most browsers, so the
-		// promise would hang. Focus returning to the page is the only signal.
-		window.addEventListener('focus', () => setTimeout(() => {
-			if (!input.files?.length) finish({ added: 0, skipped: 0 });
-		}, 600), { once: true });
+
+		if ('cancel' in HTMLInputElement.prototype) {
+			// Chrome 113+, Safari 16.4+. Fires exactly when the picker is
+			// dismissed, which is the question being asked — unlike the focus
+			// timeout below, which asks "has a second gone by without a file?"
+			// and gets the wrong answer whenever the picker is slow.
+			input.addEventListener('cancel', () => finish({ added: 0, skipped: 0, cancelled: true }));
+		} else {
+			// Older Safari fires nothing at all on a cancelled picker, so the
+			// promise would hang. Focus returning to the page is the only signal
+			// there is.
+			window.addEventListener('focus', () => setTimeout(() => {
+				if (!input.files?.length) finish({ added: 0, skipped: 0, cancelled: true });
+			}, 600), { once: true });
+		}
 
 		input.click();
 	});

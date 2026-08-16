@@ -11,9 +11,15 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 import json
+import os
+import time
 import sqlite3
 import threading
 import uuid
+
+# Source marker for tracks that are files on this computer rather than
+# something to be resolved from the network.
+LOCAL_SOURCE = "local"
 
 
 def utc_now() -> str:
@@ -32,6 +38,20 @@ def loads_object(value: str | None) -> dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
+
+
+def loads_value(value: str | None, default: Any = None) -> Any:
+    """Parse a stored JSON value of any shape.
+
+    Settings are booleans, numbers and strings as often as objects, and
+    loads_object flattens all of those to {} — which would turn "fade is off"
+    into "fade is unset" on every read."""
+    if value is None:
+        return default
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
 
 
 def loads_list(value: str | None) -> list[Any]:
@@ -195,8 +215,36 @@ class MusicState:
         self._add_column(conn, "music_playlists", "rules_json", "rules_json TEXT NOT NULL DEFAULT '{}'")
         self._add_column(conn, "music_playlists", "artwork_key", "artwork_key TEXT NOT NULL DEFAULT ''")
 
+        # Files that live on this computer. `file_path` is the only part of a
+        # local track's identity that is allowed to move; `source_id` is opaque
+        # and assigned once (see upsert_local_track), so reorganising a music
+        # folder or retagging an album never re-creates the row and never drops
+        # it out of a playlist.
+        #
+        # `missing_since` rather than a delete: a scanner marks, it never
+        # removes. An external drive that is merely unplugged must cost a greyed
+        # out row, not a hole in every playlist that referenced it.
+        self._add_column(conn, "music_tracks", "file_path", "file_path TEXT NOT NULL DEFAULT ''")
+        self._add_column(conn, "music_tracks", "file_size", "file_size INTEGER NOT NULL DEFAULT 0")
+        self._add_column(conn, "music_tracks", "file_mtime", "file_mtime REAL NOT NULL DEFAULT 0")
+        self._add_column(conn, "music_tracks", "content_type", "content_type TEXT NOT NULL DEFAULT ''")
+        self._add_column(conn, "music_tracks", "missing_since", "missing_since TEXT NOT NULL DEFAULT ''")
+
         conn.executescript(
             """
+            /* Partial: only local tracks carry a path, and they are a minority
+               of a library dominated by network sources. */
+            CREATE INDEX IF NOT EXISTS idx_music_tracks_file_path
+                ON music_tracks(file_path) WHERE file_path <> '';
+
+            CREATE TABLE IF NOT EXISTS music_local_roots (
+                path         TEXT PRIMARY KEY,
+                added_at     TEXT NOT NULL,
+                last_scan_at TEXT NOT NULL DEFAULT '',
+                last_error   TEXT NOT NULL DEFAULT '',
+                track_count  INTEGER NOT NULL DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS music_playlist_folders (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -228,8 +276,53 @@ class MusicState:
             );
             CREATE INDEX IF NOT EXISTS idx_music_followed_artists_followed
                 ON music_followed_artists(followed_at DESC);
+
+            /* Small singleton records that outlive a process. The playback
+               target lives here so "where is this playing" survives a restart
+               instead of being re-guessed from whichever window spoke last. */
+            CREATE TABLE IF NOT EXISTS music_kv (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL DEFAULT '{}',
+                revision INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
+            /* Phones this computer knows. `follows_desktop` was memory-only,
+               which is the only reason evicting an idle device log used to lose
+               a phone's linked mode. */
+            CREATE TABLE IF NOT EXISTS music_devices (
+                device_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT 'phone',
+                follows_desktop INTEGER NOT NULL DEFAULT 0,
+                last_seen_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_music_devices_last_seen
+                ON music_devices(last_seen_at DESC);
+
+            /* Per-phone settings, stamped per key rather than per blob: two
+               devices editing different keys must both survive the merge. */
+            CREATE TABLE IF NOT EXISTS music_device_settings (
+                device_id TEXT NOT NULL REFERENCES music_devices(device_id) ON DELETE CASCADE,
+                key TEXT NOT NULL,
+                value_json TEXT NOT NULL DEFAULT 'null',
+                updated_ms INTEGER NOT NULL DEFAULT 0,
+                origin TEXT NOT NULL DEFAULT 'phone',
+                PRIMARY KEY (device_id, key)
+            );
             """
         )
+
+        # After the script above, because that is where music_devices is
+        # created and ALTER TABLE cannot precede it on a fresh database.
+        #
+        # What each paired phone reported it can decode, from its own
+        # `canPlayType`. Kept on the device row rather than in
+        # music_device_settings, because that table round-trips to the phone as
+        # its own preferences and this is the computer's note *about* the phone.
+        self._add_column(conn, "music_devices", "codec_support_json",
+                         "codec_support_json TEXT NOT NULL DEFAULT '{}'")
 
     # ── Row helpers ──────────────────────────────────────────────────────────
 
@@ -972,6 +1065,19 @@ class MusicState:
             ).fetchall()
         return [self._track_row(row) for row in rows]
 
+    def get_track(self, track_id: str) -> dict[str, Any] | None:
+        """One track by primary key, or None.
+
+        The audio route needs this: a local grant names a ``track_id`` and
+        nothing else, so the path on disk is looked up here rather than carried
+        in the capability the phone holds.
+        """
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM music_tracks WHERE id = ?", (str(track_id or "").strip(),)
+            ).fetchone()
+        return self._track_row(row) if row is not None else None
+
     # Queue sessions ------------------------------------------------------
 
     def _queue_session_row(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -1077,8 +1183,502 @@ class MusicState:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def music_library_index(self, *, limit: int = 500) -> dict[str, Any]:
+    # ── Playback target, devices, per-device settings ────────────────────────
+    #
+    # Which surface owns the audio right now. Before this, nothing recorded it:
+    # the desktop kept a write-only field no event ever updated, the phone kept
+    # a boolean, and the wire carried a two-value string stamped "desktop" by
+    # default. That is why pause did not cross devices and why every screen
+    # claimed the computer was playing regardless of what was true.
+
+    PLAYBACK_TARGET_KEY = "playback_target"
+
+    _DEFAULT_TARGET = {
+        "owner_kind": "desktop",
+        "owner_device_id": "desktop",
+        "owner_name": "",
+        "sink_id": "",
+        "sink_name": "",
+        "since_ms": 0,
+        "reason": "restore",
+    }
+
+    def get_playback_target(self) -> dict[str, Any]:
+        """The current owner of playback, rehydrated across restarts."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT value_json, revision FROM music_kv WHERE key = ?",
+                (self.PLAYBACK_TARGET_KEY,),
+            ).fetchone()
+        if row is None:
+            return {**self._DEFAULT_TARGET, "revision": 0}
+        target = {**self._DEFAULT_TARGET, **loads_object(row["value_json"])}
+        target["revision"] = int(row["revision"] or 0)
+        return target
+
+    def set_playback_target(self, patch: dict[str, Any], *,
+                            expected_revision: int | None = None) -> dict[str, Any]:
+        """Move ownership. The single writer, so two phones claiming at once
+        resolve to one winner rather than to a torn record.
+
+        `expected_revision` lets a caller refuse to overwrite a decision it has
+        not seen; a mismatch raises rather than silently clobbering."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT value_json, revision FROM music_kv WHERE key = ?",
+                (self.PLAYBACK_TARGET_KEY,),
+            ).fetchone()
+            current = {**self._DEFAULT_TARGET, **(loads_object(row["value_json"]) if row else {})}
+            revision = int(row["revision"] or 0) if row else 0
+            if expected_revision is not None and expected_revision != revision:
+                raise ValueError("playback target changed since it was read")
+
+            merged = {**current, **{k: v for k, v in patch.items() if k != "revision"}}
+            owner_changed = (
+                merged.get("owner_device_id") != current.get("owner_device_id")
+                or merged.get("owner_kind") != current.get("owner_kind")
+            )
+            # Ownership start, not "last touched": changing which speaker the
+            # desktop uses is not a handoff and must not reset it.
+            if owner_changed or not current.get("since_ms"):
+                merged["since_ms"] = int(time.time() * 1000)
+
+            revision += 1
+            conn.execute(
+                "INSERT INTO music_kv (key, value_json, revision, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, "
+                "revision = excluded.revision, updated_at = excluded.updated_at",
+                (self.PLAYBACK_TARGET_KEY, json.dumps(merged), revision, utc_now()),
+            )
+        return {**merged, "revision": revision}
+
+    def upsert_device(self, device_id: str, *, name: str = "", kind: str = "phone") -> None:
+        """Record a phone, and stamp that we just heard from it."""
+        device_id = str(device_id or "").strip()
+        if not device_id:
+            return
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO music_devices (device_id, name, kind, last_seen_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(device_id) DO UPDATE SET last_seen_at = excluded.last_seen_at, "
+                "name = CASE WHEN excluded.name <> '' THEN excluded.name ELSE music_devices.name END",
+                (device_id, str(name or ""), str(kind or "phone"), now, now),
+            )
+
+    def set_device_follow(self, device_id: str, follows: bool) -> None:
+        self.upsert_device(device_id)
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE music_devices SET follows_desktop = ? WHERE device_id = ?",
+                (1 if follows else 0, str(device_id)),
+            )
+
+    def list_devices(self) -> list[dict[str, Any]]:
+        """Known phones, most recently seen first.
+
+        Used to turn an owner's device id into the name a person recognises,
+        so "playing on" can say "Lennon's iPhone" instead of a hex string."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT device_id, name, kind, follows_desktop, last_seen_at "
+                "FROM music_devices ORDER BY last_seen_at DESC"
+            ).fetchall()
+        return [
+            {"device_id": row["device_id"], "name": row["name"], "kind": row["kind"],
+             "follows_desktop": bool(row["follows_desktop"]), "last_seen_at": row["last_seen_at"]}
+            for row in rows
+        ]
+
+    def device_follow(self, device_id: str) -> bool:
+        """Whether this phone asked to mirror the computer.
+
+        Read back on log creation, which is what makes evicting an idle device
+        log cost a resync rather than silently unlinking a phone."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT follows_desktop FROM music_devices WHERE device_id = ?",
+                (str(device_id),),
+            ).fetchone()
+        return bool(row and row["follows_desktop"])
+
+    def merge_device_settings(self, device_id: str, entries: list[dict[str, Any]], *,
+                              origin: str = "phone") -> list[dict[str, Any]]:
+        """Last-write-wins per key, never per blob.
+
+        Prefs travel as one JSON object, so a blob revision would force
+        discarding one side whenever two devices edited different keys. Per-key
+        stamps make the merge commutative and both edits survive.
+
+        This computer's clock arbitrates: a stamp that is absent or implausibly
+        far in the future is replaced, so a phone with a wrong date cannot pin a
+        key forever."""
+        self.upsert_device(device_id)
+        now_ms = int(time.time() * 1000)
+        horizon = now_ms + 300_000
+        with self.connect() as conn:
+            for entry in entries or []:
+                key = str(entry.get("key") or "").strip()
+                if not key:
+                    continue
+                stamp = int(entry.get("updated_ms") or 0)
+                if stamp <= 0 or stamp > horizon:
+                    stamp = now_ms
+                conn.execute(
+                    "INSERT INTO music_device_settings (device_id, key, value_json, updated_ms, origin) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(device_id, key) DO UPDATE SET "
+                    "value_json = excluded.value_json, updated_ms = excluded.updated_ms, "
+                    "origin = excluded.origin "
+                    "WHERE excluded.updated_ms >= music_device_settings.updated_ms",
+                    (str(device_id), key, json.dumps(entry.get("value")), stamp, str(origin)),
+                )
+        return self.read_device_settings(device_id)
+
+    def read_device_settings(self, device_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT key, value_json, updated_ms FROM music_device_settings "
+                "WHERE device_id = ? ORDER BY key",
+                (str(device_id),),
+            ).fetchall()
+        return [
+            {"key": row["key"], "value": loads_value(row["value_json"]),
+             "updated_ms": int(row["updated_ms"] or 0)}
+            for row in rows
+        ]
+
+    # ── Local file library ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _norm_mtime(value: Any) -> float:
+        """Modification times, rounded so two readings of one file agree.
+
+        Move repair matches on ``(size, mtime, basename)``, which only works if
+        the stored number is reproducible. Filesystems disagree about how many
+        digits of sub-second precision they keep, so everything is pinned to
+        milliseconds on the way in and on the way back out.
+        """
+        try:
+            return round(float(value or 0.0), 3)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def get_local_track(self, *, track_id: str = "", source_id: str = "") -> dict[str, Any] | None:
+        """A local row by primary key or by its opaque source id.
+
+        Both lookups are index-backed — the PK and the existing
+        ``UNIQUE(source, source_id)`` — so this stays constant time on a library
+        of any size.
+        """
+        track_id = str(track_id or "").strip()
+        source_id = str(source_id or "").strip()
+        with self.connect() as conn:
+            row = None
+            if track_id:
+                row = conn.execute(
+                    "SELECT * FROM music_tracks WHERE id = ? AND source = ?",
+                    (track_id, LOCAL_SOURCE),
+                ).fetchone()
+            if row is None and source_id:
+                row = conn.execute(
+                    "SELECT * FROM music_tracks WHERE source = ? AND source_id = ?",
+                    (LOCAL_SOURCE, source_id),
+                ).fetchone()
+        return self._track_row(row) if row is not None else None
+
+    def list_local_roots(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM music_local_roots ORDER BY path ASC").fetchall()
+        return [dict(row) for row in rows]
+
+    def add_local_root(self, path: str) -> dict[str, Any]:
+        cleaned = str(path or "").strip()
+        if not cleaned:
+            raise ValueError("a folder is required")
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO music_local_roots (path, added_at) VALUES (?, ?) "
+                "ON CONFLICT(path) DO NOTHING",
+                (cleaned, utc_now()),
+            )
+            row = conn.execute("SELECT * FROM music_local_roots WHERE path = ?", (cleaned,)).fetchone()
+        return dict(row)
+
+    def remove_local_root(self, path: str) -> bool:
+        """Stop watching a folder.
+
+        Tracks scanned out of it are deliberately left in place. Forgetting
+        where music came from is not the same as deciding it never existed, and
+        a playlist must not lose entries because somebody tidied a preferences
+        list.
+        """
+        with self.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM music_local_roots WHERE path = ?", (str(path or "").strip(),)
+            )
+            return bool(cur.rowcount)
+
+    def record_local_root_scan(self, path: str, *, last_error: str = "",
+                               track_count: int = 0) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE music_local_roots SET last_scan_at = ?, last_error = ?, track_count = ? "
+                "WHERE path = ?",
+                (utc_now(), str(last_error or "")[:400], max(0, int(track_count or 0)),
+                 str(path or "").strip()),
+            )
+
+    def upsert_local_track(
+        self,
+        *,
+        file_path: str,
+        file_size: int,
+        file_mtime: float,
+        content_type: str = "",
+        title: str,
+        artist: str = "",
+        album: str = "",
+        duration_s: float | None = None,
+        thumbnail_url: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record one file, reusing the row it already has wherever possible.
+
+        ``source_id`` is a fresh uuid assigned the first time a file is seen and
+        never derived from anything about the file. That is the whole point:
+        a path-derived id duplicates the library the moment somebody
+        reorganises a music folder, and a ``name|size|mtime`` id (which is what
+        the phone uses, ``pwa/src/local.js:179``) duplicates it on every retag.
+        Playlists reference ``music_tracks.id``, so either would quietly empty
+        them.
+
+        Matching therefore happens explicitly, in two steps:
+
+        1. by ``file_path`` — the ordinary case, including a retag, which
+           changes the tags and the mtime but not where the file is;
+        2. failing that, by ``(file_size, file_mtime, basename)`` against rows
+           already marked missing — a *move repair* that rewrites ``file_path``
+           in place, so a reorganised folder costs nothing.
+
+        Returns the row with an extra ``local_action`` of ``added`` / ``moved``
+        / ``updated`` so a scan can report what it actually did.
+        """
+        cleaned_path = str(file_path or "").strip()
+        if not cleaned_path:
+            raise ValueError("file_path is required")
+        cleaned_title = str(title or "").strip()[:400]
+        if not cleaned_title:
+            raise ValueError("track title is required")
+        size = max(0, int(file_size or 0))
+        mtime = self._norm_mtime(file_mtime)
+        basename = os.path.basename(cleaned_path)
+        payload = dict(metadata or {})
+        if album:
+            payload.setdefault("album_name", album)
+            payload.setdefault("album", {"name": album})
+        payload.setdefault("file_name", basename)
+        now = utc_now()
+
+        with self.connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM music_tracks WHERE source = ? AND file_path = ?",
+                (LOCAL_SOURCE, cleaned_path),
+            ).fetchone()
+            action = "updated"
+            if existing is None:
+                # Move repair. Restricted to rows a scan has already given up
+                # on, so a plain copy of a file that is still where it was does
+                # not steal the original's identity.
+                candidates = conn.execute(
+                    "SELECT * FROM music_tracks WHERE source = ? AND missing_since <> '' "
+                    "AND file_size = ? AND file_mtime = ?",
+                    (LOCAL_SOURCE, size, mtime),
+                ).fetchall()
+                existing = next(
+                    (row for row in candidates
+                     if os.path.normcase(os.path.basename(str(row["file_path"] or "")))
+                     == os.path.normcase(basename)),
+                    None,
+                )
+                if existing is not None:
+                    action = "moved"
+
+            if existing is None:
+                action = "added"
+                track_id = "trk_" + uuid.uuid4().hex
+                conn.execute(
+                    """
+                    INSERT INTO music_tracks
+                        (id, source, source_id, title, artist, duration_s, thumbnail_url,
+                         metadata_json, added_at, file_path, file_size, file_mtime,
+                         content_type, missing_since)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+                    """,
+                    (track_id, LOCAL_SOURCE, uuid.uuid4().hex, cleaned_title,
+                     str(artist or "")[:200], duration_s, str(thumbnail_url or "")[:600],
+                     dumps(payload), now, cleaned_path, size, mtime, str(content_type or "")[:80]),
+                )
+            else:
+                track_id = str(existing["id"])
+                conn.execute(
+                    """
+                    UPDATE music_tracks SET title = ?, artist = ?, duration_s = ?,
+                        thumbnail_url = ?, metadata_json = ?, file_path = ?, file_size = ?,
+                        file_mtime = ?, content_type = ?, missing_since = ''
+                    WHERE id = ?
+                    """,
+                    (cleaned_title, str(artist or "")[:200], duration_s,
+                     str(thumbnail_url or "")[:600], dumps(payload), cleaned_path, size,
+                     mtime, str(content_type or "")[:80], track_id),
+                )
+            row = conn.execute("SELECT * FROM music_tracks WHERE id = ?", (track_id,)).fetchone()
+        item = self._track_row(row)
+        item["local_action"] = action
+        return item
+
+    def unchanged_local_paths(self, root: str, stats: dict[str, tuple[int, float]]) -> set[str]:
+        """Which of these files the library already has, byte-identical.
+
+        One query for a whole root rather than one per file, and the comparison
+        happens here because this is where the rounding rule for ``file_mtime``
+        lives — a second copy of it somewhere else is a bug waiting for a
+        filesystem with different precision.
+
+        A row already marked missing is never reported as unchanged: its file
+        has come back, and that has to travel through the upsert so the mark
+        gets cleared.
+        """
+        # normcase'd throughout: a no-op on POSIX, but on Windows this is what
+        # keeps a rescan from re-reading every file just because a path came
+        # back cased differently than the one already stored for it (a mapped
+        # drive, a reparse point, or simply Windows' own realpath).
+        prefix = os.path.normcase(str(root or "").rstrip(os.sep) + os.sep)
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT file_path, file_size, file_mtime FROM music_tracks "
+                "WHERE source = ? AND missing_since = '' AND file_path <> ''",
+                (LOCAL_SOURCE,),
+            ).fetchall()
+        known = {
+            os.path.normcase(str(row["file_path"])):
+                (int(row["file_size"] or 0), self._norm_mtime(row["file_mtime"]))
+            for row in rows
+            if os.path.normcase(str(row["file_path"])).startswith(prefix)
+        }
+        return {
+            path for path, (size, mtime) in (stats or {}).items()
+            if known.get(os.path.normcase(path)) == (int(size), self._norm_mtime(mtime))
+        }
+
+    def mark_local_tracks_missing(self, root: str, seen_paths: Any) -> int:
+        """Stamp every local track under ``root`` this scan did not encounter.
+
+        Deliberately a stamp and not a delete. The commonest reason a file
+        stops appearing is that its drive is not plugged in, and losing a
+        playlist to that would be an unforgivable trade for a tidier table.
+        """
+        cleaned_root = str(root or "").rstrip(os.sep)
+        if not cleaned_root:
+            return 0
+        # normcase'd for the same reason as unchanged_local_paths above: on
+        # Windows a path that is genuinely still there must not be mistaken
+        # for missing merely because of a case difference.
+        prefix = os.path.normcase(cleaned_root + os.sep)
+        seen = {os.path.normcase(str(path)) for path in (seen_paths or ())}
+        stamp = utc_now()
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, file_path FROM music_tracks "
+                "WHERE source = ? AND missing_since = '' AND file_path <> ''",
+                (LOCAL_SOURCE,),
+            ).fetchall()
+            gone = [
+                (stamp, str(row["id"])) for row in rows
+                if os.path.normcase(str(row["file_path"])).startswith(prefix)
+                and os.path.normcase(str(row["file_path"])) not in seen
+            ]
+            if gone:
+                conn.executemany(
+                    "UPDATE music_tracks SET missing_since = ? WHERE id = ?", gone
+                )
+        return len(gone)
+
+    def mark_track_missing(self, track_id: str) -> bool:
+        """Note that a file was not there when somebody tried to play it.
+
+        The audio route calls this on a 404 so the library stops claiming a
+        track is available before the next scan gets round to noticing.
+        """
+        with self.connect() as conn:
+            cur = conn.execute(
+                "UPDATE music_tracks SET missing_since = ? "
+                "WHERE id = ? AND source = ? AND missing_since = ''",
+                (utc_now(), str(track_id or "").strip(), LOCAL_SOURCE),
+            )
+            return bool(cur.rowcount)
+
+    def local_library_status(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, "
+                "COALESCE(SUM(CASE WHEN missing_since <> '' THEN 1 ELSE 0 END), 0) AS missing, "
+                "COALESCE(SUM(file_size), 0) AS bytes "
+                "FROM music_tracks WHERE source = ?",
+                (LOCAL_SOURCE,),
+            ).fetchone()
+        return {
+            "roots": self.list_local_roots(),
+            "tracks": int(row["total"] or 0),
+            "missing": int(row["missing"] or 0),
+            "bytes": int(row["bytes"] or 0),
+        }
+
+    def set_device_codecs(self, device_id: str, support: Any) -> dict[str, bool]:
+        """Remember what one phone said it can decode."""
+        cleaned = {
+            str(key).strip().lower()[:80]: bool(value)
+            for key, value in (support or {}).items()
+            if str(key or "").strip()
+        }
+        device_id = str(device_id or "").strip()
+        if not device_id:
+            return {}
+        self.upsert_device(device_id)
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE music_devices SET codec_support_json = ? WHERE device_id = ?",
+                (dumps(cleaned), device_id),
+            )
+        return cleaned
+
+    def device_codecs(self, device_id: str) -> dict[str, bool]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT codec_support_json FROM music_devices WHERE device_id = ?",
+                (str(device_id or "").strip(),),
+            ).fetchone()
+        stored = loads_object(row["codec_support_json"]) if row is not None else {}
+        return {str(key): bool(value) for key, value in stored.items()}
+
+    def music_library_index(self, *, limit: int = 500, device_id: str = "") -> dict[str, Any]:
         tracks = self.list_music_tracks(limit=limit)
+        # iOS Safari plays FLAC in an <audio> element but not Ogg or Opus, and a
+        # library the computer can play perfectly is not the same library the
+        # phone can. Marking is per requesting device, so the mark travels with
+        # the id of the device it describes; a phone receiving another device's
+        # fan-out can tell that these marks are not about it.
+        codecs = self.device_codecs(device_id) if device_id else {}
+        if codecs:
+            for track in tracks:
+                if str(track.get("source") or "") != LOCAL_SOURCE:
+                    continue
+                content_type = str(track.get("content_type") or "").strip().lower()
+                if not content_type or codecs.get(content_type, True):
+                    continue
+                track["playable_on_device"] = False
+                track["unplayable_reason"] = "This computer can play it; your phone can't."
         artists: dict[str, dict[str, Any]] = {}
         albums: dict[str, dict[str, Any]] = {}
         for track in tracks:
@@ -1133,4 +1733,7 @@ class MusicState:
             "artists": sorted(artists.values(), key=lambda a: (-int(a.get("track_count") or 0), str(a.get("name") or "").lower())),
             "albums": sorted(albums.values(), key=lambda a: (str(a.get("artist") or "").lower(), str(a.get("title") or "").lower())),
             "followed_artists": self.list_followed_artists(),
+            # Whose codec support the playability marks above describe. Empty
+            # when nothing was marked, so a client never has to guess.
+            "capabilities_device_id": str(device_id or "") if codecs else "",
         }

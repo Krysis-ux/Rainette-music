@@ -102,6 +102,85 @@ class LinkedSessionTests(unittest.TestCase):
         self.assertRegex(sync, r"output_device_id \|\| 'desktop'\) !== 'desktop'\) return")
 
 
+class DesktopToPhoneTransportTests(unittest.TestCase):
+    """The computer's transport controls reaching a phone that owns the audio.
+
+    This did not work in either direction of the problem: the broker returned no
+    recipients for a desktop-originated transport command, and the phone had no
+    handler for one even if it had arrived.
+    """
+
+    def setUp(self):
+        self.broker = server.CompanionSyncBroker()
+        for device in ("phone-a", "phone-b"):
+            self.broker.read_after(device, 0, 0)
+
+    def events_for(self, device_id):
+        return [item["message"] for item in self.broker.read_after(device_id, 0, 0)["events"]]
+
+    def test_the_desktop_can_pause_the_phone_that_owns_playback(self):
+        self.broker.publish(
+            {"type": "music_remote_control", "action": "pause", "target_device_id": "phone-a"}, "",
+        )
+
+        self.assertEqual([m["action"] for m in self.events_for("phone-a")], ["pause"])
+        # And only that phone. Someone else's music does not stop.
+        self.assertEqual(self.events_for("phone-b"), [])
+
+    def test_a_device_never_receives_its_own_transport_back(self):
+        """`next` is not idempotent; a returning echo would skip two tracks."""
+        self.broker.publish(
+            {"type": "music_remote_control", "action": "next", "target_device_id": "phone-a"},
+            "phone-a",
+        )
+
+        self.assertEqual(self.events_for("phone-a"), [])
+
+    def test_transport_aimed_at_the_desktop_does_not_disturb_phones(self):
+        # The desktop acts on this over its own socket. Only a phone that asked
+        # to mirror the computer has any use for a copy.
+        self.broker.publish({"type": "music_remote_control", "action": "pause"}, "phone-a")
+
+        self.assertEqual(self.events_for("phone-a"), [])
+        self.assertEqual(self.events_for("phone-b"), [])
+
+    def test_a_linked_phone_still_sees_desktop_transport(self):
+        self.broker.read_after("phone-a", 0, 0, True)
+
+        self.broker.publish({"type": "music_remote_control", "action": "pause"}, "")
+
+        self.assertEqual(len(self.events_for("phone-a")), 1)
+        self.assertEqual(self.events_for("phone-b"), [])
+
+    def test_the_phone_client_acts_on_remote_transport(self):
+        """Routing is delivery, not action. The client has to answer too."""
+        sync = (ROOT / "pwa" / "src" / "sync.js").read_text(encoding="utf-8")
+        self.assertIn("case 'music_remote_control':", sync)
+        self.assertIn("applyRemoteVerb", sync)
+
+        player = (ROOT / "pwa" / "src" / "player.js").read_text(encoding="utf-8")
+        self.assertIn("export async function applyRemoteVerb", player)
+        # Delivery is not authorisation: a verb must be addressed at this phone
+        # and must not be its own echo.
+        self.assertIn("target_device_id", player)
+        self.assertIn("origin_device_id", player)
+
+    def test_the_desktop_states_intent_rather_than_flipping(self):
+        """`toggle` against a stale `playing` flag does the opposite of its icon."""
+        shell = (ROOT / "web" / "music_shell.js").read_text(encoding="utf-8")
+        self.assertRegex(shell, r"\? 'pause' : 'play'")
+        # Derived from what the button is *showing*, not from `playing` alone:
+        # a loading row shows a pause affordance while `playing` is still false.
+        self.assertRegex(shell, r"state === 'loading'")
+
+        mini = (ROOT / "web" / "miniplayer.js").read_text(encoding="utf-8")
+        self.assertIn("a === 'play'", mini)
+        self.assertIn("a === 'pause'", mini)
+
+    def test_a_phone_cannot_claim_to_be_another_device(self):
+        self.assertIn("music_remote_control", server._DEVICE_STAMPED_TYPES)
+
+
 class AudioOutputEnumerationTests(unittest.TestCase):
     """A connected Bluetooth speaker should be nameable, not anonymous."""
 
@@ -171,6 +250,209 @@ class PhoneClientShellTests(unittest.TestCase):
         # offline shell rather than a partial one.
         worker = (ROOT / "pwa" / "sw.js").read_text(encoding="utf-8")
         self.assertIn(".catch(() => {})", worker)
+
+
+class PlaybackTargetBroadcastTests(unittest.TestCase):
+    """Every surface has to be able to name the same owner.
+
+    This is the difference between an app that knows where the sound is and one
+    that guesses: a phone showing "playing on the computer" must stop saying so
+    the moment another device takes over, and it cannot learn that from its own
+    session's events.
+    """
+
+    def setUp(self):
+        self.broker = server.CompanionSyncBroker()
+        for device in ("phone-a", "phone-b"):
+            self.broker.read_after(device, 0, 0)
+
+    def events_for(self, device_id):
+        return [item["message"] for item in self.broker.read_after(device_id, 0, 0)["events"]]
+
+    def test_the_target_reaches_every_paired_device(self):
+        self.broker.publish({"type": "music_playback_target", "owner_kind": "phone",
+                             "owner_device_id": "phone-a", "revision": 3}, "")
+
+        for device in ("phone-a", "phone-b"):
+            with self.subTest(device=device):
+                self.assertEqual([m["type"] for m in self.events_for(device)],
+                                 ["music_playback_target"])
+
+    def test_it_fans_out_without_touching_the_recipient_rules(self):
+        # It is in _SYNC_TYPES and in neither of the narrower sets, so it falls
+        # through to the catch-all. Anything else would have meant special-casing
+        # the routing that the session and transfer types depend on.
+        self.assertIn("music_playback_target", server.CompanionSyncBroker._SYNC_TYPES)
+        self.assertNotIn("music_playback_target", server.CompanionSyncBroker._SESSION_TYPES)
+        self.assertNotIn("music_playback_target", server.CompanionSyncBroker._TARGETED_TYPES)
+
+    def test_a_phone_cannot_claim_playback_for_another_device(self):
+        self.assertIn("music_playback_target_set", server._DEVICE_STAMPED_TYPES)
+
+    def test_the_claim_does_not_block_on_a_reply(self):
+        # The authoritative answer arrives as the broadcast every device already
+        # receives, so waiting on the response would only delay it.
+        self.assertIn("music_playback_target_set", server.COMPANION_ONE_WAY_COMMAND_TYPES)
+
+    def test_both_commands_are_reachable_from_a_phone(self):
+        for command in ("music_playback_target_get", "music_playback_target_set"):
+            with self.subTest(command=command):
+                self.assertIn(command, server.COMPANION_COMMAND_TYPES)
+                self.assertIn(command, music_bridge.DISPATCH)
+
+    def test_the_clients_gate_on_the_revision(self):
+        # A reconnect drains a backlog, so an older record can arrive after a
+        # newer one and would otherwise win simply by arriving last.
+        target = (ROOT / "pwa" / "src" / "target.js").read_text(encoding="utf-8")
+        self.assertIn("revision <= Number(state.playbackTarget?.revision || 0)", target)
+
+        desktop = (ROOT / "web" / "rainette_music.js").read_text(encoding="utf-8")
+        self.assertIn("revision <= (pageState.output.revision || 0)", desktop)
+
+    def test_starting_playback_is_itself_the_claim(self):
+        # There is nothing to hand over, so it needs no handshake — which is why
+        # pressing play on the phone works without a transfer first.
+        player = (ROOT / "pwa" / "src" / "player.js").read_text(encoding="utf-8")
+        self.assertIn("claim_by_play", player)
+
+    def test_ownership_moves_only_once_the_target_has_the_track(self):
+        # A failed handoff must leave the source playing rather than pausing
+        # into silence on the strength of a transfer that did not happen.
+        bridge = (ROOT / "music_bridge.py").read_text(encoding="utf-8")
+        transfer_ack = bridge.index("def cmd_music_output_transfer_result")
+        following = bridge[transfer_ack:transfer_ack + 2000]
+        self.assertIn('reason="transfer_ack"', following)
+        self.assertIn('if payload["ok"]', following)
+
+
+class DeviceSettingsSyncTests(unittest.TestCase):
+    """A phone's settings follow it back, and go nowhere else."""
+
+    def setUp(self):
+        self.broker = server.CompanionSyncBroker()
+        for device in ("phone-a", "phone-b"):
+            self.broker.read_after(device, 0, 0)
+
+    def events_for(self, device_id):
+        return [item["message"] for item in self.broker.read_after(device_id, 0, 0)["events"]]
+
+    def test_one_phones_settings_never_reach_another(self):
+        # The result is deliberately absent from _SYNC_TYPES, so it reaches the
+        # HTTP caller and this computer's own windows and stops there. Anything
+        # else would broadcast one person's theme to every paired device.
+        self.assertNotIn("music_device_settings_result", server.CompanionSyncBroker._SYNC_TYPES)
+
+        self.broker.publish({"type": "music_device_settings_result", "device_id": "phone-a",
+                             "entries": [{"key": "theme", "value": "mono"}]}, "phone-a")
+        self.assertEqual(self.events_for("phone-a"), [])
+        self.assertEqual(self.events_for("phone-b"), [])
+
+    def test_a_phone_cannot_read_or_write_as_another_device(self):
+        for command in ("music_device_settings_get", "music_device_settings_put"):
+            with self.subTest(command=command):
+                self.assertIn(command, server._DEVICE_STAMPED_TYPES)
+                self.assertIn(command, server.COMPANION_COMMAND_TYPES)
+                self.assertIn(command, music_bridge.DISPATCH)
+
+    def test_volume_and_linked_mode_are_left_out_on_purpose(self):
+        sync = (ROOT / "pwa" / "src" / "prefsync.js").read_text(encoding="utf-8")
+        # volume changes many times a minute; linked mode already has a single
+        # authoritative home in music_devices, and a second writer for one fact
+        # is the defect this whole area exists to remove.
+        self.assertNotIn("STORAGE.volume", sync)
+        self.assertNotIn("STORAGE.linked", sync)
+
+    def test_the_merge_is_per_key_rather_than_per_blob(self):
+        sync = (ROOT / "pwa" / "src" / "prefsync.js").read_text(encoding="utf-8")
+        self.assertIn("updated_ms", sync)
+        # And the computer's clock arbitrates, so a phone with a wrong date
+        # cannot pin a key by claiming a time far in the future.
+        self.assertIn("absorbServerMtimes", sync)
+
+    def test_prefs_stays_a_leaf_module(self):
+        # prefsync imports prefs, so prefs must not import back; a callback is
+        # what keeps the pair acyclic.
+        prefs = (ROOT / "pwa" / "src" / "prefs.js").read_text(encoding="utf-8")
+        # An actual import, not the word in the comment that explains why there
+        # isn't one.
+        self.assertNotRegex(prefs, r"^\s*import\s.*prefsync\.js")
+        self.assertIn("export function observePrefs", prefs)
+
+
+class SessionSurvivalTests(unittest.TestCase):
+    """A phone that slept had to be restarted by hand to come back.
+
+    There was no visibilitychange, pageshow or freeze handler anywhere in the
+    client, and the only reconnect was a flat retry with no backoff.
+    """
+
+    def setUp(self):
+        self.connection = (ROOT / "pwa" / "src" / "connection.js").read_text(encoding="utf-8")
+        self.sync = (ROOT / "pwa" / "src" / "sync.js").read_text(encoding="utf-8")
+        self.app = (ROOT / "pwa" / "app.js").read_text(encoding="utf-8")
+
+    def test_every_way_a_phone_wakes_up_is_handled(self):
+        for event in ("visibilitychange", "pageshow", "freeze", "resume", "online"):
+            with self.subTest(event=event):
+                self.assertIn(event, self.connection)
+
+    def test_a_restored_bfcache_page_is_treated_as_a_long_absence(self):
+        # Nothing else fires on a back-forward restore, so the session looks
+        # healthy while its poll is long dead.
+        self.assertIn("event.persisted", self.connection)
+
+    def test_reconnect_backs_off_with_jitter_and_a_cap(self):
+        self.assertIn("export function backoffDelay", self.connection)
+        self.assertIn("CAP_MS", self.connection)
+        self.assertIn("Math.random()", self.connection)
+        # The flat retry is gone.
+        self.assertNotIn("1800", self.sync)
+        self.assertIn("backoffDelay(attempt)", self.sync)
+
+    def test_a_successful_poll_refills_the_backoff(self):
+        # Otherwise one long outage leaves every later reconnect slow.
+        self.assertIn("attempt = 0", self.sync)
+
+    def test_the_watch_is_actually_installed(self):
+        self.assertIn("startConnectionWatch()", self.app)
+        self.assertIn("restartEventLoop", self.app)
+
+
+class RecentSessionsTests(unittest.TestCase):
+    """Reconnecting to a computer whose tunnel address rotated, without a rescan."""
+
+    def setUp(self):
+        self.sessions = (ROOT / "pwa" / "src" / "sessions.js").read_text(encoding="utf-8")
+        self.app = (ROOT / "pwa" / "app.js").read_text(encoding="utf-8")
+        self.state = (ROOT / "pwa" / "src" / "state.js").read_text(encoding="utf-8")
+
+    def test_the_list_is_browser_local_only(self):
+        # Per-browser by construction, so one user's list can never become
+        # another's, and none of it is ever uploaded.
+        self.assertIn("rainette.pwa.sessions", self.state)
+        self.assertNotIn("fetch(", self.sessions)
+        self.assertNotIn("command(", self.sessions)
+
+    def test_credentials_are_kept_out_of_the_session_rows(self):
+        # The rows get read, filtered and sorted; keeping tokens in a separate
+        # map means handling them cannot leak one.
+        self.assertIn("rainette.pwa.tokens", self.state)
+        self.assertIn("token_present", self.sessions)
+
+    def test_an_unreachable_computer_is_marked_not_deleted(self):
+        # A rotating Quick Tunnel hostname is the normal case, not a broken
+        # pairing; deleting the credential would turn a moved computer into a
+        # full re-pair.
+        self.assertIn("markSessionStale", self.sessions)
+
+    def test_the_probe_can_re_test_the_address_it_already_has(self):
+        # adoptEndpoint short-circuited when the endpoint was unchanged, which
+        # is exactly the case when only the token has been swapped in.
+        self.assertRegex(self.app, r"adoptEndpoint\(endpoint, \{ force = false \} = \{\}\)")
+        self.assertIn("if (!force && endpoint === state.endpoint) return false;", self.app)
+
+    def test_disconnect_clears_the_address_book(self):
+        self.assertIn("forgetAllSessions()", self.app)
 
 
 if __name__ == "__main__":

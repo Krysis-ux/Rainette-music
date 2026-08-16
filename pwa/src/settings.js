@@ -12,11 +12,16 @@ import {
 	THEMES, ACCENTS, DEFAULTS, currentTheme, currentAccent,
 	applyTheme, applyAccent, pref, setPref, resetPrefs,
 } from './prefs.js';
-import { setVolume, volume as currentVolume, boostAvailable, VOLUME_MAX } from './audio.js';
+import { setVolume, volume as currentVolume, boostAvailable, resumeContext, VOLUME_MAX } from './audio.js';
+import { createSlider } from './slider.js';
 import { isLinked } from './player.js';
-import { pickFiles, localTrackCount, localBytes, formatBytes, clearLocalTracks } from './local.js';
+import {
+	pickFiles, importOne, localArtworkUrl,
+	localTrackCount, localBytes, formatBytes, clearLocalTracks,
+} from './local.js';
 import { downloadBackup, pickBackup, restoreBackup } from './backup.js';
 import { openImportPlaylist } from './import.js';
+import { command } from './bridge.js';
 
 /* ── Appearance ───────────────────────────────────────────────────────────*/
 
@@ -131,32 +136,42 @@ export function openPlaybackSettings({ onChanged } = {}) {
 			const volumeRow = el('div', 'settings-slider-row');
 			const volumeLabel = el('div', 'settings-slider-copy');
 			volumeLabel.append(el('b', '', 'Volume'), el('small', '', ''));
-			const slider = document.createElement('input');
-			slider.type = 'range';
-			slider.min = '0';
-			slider.max = String(Math.round(VOLUME_MAX * 100));
-			slider.step = '1';
-			slider.value = String(Math.round(currentVolume() * 100));
-			slider.setAttribute('aria-label', 'Volume');
 
-			const describeVolume = () => {
-				const percent = Number(slider.value);
+			const describeVolume = percent => {
 				const hint = volumeLabel.querySelector('small');
 				if (isLinked()) hint.textContent = `${percent}% on ${state.computerName || 'your computer'}`;
 				else if (percent > 100) hint.textContent = `${percent}% — boosted past this phone's normal maximum`;
 				else hint.textContent = `${percent}%`;
-				slider.setAttribute('aria-valuetext', `${percent}%`);
 			};
-			slider.addEventListener('input', async () => {
-				const applied = await setVolume(Number(slider.value) / 100);
-				if (Number(slider.value) > 100 && !boostAvailable() && !isLinked()) {
-					slider.value = String(Math.round(applied * 100));
+
+			const slider = createSlider({
+				min: 0,
+				max: Math.round(VOLUME_MAX * 100),
+				step: 1,
+				value: Math.round(currentVolume() * 100),
+				variant: 'volume',
+				label: 'Volume',
+				keyStep: 5,
+				boostAbove: 100,
+				format: percent => `${percent}%`,
+				// A suspended Web Audio context is silence with no error anywhere, and
+				// only a gesture may resume it. This is one.
+				onGrab: resumeContext,
+				onInput: percent => { describeVolume(percent); setVolume(percent / 100).catch(() => {}); },
+				// Checked once, on release. Reading boostAvailable() on every frame of
+				// a drag races ensureGraph() still building and snaps the thumb back
+				// mid-gesture — which is why the snap-back looked intermittent.
+				onCommit: async percent => {
+					const applied = await setVolume(percent / 100);
+					if (percent <= 100 || boostAvailable() || isLinked()) return;
+					slider.setValue(Math.round(applied * 100), 'force');
+					describeVolume(slider.value);
 					toast('Boost needs a newer Rainette on your computer.', { icon: 'volume' });
-				}
-				describeVolume();
+				},
 			});
-			describeVolume();
-			volumeRow.append(volumeLabel, slider);
+
+			describeVolume(slider.value);
+			volumeRow.append(volumeLabel, slider.root);
 			body.append(volumeRow);
 			body.append(el('p', 'catalog-note',
 				'Above 100% Rainette amplifies the signal itself, with a limiter after it so louder does not become distorted.'));
@@ -200,9 +215,201 @@ export function openPlaybackSettings({ onChanged } = {}) {
 	});
 }
 
-/* ── Files on this phone ──────────────────────────────────────────────────*/
+/* ── Files on this phone ──────────────────────────────────────────────────
+ *
+ * Importing a folder of music is the one moment this app is visibly doing work
+ * on the user's behalf, and it used to spend that moment on a single line
+ * reading "12 files · 84.1 MB used on this phone". A number that only moves at
+ * the end cannot tell you whether anything is happening, which of your files
+ * arrived, or which one is the reason it stopped.
+ *
+ * So every file gets a card, drawn before a single byte is read, and each card
+ * says which of four things it is currently doing. `local.js` has always
+ * reported that per file; nothing was listening.
+ */
 
-export function openLocalFiles({ onChanged } = {}) {
+/* What each phase puts on the second line of a card. `stored` is the only one
+ * that has learned anything the filename did not already say. */
+const IMPORT_PHASES = {
+	queued:  { className: 'is-queued',  line: () => 'Waiting…' },
+	reading: { className: 'is-reading', line: () => 'Reading…' },
+	tagging: { className: 'is-tagging', line: () => 'Reading tags…' },
+	stored:  { className: 'is-stored',  line: event => event?.row?.artist || 'No artist in the file' },
+	failed:  { className: 'is-failed',  line: () => 'Could not be read' },
+};
+
+const PHASE_CLASSES = Object.values(IMPORT_PHASES).map(phase => phase.className);
+
+/* A ring rather than an icon, matching the one the play button already shows
+ * while a track resolves — the same wait should look the same everywhere. */
+const PHASE_GLYPHS = {
+	queued:  '<span class="import-dot" aria-hidden="true"></span>',
+	reading: '<span class="spin" aria-hidden="true"></span>',
+	tagging: '<span class="spin" aria-hidden="true"></span>',
+	stored:  icon('check', 18),
+	failed:  icon('close', 18),
+};
+
+/* A transparent pixel, so the artwork slot is an <img> from the start without
+ * being a *broken* one. An <img> with sized boxes and no `src` draws the engine's
+ * own broken-image chrome — a hairline frame around an empty square, on every
+ * row of a hundred-file import. This lets the CSS's grey placeholder be the only
+ * thing on screen until a real cover replaces it. */
+const BLANK_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+
+/** One file, as a row that can change its mind four times. */
+function importCard(entry, { onRetry }) {
+	const root = el('div', 'import-card is-queued');
+	root.dataset.importId = entry.id;
+	root.setAttribute('role', 'listitem');
+
+	const art = el('img', 'import-card-art');
+	art.alt = '';
+	art.decoding = 'async';
+	art.src = BLANK_PIXEL;
+
+	const title = el('b', '', entry.name);
+	title.title = entry.path || entry.name;
+	const status = el('span', '', IMPORT_PHASES.queued.line());
+	const retry = el('button', 'import-retry', 'Retry');
+	retry.type = 'button';
+	retry.hidden = true;
+	retry.setAttribute('aria-label', `Try ${entry.name} again`);
+	retry.addEventListener('click', () => onRetry(entry, api));
+
+	const line = el('div', 'import-card-line', status, retry);
+	const copy = el('div', 'import-card-copy', title, line);
+
+	const state = el('div', 'import-card-state');
+	state.innerHTML = PHASE_GLYPHS.queued;
+	const trail = el('div', 'import-card-trail',
+		el('small', 'import-card-size', formatBytes(entry.size)),
+		state,
+	);
+
+	root.append(art, copy, trail);
+
+	const api = {
+		root,
+		setPhase(phase, event) {
+			const shape = IMPORT_PHASES[phase] || IMPORT_PHASES.queued;
+			root.classList.remove(...PHASE_CLASSES);
+			root.classList.add(shape.className);
+			status.textContent = shape.line(event);
+			state.innerHTML = PHASE_GLYPHS[phase] || PHASE_GLYPHS.queued;
+			retry.hidden = phase !== 'failed';
+			if (phase === 'stored' && event?.row) {
+				title.textContent = event.row.title || entry.name;
+				// Only when there is art to show. localArtworkUrl owns the URL
+				// and hands the same one to every surface, so nothing here mints
+				// a blob URL it would then have to remember to revoke.
+				if (event.row.artwork) {
+					art.dataset.localArt = event.row.id;
+					art.src = localArtworkUrl({ source_id: event.row.id });
+				}
+			}
+		},
+		/** A file the cancel button stopped before it was ever reached. */
+		abandon() {
+			if (root.classList.contains('is-stored') || root.classList.contains('is-failed')) return;
+			root.classList.remove(...PHASE_CLASSES);
+			root.classList.add('is-queued');
+			status.textContent = 'Not imported';
+			state.innerHTML = PHASE_GLYPHS.queued;
+		},
+	};
+	return api;
+}
+
+/** The batch: a pinned header with aggregate progress and a working cancel, and
+ *  one card per file under it. Returns the handle the picker reports into. */
+function importBatch(host, { plan, files, controller, onStored }) {
+	const total = plan.length;
+
+	const heading = el('b', '', `Reading ${total} file${total === 1 ? '' : 's'}`);
+	heading.setAttribute('aria-live', 'polite');
+
+	const stop = el('button', 'ghost small', 'Cancel');
+	stop.type = 'button';
+	stop.addEventListener('click', () => {
+		if (stop.dataset.role === 'clear') { host.replaceChildren(); return; }
+		// The abort lands between files, so the one already being read still
+		// finishes and lands. Saying "Stopping" rather than "Stopped" is the
+		// difference between a promise kept and one broken by a 12 MB file.
+		controller.abort();
+		stop.disabled = true;
+		stop.textContent = 'Stopping…';
+	});
+
+	const bar = el('div', 'import-progress', el('span', ''));
+	bar.setAttribute('role', 'progressbar');
+	bar.setAttribute('aria-valuemin', '0');
+	bar.setAttribute('aria-valuemax', String(total));
+	bar.setAttribute('aria-valuenow', '0');
+	bar.setAttribute('aria-label', 'Import progress');
+
+	const count = el('small', 'import-count', `0 of ${total}`);
+	count.setAttribute('aria-hidden', 'true');
+	const progress = el('div', 'import-progress-row', bar, count);
+
+	const pin = el('div', 'import-batch-pin',
+		el('div', 'import-batch-head', heading, stop),
+		progress,
+	);
+
+	const list = el('div', 'import-list');
+	list.setAttribute('role', 'list');
+
+	const cards = new Map();
+	const retryOne = async (entry, card) => {
+		card.setPhase('reading');
+		try {
+			const row = await importOne(files[entry.index]);
+			card.setPhase('stored', { row });
+			onStored?.();
+		} catch (error) {
+			card.setPhase('failed', { error });
+		}
+	};
+	// Keyed by index, not id: the same file picked twice in one folder hashes to
+	// the same id, and two cards must still be able to move independently.
+	for (const entry of plan) {
+		const card = importCard(entry, { onRetry: retryOne });
+		cards.set(entry.index, card);
+		list.append(card.root);
+	}
+
+	const root = el('div', 'import-batch', pin, list);
+	host.replaceChildren(root);
+
+	const setDone = done => {
+		bar.style.setProperty('--done', String(total ? done / total : 0));
+		bar.setAttribute('aria-valuenow', String(done));
+		count.textContent = `${done} of ${total}`;
+	};
+
+	return {
+		progress(done, _total, event) {
+			setDone(done);
+			if (event) cards.get(event.index)?.setPhase(event.phase, event);
+		},
+		settle({ added = 0, skipped = 0, cancelled = false } = {}) {
+			if (cancelled) for (const card of cards.values()) card.abandon();
+			setDone(cancelled ? added + skipped : total);
+			heading.textContent = cancelled
+				? `Stopped after ${added + skipped} of ${total}`
+				: skipped
+					? `Added ${added} · ${skipped} could not be read`
+					: `Added ${added} file${added === 1 ? '' : 's'}`;
+			stop.disabled = false;
+			stop.dataset.role = 'clear';
+			stop.textContent = 'Clear';
+			stop.setAttribute('aria-label', 'Clear this import list');
+		},
+	};
+}
+
+export function openLocalFiles({ onChanged, onShowLibrary } = {}) {
 	openSheet({
 		title: 'Music on this phone',
 		className: 'sheet-catalog',
@@ -212,46 +419,114 @@ export function openLocalFiles({ onChanged } = {}) {
 			body.append(el('p', 'sheet-message',
 				'Add MP3s and other audio from this phone. They stay on this phone: nothing is uploaded to Rainette, to your computer, or to any website, and they play with no connection at all.'));
 
-			const summary = el('p', 'catalog-note', 'Counting…');
-			body.append(summary);
+			const batchHost = el('div', 'import-host');
+			const library = el('div', 'import-library');
+
+			const wipe = el('button', 'ghost danger', 'Remove all local files');
+			wipe.type = 'button';
+			wipe.hidden = true;
 
 			const refresh = async () => {
 				const [count, bytes] = await Promise.all([localTrackCount(), localBytes()]);
-				summary.textContent = count
-					? `${count} file${count === 1 ? '' : 's'} · ${formatBytes(bytes)} used on this phone`
-					: 'No files added yet.';
+				if (count) {
+					library.replaceChildren(el('p', 'catalog-note',
+						`${count} file${count === 1 ? '' : 's'} · ${formatBytes(bytes)} used on this phone`));
+				} else {
+					library.replaceChildren(el('div', 'import-empty',
+						el('b', '', 'Nothing here yet'),
+						el('span', '', 'Music you add stays on this phone. It plays with no connection at all, and nothing is uploaded — not to Rainette, not to your computer, not anywhere.'),
+					));
+				}
+				// Nothing to remove is not a reason to offer removing it.
+				wipe.hidden = !count;
 				onChanged?.();
 			};
 
 			const addFiles = el('button', 'primary', 'Add music files');
 			addFiles.type = 'button';
-			addFiles.addEventListener('click', async () => {
+			const addFolder = el('button', 'ghost', 'Add a folder of music');
+			addFolder.type = 'button';
+
+			/* One path for both buttons, because the only difference between them
+			 * is a flag on the input element. */
+			const runPick = async options => {
 				addFiles.disabled = true;
+				addFolder.disabled = true;
+				const controller = new AbortController();
+				let batch = null;
 				try {
-					const { added, skipped } = await pickFiles();
-					if (added) toast(`Added ${added} file${added === 1 ? '' : 's'}`, { icon: 'check' });
-					else if (skipped) toast('None of those could be read.', { icon: 'close' });
+					const result = await pickFiles({
+						...options,
+						signal: controller.signal,
+						onPlan: (plan, files) => {
+							batch = importBatch(batchHost, { plan, files, controller, onStored: refresh });
+						},
+						onProgress: (done, total, event) => batch?.progress(done, total, event),
+					});
+					batch?.settle(result);
 					await refresh();
+					// The cards are the acknowledgement. A toast is only owed when
+					// there was nothing to draw them from.
+					if (!batch && !result.cancelled) {
+						toast('Nothing playable in there.', { icon: 'close' });
+					}
 				} finally {
 					addFiles.disabled = false;
-				}
-			});
-
-			const addFolder = el('button', 'ghost', 'Add a whole folder');
-			addFolder.type = 'button';
-			addFolder.addEventListener('click', async () => {
-				addFolder.disabled = true;
-				try {
-					const { added } = await pickFiles({ directory: true });
-					if (added) toast(`Added ${added} file${added === 1 ? '' : 's'}`, { icon: 'check' });
-					await refresh();
-				} finally {
 					addFolder.disabled = false;
 				}
+			};
+
+			addFiles.addEventListener('click', () => runPick({}));
+			addFolder.addEventListener('click', () => runPick({ directory: true }));
+
+			// Not `.sheet-buttons`: that lays two buttons out side by side at 46%
+			// each, and "Add a folder of music" wraps to two lines in the half it
+			// gets. These are a primary and its alternative, not a pair of equals.
+			body.append(el('div', 'import-actions', addFiles, addFolder));
+			body.append(el('p', 'hint',
+				'Your phone won’t let a website look through its storage on its own, so pick a folder and Rainette takes everything playable inside it — including everything in the folders under it.'));
+
+			/* The thing people actually ask for is "import all the music on my
+			 * phone", and no browser can do it. The nearest honest version is the
+			 * computer sending its library across, which needs a desktop that can
+			 * answer — so it is shown, disabled, with the reason, in the same
+			 * register as the boost notice on the volume slider. */
+			/* The thing people ask for is "bring over all the music on my
+			 * computer", and the honest answer is that it is already here —
+			 * the computer's own files play straight through, the same way
+			 * anything else it holds does. Copying gigabytes into this phone's
+			 * storage would be the wrong favour; what is worth saying is how
+			 * much is there and where to find it. */
+			const computerName = state.computerName || 'your computer';
+			const fromComputer = el('button', 'ghost', `Music on ${computerName}`);
+			fromComputer.type = 'button';
+			fromComputer.disabled = true;
+			const fromComputerNote = el('p', 'hint', `Checking what ${computerName} has…`);
+			body.append(el('div', 'import-actions', fromComputer), fromComputerNote);
+
+			command('music_local_status').then(result => {
+				const tracks = Number(result?.tracks) || 0;
+				const roots = Number(result?.roots?.length) || 0;
+				if (!roots) {
+					fromComputerNote.textContent = `${computerName} has no music folders set up yet. Add one there, in Settings, and everything inside it plays here without taking up space on this phone.`;
+					return;
+				}
+				if (!tracks) {
+					fromComputerNote.textContent = `${computerName} is watching ${roots === 1 ? 'a folder' : `${roots} folders`} but has not found anything playable in ${roots === 1 ? 'it' : 'them'} yet.`;
+					return;
+				}
+				fromComputer.disabled = false;
+				fromComputer.textContent = `${tracks} song${tracks === 1 ? '' : 's'} on ${computerName}`;
+				fromComputer.addEventListener('click', () => { handle.close(); onShowLibrary?.(); });
+				fromComputerNote.textContent = 'These play straight from your computer, so they cost nothing here. Add files below only for the ones you want with no connection at all.';
+			}).catch(() => {
+				// An older computer simply does not answer this, which is not a
+				// failure worth a red line — it is a feature that is not there.
+				fromComputerNote.textContent = `${computerName} is running an older Rainette that cannot share its own files yet.`;
 			});
 
-			const wipe = el('button', 'ghost danger', 'Remove all local files');
-			wipe.type = 'button';
+			body.append(batchHost, library);
+
 			wipe.addEventListener('click', async () => {
 				const sure = await confirmSheet({
 					title: 'Remove every local file?',
@@ -261,11 +536,12 @@ export function openLocalFiles({ onChanged } = {}) {
 				});
 				if (!sure) return;
 				await clearLocalTracks();
+				batchHost.replaceChildren();
 				await refresh();
 				toast('Local files removed');
 			});
 
-			body.append(addFiles, addFolder, wipe);
+			body.append(wipe);
 			body.append(el('p', 'catalog-note',
 				'Titles, artists and cover art are read out of the files themselves. A file with no tags falls back to its filename.'));
 			await refresh();
@@ -339,11 +615,12 @@ export async function resetEverything() {
 /* ── Rows the panel shows ─────────────────────────────────────────────────*/
 
 /** Wire the settings panel's buttons. `refresh` repaints the value column. */
-export function wireSettings({ refresh, onLibraryChanged }) {
+export function wireSettings({ refresh, onLibraryChanged, onShowLibrary }) {
 	$('#appearanceButton')?.addEventListener('click', () => openAppearance({ onChanged: refresh }));
 	$('#playbackButton')?.addEventListener('click', () => openPlaybackSettings({ onChanged: refresh }));
 	$('#localFilesButton')?.addEventListener('click', () => openLocalFiles({
 		onChanged: () => { refresh(); onLibraryChanged?.(); },
+		onShowLibrary,
 	}));
 	$('#backupButton')?.addEventListener('click', () => openBackup({
 		onChanged: () => { refresh(); onLibraryChanged?.(); },

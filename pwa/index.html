@@ -43,6 +43,16 @@
         this copy stays paired for good.
       </p>
 
+      <!-- Computers this phone already knows. A Quick Tunnel hands out a new
+           address every restart, but the credential never expires, so coming
+           back should be a tap rather than another QR code. Populated from
+           localStorage; hidden entirely on a phone that has never paired. -->
+      <section id="recentSessions" class="sessions" hidden aria-labelledby="sessionsTitle">
+        <h2 id="sessionsTitle" class="sessions-title">Reconnect</h2>
+        <div id="sessionsList" class="sessions-list"></div>
+        <p class="sessions-divider"><span>or pair a new computer</span></p>
+      </section>
+
       <form id="pairForm" class="pair-form">
         <label class="field">
           <span>Pairing link</span>
@@ -208,13 +218,14 @@
        card — the behaviour every phone player has and this one used to lack. -->
   <section id="player" class="player" hidden aria-label="Now playing">
     <div class="player-progress" aria-hidden="true"><span></span></div>
-    <button id="playerOpen" class="player-open" type="button" aria-label="Open the now playing screen">
+    <div class="player-open">
+      <button id="playerOpen" class="player-open-hit" type="button" aria-label="Open the now playing screen"></button>
       <img id="playerArt" src="./icon.svg" alt="" width="46" height="46">
       <span class="player-copy">
         <b id="playerTitle">Nothing playing</b>
         <span id="playerArtist">Rainette Music</span>
       </span>
-    </button>
+    </div>
     <div class="player-time"><span id="playerElapsed">0:00</span><span id="playerDuration"></span></div>
     <div class="player-controls">
       <button id="prevButton" class="icon" type="button" aria-label="Previous track">

@@ -316,6 +316,14 @@ function _freshAudioElement() {
 		}
 	}
 	audio = next;
+	// Changing tracks ends every fade and every pause that was still owed to
+	// the element being replaced. Belt and braces with the identity checks in
+	// _rampVolume and _pauseBackstop: those stop a stale callback acting on the
+	// wrong element, and these two counters stop it running at all. Without
+	// either, pausing and then immediately skipping leaves a timer that pauses
+	// the next track a moment after it starts.
+	_fadeToken += 1;
+	_pauseIntent += 1;
 	applyEqGains(state.eqGains);
 	applyVolume(state.volume);
 }
@@ -601,25 +609,46 @@ function _restoreVolumeNow() {
 
 function _rampVolume(from, to, ms, done) {
 	const token = ++_fadeToken;
+	// `audio` is a module-level variable that a track change REPLACES, so a
+	// deferred callback that reads it later can act on a completely different
+	// element than the one this fade belongs to. Capturing the element here and
+	// checking identity before touching it is what stops a pause meant for the
+	// track you just left from landing on the track you just started.
+	const element = audio;
 	try {
 		if (graphBuilt === true && gainNode && audioCtx) {
 			const now = audioCtx.currentTime;
 			gainNode.gain.cancelScheduledValues(now);
 			gainNode.gain.setValueAtTime(Math.max(0.0001, from), now);
 			gainNode.gain.linearRampToValueAtTime(Math.max(0.0001, to), now + ms / 1000);
-			setTimeout(() => { if (token === _fadeToken && done) done(); }, ms + 15);
+			setTimeout(() => {
+				if (token === _fadeToken && audio === element && done) done();
+			}, ms + 15);
 			return;
 		}
-		if (audio) {
+		if (element) {
 			const start = performance.now();
+			let finished = false;
+			const finish = () => {
+				if (finished || token !== _fadeToken || audio !== element) return;
+				finished = true;
+				if (done) done();
+			};
 			const step = t => {
-				if (token !== _fadeToken || !audio) return;
+				if (token !== _fadeToken || audio !== element) return;
 				const k = Math.min(1, (t - start) / ms);
-				audio.volume = Math.max(0, Math.min(1, from + (to - from) * k));
+				element.volume = Math.max(0, Math.min(1, from + (to - from) * k));
 				if (k < 1) requestAnimationFrame(step);
-				else if (done) done();
+				else finish();
 			};
 			requestAnimationFrame(step);
+			// rAF does not run in a hidden window, and this player window spends
+			// its whole life hidden. Pause is implemented as this ramp's
+			// completion callback, so without a timer that cannot be suspended
+			// the callback never fires and the pause button does nothing at all
+			// while the track keeps playing. Whichever fires first wins; the
+			// token and the flag make the loser a no-op.
+			setTimeout(finish, ms + 15);
 			return;
 		}
 	} catch { /* fall through to instant */ }
@@ -638,16 +667,44 @@ function _togglePlay() {
 		_broadcast(cancelPending ? 'paused' : 'loading', false);
 		return;
 	}
-	if (!_currentMediaEvent()) return;
 	if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
 	if (audio.paused) {
+		// The media gate guards *starting* audio, where playing the wrong
+		// source is the real risk. Stopping is never the wrong thing to do, so
+		// only this branch consults it.
+		if (!_currentMediaEvent()) return;
+		// Supersede any pause backstop still in flight, so a quick
+		// pause-then-play is not undone a moment later.
+		_pauseIntent += 1;
 		if (fadeEnabled()) _rampVolume(0, _effectiveVolume(), FADE_MS);
 		audio.play().catch(() => {});
 	} else if (fadeEnabled()) {
-		_rampVolume(_effectiveVolume(), 0, FADE_MS, () => { audio.pause(); _restoreVolumeNow(); });
+		const element = audio;
+		_rampVolume(_effectiveVolume(), 0, FADE_MS, () => { element.pause(); _restoreVolumeNow(); });
+		// The ramp is for the ear, not for correctness. A pause the user asked
+		// for happens even if the ramp is starved, mis-tokened, or interrupted
+		// by another transport press landing mid-fade.
+		_pauseBackstop(++_pauseIntent, element);
 	} else {
 		audio.pause();
 	}
+}
+
+let _pauseIntent = 0;
+
+/** Guarantee a requested pause actually lands, whatever the fade does.
+ *
+ *  Bound to the element it was asked for. Skipping to another track during the
+ *  fade swaps `audio` out from under this timer, and a backstop that read the
+ *  variable would then pause the *new* track a few hundred milliseconds after
+ *  it started — silently, with the volume restored, so nothing about it looks
+ *  like a fault. */
+function _pauseBackstop(intent, element) {
+	setTimeout(() => {
+		if (intent !== _pauseIntent) return;   // a later play/pause superseded this
+		if (audio !== element) return;         // a track change superseded it
+		if (element && !element.paused) { element.pause(); _restoreVolumeNow(); }
+	}, FADE_MS + 120);
 }
 
 // Autoplay-similar ("infinite radio", Settings → Playback): when the queue
@@ -1242,7 +1299,16 @@ function wireRemote() {
 			else if (a === 'loop') _cycleRepeat();
 			else if (a === 'set_repeat') _setRepeat(msg.mode);
 			else if (!state.queue.length) return;
-			else if (a === 'pause') { if (audio && !audio.paused) _togglePlay(); }
+			// `pause` and `play` state an intent; `toggle` states a flip, which
+			// is only correct if the sender's idea of `playing` is current. It
+			// often is not, and then the pause-looking button resumes. New
+			// callers send the absolute verb; `toggle` stays for older ones.
+			// A track still resolving is not paused, but "stop what you are
+			// doing" during a load means cancel it — and _togglePlay owns that
+			// path. Without this arm, pressing the pause-looking button on a
+			// loading row would do nothing at all.
+			else if (a === 'pause') { if (state.resolvingId || (audio && !audio.paused)) _togglePlay(); }
+			else if (a === 'play') { if (audio && audio.paused && !state.resolvingId) _togglePlay(); }
 			else if (a === 'toggle') _togglePlay();
 			else if (a === 'next') _next(false);
 			else if (a === 'prev') _prev();

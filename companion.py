@@ -79,6 +79,17 @@ class _RelayGrant:
     device_id: str
     upstream_url: str
     expires_at: float
+    # What the URL was resolved *from*. A googlevideo URL is bound to the IP and
+    # time that produced it, so it can die long before the grant does; keeping
+    # the source lets the relay resolve a fresh one instead of handing the phone
+    # a failure it can do nothing about.
+    source_id: str = ""
+    # What this grant names. "youtube" means `upstream_url` is a URL to relay;
+    # "local" means `track_id` is a row in music_tracks whose bytes are on this
+    # computer's own disk. One field rather than a second route, so the phone
+    # needs no change and there is one Range implementation rather than two.
+    kind: str = "youtube"
+    track_id: str = ""
 
 
 class CompanionRegistry:
@@ -501,19 +512,59 @@ class CompanionRegistry:
                 for device_id, device in self._devices.items()
             ]
 
-    def create_relay_grant(self, device_id: str, upstream_url: str, *, ttl_s: int = 120) -> dict[str, object]:
+    def create_relay_grant(
+        self,
+        device_id: str,
+        upstream_url: str = "",
+        *,
+        ttl_s: int = 120,
+        source_id: str = "",
+        kind: str = "youtube",
+        track_id: str = "",
+    ) -> dict[str, object]:
+        """Mint a capability naming one thing this device may hear.
+
+        ``kind="local"`` names a ``track_id`` instead of an ``upstream_url``:
+        the bytes are on this computer, so there is nothing to relay and nothing
+        to keep fresh. Everything else about the grant is identical, which is
+        the point — one capability, one route, one Range implementation.
+        """
         with self._lock:
             device = self._devices.get(device_id)
             if device is None or device.revoked:
                 raise ValueError("device is not authorized")
-            if ttl_s <= 0 or not str(upstream_url).strip():
+            if ttl_s <= 0:
+                raise ValueError("relay grant requires a positive ttl")
+            cleaned_kind = "local" if str(kind) == "local" else "youtube"
+            cleaned_track = str(track_id or "").strip()
+            if cleaned_kind == "local":
+                if not cleaned_track:
+                    raise ValueError("a local grant requires a track id")
+            elif not str(upstream_url).strip():
                 raise ValueError("relay grant requires a URL and positive ttl")
+            self._prune_relay_grants_locked()
             token = secrets.token_urlsafe(32)
             expires_at = self._now() + ttl_s
-            self._relay_grants[_digest(token)] = _RelayGrant(device_id, str(upstream_url), expires_at)
+            self._relay_grants[_digest(token)] = _RelayGrant(
+                device_id, str(upstream_url), expires_at,
+                source_id=str(source_id or ""),
+                kind=cleaned_kind, track_id=cleaned_track,
+            )
             return {"token": token, "expires_at": expires_at}
 
-    def resolve_relay(self, grant_token: str) -> str | None:
+    def _prune_relay_grants_locked(self) -> None:
+        """Drop grants nobody can redeem any more.
+
+        Expiry was only ever checked lazily on redemption, so a long session
+        accumulated one dead entry per track played and never gave any of them
+        back.
+        """
+        now = self._now()
+        dead = [key for key, grant in self._relay_grants.items() if grant.expires_at <= now]
+        for key in dead:
+            self._relay_grants.pop(key, None)
+
+    def resolve_relay(self, grant_token: str) -> _RelayGrant | None:
         """Redeem an audio grant.
 
         A browser cannot attach an ``Authorization`` header to ``<audio src>``,
@@ -522,13 +573,29 @@ class CompanionRegistry:
         device is revoked — revocation therefore cuts audio too, not just the
         API.  Grants are per-device, so one phone's grant leaking never widens
         into access to another phone's session or to the command surface.
+
+        Returns the whole grant rather than just the URL: the relay needs the
+        source it was resolved from so it can fetch a fresh URL when the cached
+        one has been invalidated by a network change.
         """
         with self._lock:
             self._refresh_and_cleanup()
+            self._prune_relay_grants_locked()
             grant = self._relay_grants.get(_digest(str(grant_token or "")))
             if grant is None or grant.expires_at <= self._now():
                 return None
             device = self._devices.get(grant.device_id)
             if device is None or device.revoked:
                 return None
-            return grant.upstream_url
+            return grant
+
+    def refresh_relay_grant(self, grant_token: str, upstream_url: str) -> None:
+        """Point an existing grant at a freshly resolved upstream URL.
+
+        The capability the phone holds stays the same, so a re-resolve mid-track
+        is invisible to it.
+        """
+        with self._lock:
+            grant = self._relay_grants.get(_digest(str(grant_token or "")))
+            if grant is not None and str(upstream_url).strip():
+                grant.upstream_url = str(upstream_url)

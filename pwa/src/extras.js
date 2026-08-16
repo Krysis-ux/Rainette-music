@@ -8,7 +8,6 @@ import { openSheet, actionSheet } from './sheets.js';
 import { command, commandError } from './bridge.js';
 import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
 import { playlistChoices, addTrackToPlaylist, isLocalPlaylist, createLocalPlaylist } from './playlists.js';
-import { openVideo, looksLikeVideo } from './video.js';
 import { isLocalTrack } from './local.js';
 import {
 	queueAddNext, queueAddEnd, isPlaying, toggle, playTrack, pauseLocal, localSession,
@@ -467,18 +466,6 @@ export async function openTrackMenu(track, list = []) {
 		items: [
 			{ id: 'next', label: 'Play next', icon: 'queue', run: () => { queueAddNext(track); toast('Playing next', { icon: 'queue' }); } },
 			{ id: 'end', label: 'Add to queue', icon: 'listAdd', run: () => { queueAddEnd(track); toast('Added to queue', { icon: 'listAdd' }); } },
-			// Offered on anything the catalog calls a video, and on whatever is
-			// playing right now — a song with a music video is worth a look even
-			// when the computer filed it under songs.
-			// A file on this phone has no video anywhere to look for.
-			isLocalTrack(track) ? null : {
-				id: 'video',
-				label: looksLikeVideo(track) ? 'Watch the video' : 'Look for a music video',
-				icon: 'play',
-				run: () => openVideo(track, {
-					startAt: trackKey(currentTrack() || {}) === trackKey(track) ? currentTime() : 0,
-				}),
-			},
 			artist ? { id: 'artist', label: `Go to ${artist.name}`, icon: 'artist', run: () => openArtist(artist) } : null,
 			album ? { id: 'album', label: `Go to ${album.title}`, icon: 'album', run: () => openAlbum(album) } : null,
 			{ id: 'playlist', label: 'Add to playlist', icon: 'plus', run: () => openAddToPlaylist(track) },

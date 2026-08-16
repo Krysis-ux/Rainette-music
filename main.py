@@ -40,6 +40,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 import audio_outputs
 import server
+import transport
 import version
 
 # Which desktop integration applies. Everything platform-specific in this file
@@ -836,6 +837,49 @@ class WindowApi:
         except Exception as exc:
             return {"ok": False, "msg": str(exc)}
 
+    def tunnel_providers(self):
+        """List the ways this computer can be made reachable, and which is chosen.
+
+        The catalogue comes from the desktop rather than being duplicated in the
+        settings page, so a build that does not offer a transport cannot show a
+        picker entry that leads nowhere.
+        """
+        try:
+            manager = server.tunnel_manager()
+            return {
+                "ok": True,
+                "providers": manager.providers(),
+                "selected": manager.status().get("provider") or transport.DEFAULT_PROVIDER,
+                "config": manager.provider_config(),
+            }
+        except Exception as exc:
+            log(f"tunnel provider list failed: {exc}")
+            return {"ok": False, "msg": str(exc)}
+
+    def tunnel_set_provider(self, provider_id: str, config=None):
+        """Choose which transport to use, and remember the choice.
+
+        Switching stops whatever is currently running first — through its own
+        provider, which for Tailscale is the only thing that stops the daemon
+        publishing this computer.
+        """
+        try:
+            settings = dict(config) if isinstance(config, dict) else {}
+            return {"ok": True, **server.tunnel_manager().set_provider(str(provider_id or ""), settings)}
+        except ValueError as exc:
+            return {"ok": False, "msg": str(exc)}
+        except Exception as exc:
+            log(f"tunnel provider selection failed: {exc}")
+            return {"ok": False, "msg": str(exc)}
+
+    def tunnel_preflight(self):
+        """Ask the chosen transport what the user still has to do, if anything."""
+        try:
+            return {"ok": True, **server.tunnel_manager().preflight()}
+        except Exception as exc:
+            log(f"tunnel preflight failed: {exc}")
+            return {"ok": False, "msg": str(exc)}
+
     def tunnel_helper_download(self):
         """Download cloudflared as its own explicit, one-time step."""
         try:
@@ -887,6 +931,42 @@ class WindowApi:
         a paired phone has no business opening panels on someone's computer.
         """
         return {"ok": audio_outputs.open_sound_settings()}
+
+    def pick_music_folder(self):
+        """Choose a folder to scan for music, through the OS picker.
+
+        Deliberately a desktop-only bridge call. ``music_local_roots`` refuses
+        an ``add`` that arrived from a phone precisely because a device that
+        could name a path could name ``/`` and turn the library into a
+        directory listing of somebody's home. The path has to originate at the
+        computer, and this is where it does.
+        """
+        try:
+            # Imported here rather than at module scope, like every other
+            # pywebview use in this file: the app still runs in the Edge --app
+            # fallback where the package is absent.
+            import webview  # type: ignore
+
+            window = webview.windows[0] if webview.windows else None
+            if window is None:
+                return {"ok": False, "msg": "no window to attach the picker to"}
+            chosen = window.create_file_dialog(webview.FOLDER_DIALOG)
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+        # A cancelled picker is not a failure — it is the answer "not now", and
+        # reporting it as an error would put a red banner on a shrug.
+        if not chosen:
+            return {"ok": True, "cancelled": True}
+
+        path = chosen[0] if isinstance(chosen, (list, tuple)) else str(chosen)
+        try:
+            import shared
+
+            shared.STATE.add_local_root(str(path))
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+        return {"ok": True, "path": str(path)}
 
     def companion_management_state(self):
         return server.companion_management_state()

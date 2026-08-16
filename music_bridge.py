@@ -10,6 +10,7 @@ consumes the resolved URL directly.
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
 import urllib.error
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import audio_outputs
+import local_library
 import shared
 
 # yt-dlp normally prefers certifi.  ``no-certifi`` asks its own request layer to
@@ -57,8 +59,21 @@ _ytmusic_lock = threading.Lock()
 STREAM_URL_TTL_HINT_S = 21600
 STREAM_URL_CACHE_TTL_S = min(STREAM_URL_TTL_HINT_S, 5 * 60 * 60)
 
+# A cache entry with less than this left is not worth handing out. Serving one
+# used to be the whole bug: the reported hint was the entry's *remaining* life,
+# the relay grant was derived from that hint, and a nearly-stale entry therefore
+# minted a 60-second grant that 404'd a minute into the track. Re-resolving a
+# little early costs one yt-dlp call and removes the entire failure mode.
+STREAM_URL_MIN_REMAINING_S = 900
+
 _stream_cache_lock = threading.Lock()
 _stream_url_cache: dict[str, dict[str, Any]] = {}
+
+# Per-source resolution locks. A dead upstream URL fails every in-flight Range
+# request at once, so without these one stale track spawns a yt-dlp process per
+# request instead of one per track.
+_resolve_locks_guard = threading.Lock()
+_resolve_locks: dict[str, threading.Lock] = {}
 
 _SEARCH_OPTS = {
     "quiet": True,
@@ -85,33 +100,37 @@ _STREAM_OPTS = {
     "compat_opts": _SYSTEM_TRUST_COMPAT,
 }
 
-# The same resolution, for when the client is showing a music video rather than
-# playing a song. A muxed format is required: a browser <video> plays one URL,
-# and yt-dlp's default best-video/best-audio pair would hand back two.
-_VIDEO_STREAM_OPTS = {
-    **_STREAM_OPTS,
-    "format": (
-        "best[ext=mp4][acodec!=none][vcodec!=none][height<=720]"
-        "/best[ext=mp4][acodec!=none][vcodec!=none]"
-        "/best[acodec!=none][vcodec!=none]"
-        # Nothing muxed exists for this source, so the audio it does have is a
-        # better answer than a failure — the client falls back to a still cover.
-        "/bestaudio[ext=m4a]/bestaudio/best"
-    ),
-}
-
 
 def _run_bg(target, *args):
     threading.Thread(target=target, args=args, name="rainette-music", daemon=True).start()
 
 
-def _stream_cache_get(source_id: str) -> dict[str, Any] | None:
+def _parse_upstream_expiry(url: str) -> float | None:
+    """Read googlevideo's own ``expire`` stamp off a stream URL.
+
+    The CDN tells us exactly when it will stop serving a URL, which beats any
+    TTL we invent. Anything already past, or implausibly far out, is treated as
+    unparseable rather than trusted.
+    """
+    try:
+        raw = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("expire", [""])[0]
+        value = float(raw)
+    except (TypeError, ValueError, AttributeError):
+        return None
+    now = time.time()
+    return value if now < value < now + 86_400 else None
+
+
+def _stream_cache_get(source_id: str, *, min_remaining_s: float = 0.0) -> dict[str, Any] | None:
     now = time.time()
     with _stream_cache_lock:
         cached = _stream_url_cache.get(source_id)
         if not cached:
             return None
-        if float(cached.get("expires_at") or 0) <= now:
+        # An entry too close to expiry is dropped rather than served: whoever
+        # receives it would build a short-lived grant around it and fail
+        # mid-track.
+        if float(cached.get("expires_at") or 0) <= now + min_remaining_s:
             _stream_url_cache.pop(source_id, None)
             return None
         return dict(cached)
@@ -119,6 +138,12 @@ def _stream_cache_get(source_id: str) -> dict[str, Any] | None:
 
 def _stream_cache_set(source_id: str, *, url: str, title: str = "", artist: str = "",
                       duration_s=None, thumbnail_url: str = "") -> None:
+    # The CDN's own deadline wins whenever it is sooner than ours; caching past
+    # the point the URL stops working is how a "valid" entry serves a dead link.
+    upstream_expiry = _parse_upstream_expiry(url)
+    expires_at = time.time() + STREAM_URL_CACHE_TTL_S
+    if upstream_expiry is not None:
+        expires_at = min(expires_at, upstream_expiry)
     with _stream_cache_lock:
         _stream_url_cache[source_id] = {
             "url": url,
@@ -126,13 +151,23 @@ def _stream_cache_set(source_id: str, *, url: str, title: str = "", artist: str 
             "artist": artist,
             "duration_s": duration_s,
             "thumbnail_url": thumbnail_url,
-            "expires_at": time.time() + STREAM_URL_CACHE_TTL_S,
+            "expires_at": expires_at,
         }
 
 
 def _stream_cache_invalidate(source_id: str) -> None:
     with _stream_cache_lock:
         _stream_url_cache.pop(source_id, None)
+
+
+def _resolve_lock_for(cache_key: str) -> threading.Lock:
+    """One lock per source, so concurrent redemptions collapse into one resolve."""
+    with _resolve_locks_guard:
+        lock = _resolve_locks.get(cache_key)
+        if lock is None:
+            lock = threading.Lock()
+            _resolve_locks[cache_key] = lock
+        return lock
 
 
 # ── Search ───────────────────────────────────────────────────────────────────
@@ -292,6 +327,19 @@ def _ytm_album(item: dict[str, Any], artist_hint: str = "") -> dict[str, Any] | 
 
 # ── Stream URL resolution (only when the user actually presses play) ──────────
 
+def _local_track_for(track_id: str, source_id: str) -> dict[str, Any] | None:
+    """The local row a stream request names, if it names one.
+
+    Tried by primary key first because that is what a phone sends back for a
+    track it already has; the opaque ``source_id`` is the fallback for a request
+    built from a search result rather than from the library.
+    """
+    try:
+        return shared.STATE.get_local_track(track_id=track_id, source_id=source_id)
+    except Exception:
+        return None
+
+
 def cmd_music_stream_url(msg):
     req_id = msg.get("id")
     source_id = str(msg.get("source_id") or "").strip()
@@ -299,10 +347,35 @@ def cmd_music_stream_url(msg):
     track_payload = msg.get("track") if isinstance(msg.get("track"), dict) else None
     prefetch = bool(msg.get("prefetch"))
     force_refresh = bool(msg.get("force_refresh") or msg.get("invalidate_cache"))
-    # A music video and its audio are two different streams of the same source,
-    # so they are cached apart — asking for one must never hand back the other.
-    want_video = bool(msg.get("want_video"))
-    cache_key = ("video:" + source_id) if want_video else source_id
+    cache_key = source_id
+
+    # A file on this computer never touches yt-dlp, and never expires. This
+    # branch is deliberately ahead of the YTDLP_AVAILABLE guard below: a
+    # computer with no extractor installed can still play its own music.
+    local_row = _local_track_for(track_id, source_id)
+    if local_row is not None:
+        if not prefetch:
+            try:
+                shared.STATE.log_play(str(local_row.get("id") or ""))
+            except Exception:
+                pass
+        shared.notify_browsers({
+            "type": "music_stream_url_result", "id": req_id, "ok": True,
+            "track_id": str(local_row.get("id") or ""),
+            "source_id": str(local_row.get("source_id") or ""),
+            # No `expires_hint_s`: there is nothing to expire, and inventing a
+            # number here is what used to collapse the relay grant behind it.
+            # The gateway swaps this empty url for a grant it mints itself.
+            "local": True, "url": "", "cached": False,
+            "content_type": str(local_row.get("content_type") or ""),
+            "missing": bool(str(local_row.get("missing_since") or "")),
+            "title": str(local_row.get("title") or ""),
+            "artist": str(local_row.get("artist") or ""),
+            "duration_s": local_row.get("duration_s"),
+            "thumbnail_url": str(local_row.get("thumbnail_url") or ""),
+        })
+        return
+
     if not YTDLP_AVAILABLE:
         shared.notify_browsers({"type": "music_stream_url_result", "id": req_id, "ok": False,
                                 "msg": "yt-dlp not installed", "track_id": track_id})
@@ -317,47 +390,92 @@ def cmd_music_stream_url(msg):
             track_id = ""
     if force_refresh:
         _stream_cache_invalidate(cache_key)
-    elif cached := _stream_cache_get(cache_key):
+    elif cached := _stream_cache_get(cache_key, min_remaining_s=STREAM_URL_MIN_REMAINING_S):
         if track_id and not prefetch:
             try:
                 shared.STATE.log_play(track_id)
             except Exception:
                 pass
-        ttl = max(1, int(float(cached.get("expires_at") or 0) - time.time()))
+        # Whatever is left really is left: _stream_cache_get has already dropped
+        # anything under STREAM_URL_MIN_REMAINING_S, so this can no longer be the
+        # handful of seconds that used to collapse the relay grant behind it.
+        ttl = max(STREAM_URL_MIN_REMAINING_S, int(float(cached.get("expires_at") or 0) - time.time()))
         shared.notify_browsers({
             "type": "music_stream_url_result", "id": req_id, "ok": True,
             "track_id": track_id, "source_id": source_id, "url": cached.get("url", ""),
             "expires_hint_s": min(ttl, STREAM_URL_CACHE_TTL_S), "cached": True,
             "title": cached.get("title") or "", "artist": cached.get("artist") or "",
             "duration_s": cached.get("duration_s"), "thumbnail_url": cached.get("thumbnail_url") or "",
-            "is_video": want_video,
         })
         return
-    _run_bg(_stream_worker, req_id, source_id, track_id, not prefetch, want_video)
+    _run_bg(_stream_worker, req_id, source_id, track_id, not prefetch)
 
 
-def _stream_worker(req_id, source_id, track_id, log_play=True, want_video=False):
+def _extract_stream(source_id: str) -> dict[str, Any]:
+    """Run yt-dlp for one source and normalise what comes back.
+
+    Split out of the worker so the audio relay can reach the same resolution
+    path when a cached URL has gone stale mid-track, instead of a second
+    implementation drifting away from this one.
+    """
+    url = source_id if source_id.startswith("http") else f"https://www.youtube.com/watch?v={source_id}"
+    with yt_dlp.YoutubeDL(_STREAM_OPTS) as ydl:
+        info = ydl.extract_info(url, download=False)
+    stream_url = info.get("url")
+    if not stream_url:
+        # Some extractors nest the playable URL under requested formats.
+        for fmt in reversed(info.get("requested_formats") or info.get("formats") or []):
+            if fmt.get("url"):
+                stream_url = fmt["url"]
+                break
+    if not stream_url:
+        raise RuntimeError("no playable stream url returned")
+    return {
+        "url": stream_url,
+        "title": info.get("title") or "",
+        "artist": info.get("uploader") or "",
+        "duration_s": info.get("duration"),
+        "thumbnail_url": _pick_thumb(info),
+    }
+
+
+def resolve_stream_url_sync(source_id: str, *, force_refresh: bool = False) -> str:
+    """Blocking, cache-aware, single-flight stream resolution.
+
+    Called from the audio relay when an upstream URL has been invalidated
+    (googlevideo binds them to the resolving IP, so a VPN toggle kills them).
+    Single-flight matters here specifically: a stale URL fails on *every*
+    in-flight Range request at once, and without the lock that is one yt-dlp
+    process per request rather than one per track.
+    """
+    source_id = str(source_id or "").strip()
+    if not source_id:
+        raise ValueError("source_id required")
+    if not YTDLP_AVAILABLE:
+        raise RuntimeError("yt-dlp not installed")
+    cache_key = source_id
+    if force_refresh:
+        _stream_cache_invalidate(cache_key)
+    with _resolve_lock_for(cache_key):
+        # Another caller may have resolved it while we waited for the lock.
+        if cached := _stream_cache_get(cache_key, min_remaining_s=STREAM_URL_MIN_REMAINING_S):
+            return str(cached.get("url") or "")
+        found = _extract_stream(source_id)
+        _stream_cache_set(cache_key, url=found["url"], title=found["title"],
+                          artist=found["artist"], duration_s=found["duration_s"],
+                          thumbnail_url=found["thumbnail_url"])
+        return str(found["url"])
+
+
+def _stream_worker(req_id, source_id, track_id, log_play=True):
     try:
-        url = source_id if source_id.startswith("http") else f"https://www.youtube.com/watch?v={source_id}"
-        with yt_dlp.YoutubeDL(_VIDEO_STREAM_OPTS if want_video else _STREAM_OPTS) as ydl:
-            info = ydl.extract_info(url, download=False)
-        stream_url = info.get("url")
-        if not stream_url:
-            # Some extractors nest the playable URL under requested formats.
-            for fmt in reversed(info.get("requested_formats") or info.get("formats") or []):
-                if fmt.get("url"):
-                    stream_url = fmt["url"]
-                    break
-        if not stream_url:
-            raise RuntimeError("no playable stream url returned")
-        title = info.get("title") or ""
-        artist = info.get("uploader") or ""
-        duration_s = info.get("duration")
-        thumbnail_url = _pick_thumb(info)
-        # A source with no muxed format falls back to audio, so the client is
-        # told what it actually got rather than being left to show a black box.
-        has_video = bool(want_video and info.get("vcodec") and info.get("vcodec") != "none")
-        _stream_cache_set(("video:" + source_id) if want_video else source_id,
+        found = _extract_stream(source_id)
+        stream_url = found["url"]
+        title = found["title"]
+        artist = found["artist"]
+        duration_s = found["duration_s"]
+        thumbnail_url = found["thumbnail_url"]
+        _stream_cache_set(source_id,
                           url=stream_url, title=title, artist=artist,
                           duration_s=duration_s, thumbnail_url=thumbnail_url)
         if log_play and track_id:
@@ -371,7 +489,6 @@ def _stream_worker(req_id, source_id, track_id, log_play=True, want_video=False)
             "expires_hint_s": STREAM_URL_CACHE_TTL_S, "cached": False,
             "title": title, "artist": artist,
             "duration_s": duration_s, "thumbnail_url": thumbnail_url,
-            "is_video": has_video,
         })
     except Exception as e:
         shared.notify_browsers({"type": "music_stream_url_result", "id": req_id, "ok": False, "msg": str(e), "track_id": track_id})
@@ -937,6 +1054,130 @@ def cmd_music_output_transfer_result(msg):
         payload["msg"] = str(msg.get("msg"))[:500]
     shared.notify_browsers(payload)
 
+    # A handoff is the one moment both sides agree on who owns the audio, and
+    # it is the only place in the codebase that sees a successful transfer from
+    # either direction. Ownership moves here and nowhere earlier: a transfer
+    # that failed must leave the source playing, which is the contract
+    # cmd_music_output_transfer states in prose and nothing used to enforce.
+    if payload["ok"] and payload["target_device_id"]:
+        target = payload["target_device_id"]
+        _publish_playback_target(
+            owner_kind="desktop" if target == "desktop" else "phone",
+            owner_device_id=target,
+            reason="transfer_ack",
+        )
+
+
+def _publish_playback_target(*, owner_kind, owner_device_id, reason,
+                             sink_id=None, sink_name=None, owner_name=None):
+    """Record who owns playback, then tell every device.
+
+    Deliberately fans out to all of them rather than to the session that caused
+    it: a phone showing "playing on the computer" needs to stop saying that the
+    moment another device takes over, and it cannot learn that from its own
+    session's events.
+    """
+    patch = {"owner_kind": owner_kind, "owner_device_id": str(owner_device_id or "desktop"),
+             "reason": reason}
+    if sink_id is not None:
+        patch["sink_id"] = str(sink_id)
+    if sink_name is not None:
+        patch["sink_name"] = str(sink_name)
+    # Server-stamped, never taken from a client: this is the string every
+    # surface renders as "playing on ...", so a device must not be able to
+    # name itself something else.
+    patch["owner_name"] = str(owner_name if owner_name is not None else _owner_display_name(owner_kind, owner_device_id))
+    try:
+        target = shared.STATE.set_playback_target(patch)
+    except Exception:
+        return None
+    shared.notify_browsers({"type": "music_playback_target", "ok": True, **target})
+    return target
+
+
+def _owner_display_name(owner_kind, owner_device_id):
+    if owner_kind == "desktop":
+        try:
+            return socket.gethostname()
+        except Exception:
+            return "this computer"
+    try:
+        for device in shared.STATE.list_devices():
+            if device.get("device_id") == owner_device_id:
+                return device.get("name") or "a phone"
+    except Exception:
+        pass
+    return "a phone"
+
+
+def cmd_music_playback_target_get(msg):
+    """Who owns playback right now."""
+    try:
+        target = shared.STATE.get_playback_target()
+    except Exception:
+        target = {"owner_kind": "desktop", "owner_device_id": "desktop", "revision": 0}
+    shared.notify_browsers({"type": "music_playback_target_result", "id": msg.get("id"),
+                            "ok": True, **target})
+
+
+def cmd_music_playback_target_set(msg):
+    """Claim playback for the caller.
+
+    The owner is derived, never read from the body: a phone can only ever claim
+    ownership for itself, and the desktop only for itself. Without that a
+    device could hand playback to a third party it has no business moving.
+    """
+    origin = str(msg.get("origin_device_id") or "")
+    kind = str(msg.get("owner_kind") or "").strip()
+    if kind not in ("desktop", "phone"):
+        kind = "phone" if origin else "desktop"
+    owner_device_id = origin if (kind == "phone" and origin) else "desktop"
+    target = _publish_playback_target(
+        owner_kind=kind,
+        owner_device_id=owner_device_id,
+        reason=str(msg.get("reason") or "claim_by_play"),
+        sink_id=msg.get("sink_id"),
+        sink_name=msg.get("sink_name"),
+    )
+    shared.notify_browsers({"type": "music_playback_target_result", "id": msg.get("id"),
+                            "ok": bool(target), **(target or {})})
+
+
+def cmd_music_device_settings_get(msg):
+    """This phone's settings, as this computer last saw them."""
+    device_id = str(msg.get("origin_device_id") or "")
+    entries = []
+    if device_id:
+        try:
+            entries = shared.STATE.read_device_settings(device_id)
+        except Exception:
+            entries = []
+    shared.notify_browsers({
+        "type": "music_device_settings_result", "id": msg.get("id"), "ok": True,
+        "device_id": device_id, "server_ms": int(time.time() * 1000), "entries": entries,
+    })
+
+
+def cmd_music_device_settings_put(msg):
+    """Merge a phone's settings, per key rather than per blob.
+
+    Prefs travel as one object, so a whole-blob revision would force discarding
+    one side whenever two devices touched different keys. Per-key stamps make
+    the merge commutative and both edits survive.
+    """
+    device_id = str(msg.get("origin_device_id") or "")
+    entries = msg.get("entries") if isinstance(msg.get("entries"), list) else []
+    merged = []
+    if device_id:
+        try:
+            merged = shared.STATE.merge_device_settings(device_id, entries)
+        except Exception:
+            merged = []
+    shared.notify_browsers({
+        "type": "music_device_settings_result", "id": msg.get("id"), "ok": bool(device_id),
+        "device_id": device_id, "server_ms": int(time.time() * 1000), "entries": merged,
+    })
+
 
 def cmd_music_output_sink_result(msg):
     """Relay the player window's answer to a set_sink request.
@@ -1407,8 +1648,16 @@ def cmd_music_library_index(msg):
         limit = max(1, min(int(msg.get("limit", 500) or 500), 1000))
     except Exception:
         limit = 500
+    # The requesting device decides which local tracks get marked unplayable;
+    # the result carries whose capabilities it used, so a phone receiving
+    # another device's fan-out can see the marks are not about it.
+    # Passed only when there is one, so a request with no device behind it calls
+    # the same signature it always did.
+    device_id = str(msg.get("origin_device_id") or "").strip()
+    extra = {"device_id": device_id} if device_id else {}
     try:
-        shared.notify_browsers({"type": "music_library_index_result", "id": req_id, "ok": True, **shared.STATE.music_library_index(limit=limit)})
+        shared.notify_browsers({"type": "music_library_index_result", "id": req_id, "ok": True,
+                                **shared.STATE.music_library_index(limit=limit, **extra)})
     except Exception as exc:
         shared.notify_browsers({"type": "music_library_index_result", "id": req_id, "ok": False, "msg": str(exc), "tracks": [], "artists": [], "albums": [], "followed_artists": []})
 
@@ -1475,7 +1724,118 @@ def cmd_music_status(msg):
     req_id = msg.get("id")
     shared.notify_browsers({"type": "music_status", "id": req_id, "ok": True,
                             "ytdlp_available": YTDLP_AVAILABLE, "ytdlp_error": _ytdlp_error,
-                            "ytmusic_available": YTMUSIC_AVAILABLE, "ytmusic_error": _ytmusic_error})
+                            "ytmusic_available": YTMUSIC_AVAILABLE, "ytmusic_error": _ytmusic_error,
+                            "local_library_available": True,
+                            "mutagen_available": local_library.MUTAGEN_AVAILABLE})
+
+
+# ── Local files on this computer ──────────────────────────────────────────────
+
+def _local_status_payload() -> dict[str, Any]:
+    return local_library.status(shared.STATE)
+
+
+def cmd_music_local_roots(msg):
+    """List, add, or forget a watched folder.
+
+    ``add`` and ``remove`` are refused when the message carries an
+    ``origin_device_id``, which the gateway stamps on every command arriving
+    from a phone (``server.py`` overwrites any value the phone supplied, so its
+    absence cannot be forged). Choosing a folder is a decision made at the
+    computer through a native picker; a phone that could name a path could name
+    ``/`` and turn the library into a directory listing of somebody's home.
+    """
+    req_id = msg.get("id")
+    action = str(msg.get("action") or "list").strip().lower()
+    from_phone = bool(str(msg.get("origin_device_id") or "").strip())
+    try:
+        if action in {"add", "remove"} and from_phone:
+            raise PermissionError("choose music folders on the computer itself")
+        if action == "add":
+            shared.STATE.add_local_root(str(msg.get("path") or ""))
+        elif action == "remove":
+            shared.STATE.remove_local_root(str(msg.get("path") or ""))
+        elif action != "list":
+            raise ValueError("unknown action")
+        shared.notify_browsers({"type": "music_local_roots_result", "id": req_id, "ok": True,
+                                "action": action, **_local_status_payload()})
+    except Exception as exc:
+        shared.notify_browsers({"type": "music_local_roots_result", "id": req_id, "ok": False,
+                                "action": action, "msg": str(exc), "roots": [],
+                                "tracks": 0, "missing": 0, "bytes": 0})
+
+
+def cmd_music_local_status(msg):
+    req_id = msg.get("id")
+    try:
+        shared.notify_browsers({"type": "music_local_status_result", "id": req_id, "ok": True,
+                                **_local_status_payload()})
+    except Exception as exc:
+        shared.notify_browsers({"type": "music_local_status_result", "id": req_id, "ok": False,
+                                "msg": str(exc), "roots": [], "tracks": 0, "missing": 0, "bytes": 0})
+
+
+# One scan at a time. Two concurrent walks of the same folder do the same work
+# twice and interleave their progress into nonsense; the reconcile step is
+# self-correcting either way, so this is about not wasting a disk, not about
+# correctness.
+_local_scan_lock = threading.Lock()
+
+
+def cmd_music_local_scan(msg):
+    """Walk the watched folders on a background thread.
+
+    Only already-registered roots are ever walked — ``local_library.scan``
+    drops anything else — so a phone may re-run a scan without being able to
+    say where.
+    """
+    req_id = msg.get("id")
+    raw = msg.get("roots")
+    roots = [str(path or "").strip() for path in raw if str(path or "").strip()] \
+        if isinstance(raw, (list, tuple)) else []
+    _run_bg(_local_scan_worker, req_id, roots)
+
+
+def _local_scan_worker(req_id, roots):
+    def report(progress: dict[str, Any]) -> None:
+        shared.notify_browsers({"type": "music_local_scan_progress", "id": req_id, **progress})
+
+    if not _local_scan_lock.acquire(blocking=False):
+        shared.notify_browsers({"type": "music_local_scan_result", "id": req_id, "ok": False,
+                                "busy": True, "msg": "a scan is already running",
+                                **_local_status_payload()})
+        return
+    try:
+        result = local_library.scan(shared.STATE, roots, on_progress=report)
+        shared.notify_browsers({"type": "music_local_scan_result", "id": req_id, "ok": True,
+                                **result, **_local_status_payload()})
+    except Exception as exc:
+        shared.notify_browsers({"type": "music_local_scan_result", "id": req_id, "ok": False,
+                                "msg": str(exc), "roots": [], "tracks": 0, "missing": 0, "bytes": 0})
+    finally:
+        _local_scan_lock.release()
+
+
+def cmd_music_client_capabilities(msg):
+    """Record what one phone's ``canPlayType`` said it can decode.
+
+    iOS Safari plays FLAC in an ``<audio>`` element but not Ogg or Opus. Without
+    this the library offers an Opus track the phone silently fails to load, and
+    the failure surfaces as "the audio stream expired" — which is not merely
+    unhelpful, it points at the wrong subsystem entirely.
+    """
+    req_id = msg.get("id")
+    device_id = str(msg.get("origin_device_id") or msg.get("device_id") or "").strip()
+    raw = msg.get("can_play") if isinstance(msg.get("can_play"), dict) else {}
+    try:
+        stored = shared.STATE.set_device_codecs(device_id, raw)
+        shared.notify_browsers({"type": "music_client_capabilities_result", "id": req_id,
+                                "ok": bool(device_id), "device_id": device_id,
+                                "can_play": stored,
+                                "msg": "" if device_id else "no device on this request"})
+    except Exception as exc:
+        shared.notify_browsers({"type": "music_client_capabilities_result", "id": req_id,
+                                "ok": False, "device_id": device_id, "can_play": {}, "msg": str(exc)})
 
 
 DISPATCH = {
@@ -1511,6 +1871,10 @@ DISPATCH = {
     "music_remote_control":         cmd_music_remote_control,
     "music_output_transfer":        cmd_music_output_transfer,
     "music_output_transfer_result": cmd_music_output_transfer_result,
+    "music_playback_target_get":    cmd_music_playback_target_get,
+    "music_playback_target_set":    cmd_music_playback_target_set,
+    "music_device_settings_get":    cmd_music_device_settings_get,
+    "music_device_settings_put":    cmd_music_device_settings_put,
     "music_output_devices":         cmd_music_output_devices,
     "music_output_sink_result":     cmd_music_output_sink_result,
     "music_request_state":          cmd_music_request_state,
@@ -1529,4 +1893,8 @@ DISPATCH = {
     "music_followed_artists":       cmd_music_followed_artists,
     "music_insights":               cmd_music_insights,
     "music_status":                 cmd_music_status,
+    "music_local_roots":            cmd_music_local_roots,
+    "music_local_scan":             cmd_music_local_scan,
+    "music_local_status":           cmd_music_local_status,
+    "music_client_capabilities":    cmd_music_client_capabilities,
 }

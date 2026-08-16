@@ -4,7 +4,9 @@
 
 import { state } from './state.js';
 import { command, events } from './bridge.js';
-import { adoptTransfer, notifyPlayerChanged } from './player.js';
+import { adoptTransfer, notifyPlayerChanged, applyRemoteVerb } from './player.js';
+import { backoffDelay } from './connection.js';
+import { absorbPlaybackTarget } from './target.js';
 
 let onStatus = () => {};
 let onLibrary = () => {};
@@ -20,6 +22,7 @@ export function configureSync(options) {
 
 export function startEventLoop() {
 	const loopId = ++state.eventLoopId;
+	let attempt = 0;
 	(async () => {
 		while (state.connected && loopId === state.eventLoopId) {
 			try {
@@ -28,6 +31,10 @@ export function startEventLoop() {
 					wait: 25,
 					follow: state.linked,
 				});
+				// Any answer at all means the link is healthy, so the next
+				// failure starts its backoff from the beginning rather than
+				// from wherever the last outage left off.
+				attempt = 0;
 				state.eventRevision = Number(result.revision || state.eventRevision);
 				if (result.reset_required) {
 					state.eventRevision = Number(result.revision) || 0;
@@ -40,11 +47,27 @@ export function startEventLoop() {
 					onAuthLost(error);
 					return;
 				}
+				// A flat retry hammered a computer that was simply gone, and on
+				// a phone that is battery the user can feel. Backing off with
+				// jitter also stops two phones waking together from arriving at
+				// the tunnel in lockstep.
 				onStatus('', 'Reconnecting…');
-				await new Promise(resolve => setTimeout(resolve, 1800));
+				await new Promise(resolve => setTimeout(resolve, backoffDelay(attempt)));
+				attempt += 1;
 			}
 		}
 	})();
+}
+
+/** Abandon the in-flight poll and start a fresh one immediately.
+ *
+ *  A poll that was suspended mid-flight while the phone slept is not going to
+ *  answer; waiting out its timeout is the difference between a session that
+ *  resumes when you look at it and one that resumes a minute later. */
+export function restartEventLoop() {
+	if (!state.connected) return;
+	stopEventLoop();
+	startEventLoop();
 }
 
 export function stopEventLoop() {
@@ -57,6 +80,22 @@ function handleEvent(message) {
 	switch (message.type) {
 		case 'music_output_transfer':
 			acceptTransfer(message);
+			return;
+
+		/* The computer driving this phone's playback. Without this case the
+		 * message fell through to `default:` and was dropped, so pressing pause
+		 * on the desktop could never stop a phone — not because the routing was
+		 * wrong, but because nothing here was listening. */
+		case 'music_remote_control':
+			applyRemoteVerb(message);
+			return;
+
+		/* Who owns the audio. Fans out to every paired device rather than to
+		 * one session, because a phone showing "playing on the computer" has to
+		 * stop saying that the moment another device takes over — and it cannot
+		 * learn that from its own session's events. */
+		case 'music_playback_target':
+			absorbPlaybackTarget(message);
 			return;
 
 		case 'music_now_playing':

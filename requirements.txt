@@ -16,6 +16,13 @@ yt-dlp>=2024.1
 # the app degrades to yt-dlp-only search without it).
 ytmusicapi>=1.12
 
+# Tags and durations for the MP3s already on this computer. Optional in the
+# same way yt-dlp is: without it local_library falls back to reading artist and
+# title out of the filename. Preferred over porting the phone's hand-rolled
+# ID3/MP4 reader because it also understands FLAC, Ogg, Opus, WAV and AIFF, and
+# reports real durations rather than zero.
+mutagen>=1.47
+
 # Native desktop window (WebView2 on Windows). The autoplay policy patch is
 # deliberately bound to this audited pywebview implementation; changing the
 # version requires the native playback smoke test to prove the flag still lands.

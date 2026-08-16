@@ -3,6 +3,8 @@
  * is a change of mind. The topmost sheet owns Escape and the back gesture. */
 
 import { el, icon, motionOff, tap } from './dom.js';
+import { dragGesture } from './gesture.js';
+import { spring } from './motion.js';
 
 const open = [];
 
@@ -13,6 +15,22 @@ const DISMISS_VELOCITY = 0.55;
 /* Without the velocity to carry it, a sheet has to be more than a third of the
  * way gone before letting go means closing it. */
 const DISMISS_FRACTION = 0.33;
+
+/* An upward drag is resisted rather than blocked, so the sheet answers the
+ * gesture at first touch and becomes immovable at the limit. The old `delta / 6`
+ * was linear, which meant an upward drag still travelled without limit — just at
+ * a sixth speed. A surface with an edge does not do that. */
+const RUBBER_LIMIT = 120;
+
+function rubber(delta) {
+	if (delta >= 0) return delta;
+	const over = -delta;
+	return -(RUBBER_LIMIT * (1 - Math.exp(-over / RUBBER_LIMIT)));
+}
+
+/* Slowest a continuation close is allowed to start, so a sheet dragged past the
+ * threshold and released dead still leaves rather than creeping. px/ms. */
+const MIN_CLOSE_VELOCITY = 0.6;
 
 function topSheet() {
 	return open[open.length - 1] || null;
@@ -86,7 +104,15 @@ export function openSheet({ title = '', className = '', full = false, build }) {
 				selfPops += 1;
 				history.back();
 			}
-			if (motionOff()) { root.remove(); return; }
+			// The keyframe must stay out of a close that JS is already driving:
+			// a CSS animation outranks the inline transform, so re-adding
+			// `.closing` over a panel the spring has carried to the bottom
+			// would snap it back to zero for one frame and play sheet-down from
+			// there. By the time this runs the panel is already off-screen.
+			if (motionOff() || panel.dataset.jsClose === '1') { root.remove(); return; }
+			// A close arriving from elsewhere — Escape, the back gesture, a
+			// scrim tap — while a snap-back is still running.
+			handle.releaseDrag?.();
 			root.classList.add('closing');
 			panel.addEventListener('animationend', () => root.remove(), { once: true });
 			// A dropped animationend (backgrounded tab) must not leak the node.
@@ -105,73 +131,203 @@ export function openSheet({ title = '', className = '', full = false, build }) {
 	return handle;
 }
 
-/* Drag-to-dismiss, starting only from the grabber, the header, or a body
- * already scrolled to the top. Otherwise a swipe meant to scroll a long queue
- * drags the sheet away instead. */
+/* Drag-to-dismiss, starting only from the grabber, the header, or a body already
+ * scrolled to the top. Otherwise a swipe meant to scroll a long queue drags the
+ * sheet away instead.
+ *
+ * Dismissal was already velocity-aware. What it lacked was continuity: the drag
+ * wrote an inline transform, and the release handed the panel to a CSS keyframe
+ * that starts from `transform: none` — so a sheet flicked 300px down snapped
+ * *upward* to zero for one frame before animating away. Both the close and the
+ * snap-back now run through the same integrator the gesture feeds, seeded with
+ * the velocity of the throw.
+ */
 function wireDrag(panel, handle) {
 	const body = handle.body;
-	let startY = 0;
-	let lastY = 0;
-	let lastAt = 0;
-	let velocity = 0;
-	let dragging = false;
-	let pointerId = null;
+	/* The live motion's cancel handle. Holding it is what makes the sheet
+	 * catchable: a pointerdown during a close or a snap-back stops the spring
+	 * and takes its exact position, rather than waiting the animation out or
+	 * restarting from zero. */
+	let inFlight = null;
+	let baseY = 0;
+	let carried = 0;
+	let caught = false;
+	let engaged = false;
+	/* Where the panel was last put. Kept rather than read back out of the
+	 * computed transform, so a release never costs a style flush. */
+	let paintedY = 0;
 
-	const canStart = target => {
-		if (target.closest('.sheet-grabber, .sheet-drag')) return true;
-		if (target.closest('input[type="range"], .queue-row-grip')) return false;
-		return body.scrollTop <= 0;
+	const height = () => panel.offsetHeight || window.innerHeight || 1;
+
+	const paint = y => {
+		paintedY = y;
+		panel.style.transform = `translateY(${y}px)`;
+		panel.style.setProperty('--drag-fade', String(Math.max(0, 1 - y / height())));
 	};
 
-	panel.addEventListener('pointerdown', event => {
-		if (event.button !== 0 && event.pointerType === 'mouse') return;
-		if (!canStart(event.target)) return;
-		pointerId = event.pointerId;
-		startY = lastY = event.clientY;
-		lastAt = event.timeStamp;
-		velocity = 0;
-		dragging = false;
-	});
-
-	panel.addEventListener('pointermove', event => {
-		if (event.pointerId !== pointerId) return;
-		const delta = event.clientY - startY;
-		if (!dragging) {
-			if (delta < 8) return;          // still ambiguous, or an upward move
-			dragging = true;
-			panel.setPointerCapture?.(pointerId);
-			panel.classList.add('dragging');
-		}
-		const elapsed = Math.max(1, event.timeStamp - lastAt);
-		velocity = (event.clientY - lastY) / elapsed;
-		lastY = event.clientY;
-		lastAt = event.timeStamp;
-		// Upward drag is resisted rather than blocked, so the sheet still
-		// answers the gesture instead of feeling frozen.
-		const offset = delta < 0 ? delta / 6 : delta;
-		panel.style.transform = `translateY(${offset}px)`;
-		panel.style.setProperty('--drag-fade', String(Math.max(0, 1 - offset / (panel.offsetHeight || 1))));
-	});
-
-	const end = event => {
-		if (event.pointerId !== pointerId) return;
-		pointerId = null;
-		if (!dragging) return;
-		dragging = false;
+	const clear = () => {
+		paintedY = 0;
 		panel.classList.remove('dragging');
-		const travelled = Math.max(0, lastY - startY);
-		const far = travelled > (panel.offsetHeight || 1) * DISMISS_FRACTION;
-		if (velocity > DISMISS_VELOCITY || far) {
-			tap(6);
-			handle.close();
-			return;
-		}
 		panel.style.transform = '';
 		panel.style.removeProperty('--drag-fade');
 	};
 
-	panel.addEventListener('pointerup', end);
-	panel.addEventListener('pointercancel', end);
+	/* The panel is where the finger left it, so the close continues from there.
+	 * `--drag-fade` is driven all the way to 0 on the way out — the old dismiss
+	 * path returned before clearing it and closed at whatever opacity the drag
+	 * happened to leave behind. */
+	/* Under reduced motion `spring()` delivers its single frame and its onDone
+	 * synchronously, before it has returned — so assigning its cancel handle to
+	 * `inFlight` afterwards would leave a finished motion looking live, and the
+	 * next tap would "catch" it. The live flag closes that window. */
+	const track = start => {
+		let live = true;
+		const cancel = start(() => { live = false; });
+		inFlight = live ? cancel : null;
+	};
+
+	const closeWithMomentum = (fromY, velocityY) => {
+		if (motionOff()) { clear(); handle.close(); return; }
+		const target = height();
+		panel.dataset.jsClose = '1';
+		panel.classList.add('dragging');      // transition: none, animation: none
+		handle.root.classList.add('closing'); // the scrim still fades via CSS
+		track(done => spring(fromY, target, Math.max(velocityY, MIN_CLOSE_VELOCITY), {
+			stiffness: 180,
+			damping: 30,
+			onFrame: paint,
+			onDone: settled => {
+				done();
+				if (!settled) return;         // caught mid-flight; the catcher owns it
+				inFlight = null;
+				handle.close();
+			},
+		}));
+	};
+
+	const snapBack = (fromY, velocityY) => {
+		track(done => spring(fromY, 0, velocityY, {
+			stiffness: 210,
+			damping: 28,
+			onFrame: paint,
+			onDone: settled => {
+				done();
+				if (!settled) return;
+				inFlight = null;
+				clear();
+			},
+		}));
+	};
+
+	/* An Escape, a back gesture or a scrim tap can land while a snap-back is
+	 * still running. Without this the panel would keep its `.dragging` class,
+	 * which suppresses the close keyframe, and sit on screen until the safety
+	 * timeout removed it. */
+	handle.releaseDrag = () => {
+		if (inFlight) { inFlight(); inFlight = null; }
+		clear();
+	};
+
+	/* Read where the panel actually is right now, including mid-keyframe. This
+	 * plus cancelling the running animations is what makes a sheet catchable
+	 * while it is still sliding up — four lines, and most of what "not robotic"
+	 * means. */
+	const currentY = () => {
+		const raw = getComputedStyle(panel).transform;
+		if (!raw || raw === 'none') return 0;
+		try { return new DOMMatrixReadOnly(raw).m42 || 0; } catch { return 0; }
+	};
+
+	dragGesture(panel, {
+		axis: 'y',
+		threshold: 8,
+		/* Only a downward move may engage a sheet at rest. An upward one at the
+		 * top of a list is the scroller's, and stealing it would make every
+		 * sheet fight the gesture that scrolls it. Once engaged, upward travel
+		 * is rubber-banded rather than blocked.
+		 *
+		 * A sheet caught mid-close is the exception, and it is not a small one:
+		 * the panel is already displaced, the pointer already owns it, and
+		 * pulling it back up is the entire reason for catching it. Holding the
+		 * downward-only rule there means a caught sheet can only ever be let go
+		 * of, which makes catching it pointless. */
+		direction: () => (caught ? 'both' : 'positive'),
+		canStart: event => {
+			const target = event.target;
+			if (target.closest('.sheet-grabber, .sheet-drag')) return true;
+			// The sliders own their own pointers outright; the grip owns the
+			// queue reorder.
+			if (target.closest('.rs, .queue-row-grip')) return false;
+			return body.scrollTop <= 0;
+		},
+		onStart: () => {
+			engaged = false;
+			caught = false;
+			carried = 0;
+			baseY = 0;
+			if (!inFlight) return;
+			// Stop the motion and take over its position and speed.
+			const state = inFlight();
+			inFlight = null;
+			baseY = state.value;
+			carried = state.velocity;
+			caught = true;
+			// A sheet caught mid-close is a sheet that is not closing any more.
+			handle.root.classList.remove('closing');
+			delete panel.dataset.jsClose;
+			panel.classList.add('dragging');
+			paint(baseY);
+		},
+		onMove: ({ dy }) => {
+			if (!engaged) {
+				engaged = true;
+				if (!caught) {
+					// Adopt an in-flight CSS entrance rather than jumping the
+					// panel to its resting place under the finger.
+					baseY = currentY();
+					panel.classList.add('dragging');
+					panel.getAnimations().forEach(animation => animation.cancel());
+				}
+			}
+			paint(rubber(baseY + dy));
+		},
+		onEnd: ({ velocity }) => {
+			if (!engaged) {
+				// A tap that caught a moving sheet and let go without dragging.
+				// The motion it interrupted is the one that should resume.
+				if (caught) resume(paintedY, carried);
+				return;
+			}
+			engaged = false;
+			const at = Math.max(0, paintedY);
+			// `velocity.y` is a 100ms windowed estimate, so a flick that
+			// decelerated over its final frames — which is what fingers do —
+			// still reads as the throw it was rather than as ≈0.
+			if (velocity.y > DISMISS_VELOCITY || at > height() * DISMISS_FRACTION) {
+				tap(6);
+				closeWithMomentum(at, velocity.y);
+				return;
+			}
+			// Seeded with the release velocity, so a sheet let go gently
+			// decelerates into its resting place rather than easing from a
+			// standstill it was never at.
+			snapBack(at, velocity.y);
+		},
+		onCancel: () => {
+			if (!engaged && !caught) return;
+			engaged = false;
+			snapBack(Math.max(0, paintedY), 0);
+		},
+	});
+
+	/* Whatever the interrupted motion was doing, keep doing it. */
+	function resume(fromY, velocityY) {
+		if (velocityY > DISMISS_VELOCITY || fromY > height() * DISMISS_FRACTION) {
+			closeWithMomentum(fromY, velocityY);
+		} else {
+			snapBack(fromY, velocityY);
+		}
+	}
 }
 
 document.addEventListener('keydown', event => {

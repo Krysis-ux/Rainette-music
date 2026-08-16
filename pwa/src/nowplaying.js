@@ -1,14 +1,16 @@
 /* The now-playing card the mini bar expands into. Same contents in the same
- * order as the desktop, so the two devices are not two layouts. The scrubber is
- * a real range input: 2px is a fine cursor target and a useless thumb one. */
+ * order as the desktop, so the two devices are not two layouts. The scrubber and
+ * the volume control are both `createSlider` — a 4px rail inside a 48px row,
+ * which is the one thing a native range input cannot express. */
 
 import { $, el, icon, iconButton, tap, toast, motionOff } from './dom.js';
+import { createSlider } from './slider.js';
 import { state, artworkUrl, artistName, formatTime, REPEAT_LABEL } from './state.js';
 import { openSheet } from './sheets.js';
 import { openQueueSheet } from './queue.js';
 import { openAddToPlaylist, openLyrics, openSleepTimer, openOutputPicker, openTrackMenu, sleepLabel } from './extras.js';
 import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
-import { setVolume, volume as currentVolume, boostAvailable, VOLUME_MAX } from './audio.js';
+import { setVolume, volume as currentVolume, boostAvailable, resumeContext, VOLUME_MAX } from './audio.js';
 import { isLocalTrack, localArtworkUrl } from './local.js';
 import {
 	currentTrack, isPlaying, isLoading, currentTime, duration, isLinked,
@@ -16,6 +18,11 @@ import {
 } from './player.js';
 
 let openHandle = null;
+
+/* If the audio clock lands within this of where we asked, it has caught up and
+ * the slider's settle window is released early rather than sat out. The window
+ * itself belongs to the component. */
+const SEEK_SETTLE_TOLERANCE_S = 1.5;
 
 export function isNowPlayingOpen() {
 	return !!openHandle?.root?.isConnected;
@@ -73,40 +80,35 @@ export function openNowPlaying() {
 			meta.append(title, artist, album);
 
 			// ── Scrubber ────────────────────────────────────────────────────
-			const seekWrap = el('div', 'now-seek');
-			const seekTrack = el('div', 'now-seek-track');
-			seekTrack.innerHTML = '<span></span>';
-			const seek = document.createElement('input');
-			seek.type = 'range';
-			seek.className = 'now-seek-input';
-			seek.min = '0';
-			seek.max = '0';
-			seek.step = '0.1';
-			seek.value = '0';
-			seek.setAttribute('aria-label', 'Seek');
-			seekWrap.append(seekTrack, seek);
-
 			const times = el('div', 'now-times');
 			const elapsed = el('span', '', '0:00');
 			const total = el('span', '', '0:00');
 			times.append(elapsed, total);
 
-			// Dragging must not fight the incoming timeupdate stream, so while a
-			// scrub is in progress the display follows the thumb, not the audio.
-			let scrubbing = false;
-			seek.addEventListener('pointerdown', () => { scrubbing = true; });
-			seek.addEventListener('input', () => {
-				elapsed.textContent = formatTime(Number(seek.value));
-				paintSeek(seekTrack, Number(seek.value), Number(seek.max));
+			// The render-vs-drag guard lives inside the component now. A live
+			// gesture always beats the timeupdate stream, and after a commit the
+			// thumb holds its own value until the audio clock catches up with
+			// where it was sent — seekTo() writes audio.currentTime, which fires
+			// timeupdate synchronously, and that first tick still carries the
+			// pre-seek position.
+			//
+			// Both of those used to be open-coded here, and the guard was released
+			// by a `change` binding that several engines fire once per value step
+			// during a drag — dropping it mid-gesture, with the finger still down.
+			const seek = createSlider({
+				min: 0,
+				max: 0,
+				step: 0.1,
+				variant: 'seek',
+				label: 'Seek',
+				// Seconds, matching the desktop's own arrow-key step.
+				keyStep: 5,
+				// A screen reader has to say "1:34 of 3:20", not "94".
+				format: (value, range) => `${formatTime(value)} of ${range.max ? formatTime(range.max) : 'unknown length'}`,
+				settleTolerance: SEEK_SETTLE_TOLERANCE_S,
+				onInput: value => { elapsed.textContent = formatTime(value); },
+				onCommit: value => seekTo(value),
 			});
-			const commitSeek = () => {
-				if (!scrubbing) return;
-				scrubbing = false;
-				seekTo(Number(seek.value));
-			};
-			seek.addEventListener('change', commitSeek);
-			seek.addEventListener('pointerup', commitSeek);
-			seek.addEventListener('pointercancel', () => { scrubbing = false; });
 
 			// ── Transport ───────────────────────────────────────────────────
 			const transport = el('div', 'now-transport');
@@ -134,36 +136,47 @@ export function openNowPlaying() {
 			// unavailable the slider stops honestly at 100 rather than pretending.
 			const volumeRow = el('div', 'now-volume');
 			const volumeIcon = el('span', 'now-volume-icon');
-			const volume = document.createElement('input');
-			volume.type = 'range';
-			volume.min = '0';
-			volume.max = String(Math.round(VOLUME_MAX * 100));
-			volume.step = '1';
-			volume.value = String(Math.round(currentVolume() * 100));
-			volume.setAttribute('aria-label', 'Volume');
 			const volumeValue = el('span', 'now-volume-value');
 
-			const paintVolume = () => {
-				const percent = Number(volume.value);
+			const paintVolume = percent => {
 				volumeIcon.innerHTML = icon(percent ? 'volume' : 'volumeOff', 18);
 				volumeValue.textContent = `${percent}%`;
 				volumeRow.classList.toggle('is-boosted', percent > 100);
-				volume.setAttribute('aria-valuetext', `${percent}%`);
-				volume.style.setProperty('--level', String(percent / (VOLUME_MAX * 100)));
 			};
 
-			volume.addEventListener('input', async () => {
-				const applied = await setVolume(Number(volume.value) / 100);
-				// A phone whose graph refused to build cannot exceed unity; snapping
-				// the thumb back is the only honest way to say so.
-				if (Number(volume.value) > 100 && !boostAvailable()) {
-					volume.value = String(Math.round(applied * 100));
+			const volume = createSlider({
+				min: 0,
+				max: Math.round(VOLUME_MAX * 100),
+				step: 1,
+				value: Math.round(currentVolume() * 100),
+				variant: 'volume',
+				label: 'Volume',
+				keyStep: 5,
+				boostAbove: 100,
+				format: percent => `${percent}%`,
+				// Safari starts every context suspended, and a suspended context is
+				// silence with no error anywhere. A pointerdown on this control is a
+				// valid gesture to resume it — and a native range's internal drag is
+				// not reliably a gesture context, which is one more reason the
+				// component owns the pointer.
+				onGrab: resumeContext,
+				onInput: percent => { paintVolume(percent); setVolume(percent / 100).catch(() => {}); },
+				// The snap-back is on commit only. Reading boostAvailable() on every
+				// frame of a drag raced the graph still being built and yanked the
+				// thumb back mid-gesture; once, on release, it is an answer rather
+				// than a coin toss.
+				onCommit: async percent => {
+					const applied = await setVolume(percent / 100);
+					if (percent <= 100 || boostAvailable()) return;
+					// A phone whose graph refused to build cannot exceed unity;
+					// snapping the thumb back is the only honest way to say so.
+					volume.setValue(Math.round(applied * 100), 'force');
+					paintVolume(volume.value);
 					toast('Boost needs a newer Rainette on your computer.', { icon: 'volume' });
-				}
-				paintVolume();
+				},
 			});
-			paintVolume();
-			volumeRow.append(volumeIcon, volume, volumeValue);
+			paintVolume(volume.value);
+			volumeRow.append(volumeIcon, volume.root, volumeValue);
 
 			// ── Actions ─────────────────────────────────────────────────────
 			const actions = el('div', 'now-actions');
@@ -188,7 +201,7 @@ export function openNowPlaying() {
 			outputBtn.addEventListener('click', () => openOutputPicker().then(render));
 			outputRow.append(outputBtn);
 
-			body.append(top, artShell, meta, seekWrap, times, transport, volumeRow, outputRow, actions);
+			body.append(top, artShell, meta, seek.root, times, transport, volumeRow, outputRow, actions);
 
 			function render() {
 				const track = currentTrack();
@@ -212,6 +225,7 @@ export function openNowPlaying() {
 
 				const release = trackAlbum(track);
 				album.hidden = !release;
+				album.disabled = !release;
 				if (release) {
 					album.textContent = release.title;
 					album.setAttribute('aria-label', `Go to ${release.title}`);
@@ -238,14 +252,14 @@ export function openNowPlaying() {
 				outputBtn.querySelector('span').textContent = outputName;
 				outputBtn.setAttribute('aria-label', `Play on, currently ${outputName}`);
 
-				if (!scrubbing) {
-					const length = duration();
-					seek.max = String(length || 0);
-					seek.value = String(Math.min(currentTime(), length || 0));
-					elapsed.textContent = formatTime(currentTime());
-					total.textContent = length ? formatTime(length) : '--:--';
-					paintSeek(seekTrack, currentTime(), length);
-				}
+				const length = duration();
+				seek.setRange(0, length || 0);
+				// Guarded: a drag in progress, or a seek still travelling, keeps the
+				// thumb. `seek.value` is therefore always what the thumb shows, which
+				// is what the elapsed readout has to agree with.
+				seek.setValue(currentTime(), 'stream');
+				elapsed.textContent = formatTime(seek.value);
+				total.textContent = length ? formatTime(length) : '--:--';
 			}
 
 			render();
@@ -269,11 +283,6 @@ function labelledAction(glyph, label, onClick, accessibleName = label) {
 	button.title = accessibleName;
 	button.addEventListener('click', onClick);
 	return button;
-}
-
-function paintSeek(track, value, max) {
-	const ratio = max > 0 ? Math.min(1, Math.max(0, value / max)) : 0;
-	track.style.setProperty('--played', String(ratio));
 }
 
 /* Average the cover down to one colour and hand it to the stylesheet.

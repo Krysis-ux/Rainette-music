@@ -14,7 +14,7 @@ import { command, commandError } from './bridge.js';
 import { renderTracks } from './tracks.js';
 import { sortTracks, sortControl, RELEASE_SORTS, sortReleases } from './sorting.js';
 import { playTrack, queueAddEnd } from './player.js';
-import { rememberRecent } from './state.js';
+import { rememberRecent, artistName } from './state.js';
 import { artistRef, knownArtist, resolveArtistImages } from './artists.js';
 
 /* ── Shapes ───────────────────────────────────────────────────────────────
@@ -44,6 +44,32 @@ export function trackArtist(track) {
 	const name = String(primary?.name || track?.artist || track?.uploader || '').trim();
 	if (!name) return null;
 	return { id: String(primary?.id || meta.artist_id || ''), name, art: '', subscribers: '' };
+}
+
+/** The artist name, as a control when there is somewhere to go and a label when
+ *  there is not.
+ *
+ *  A real `<button>` rather than a tappable `<span>`: a span gives no keyboard
+ *  route and no accessible name, which is an app that looks like it has artist
+ *  links while having none. Where there is no artist to open we return a plain
+ *  span rather than a disabled button — a disabled button is still a tab stop
+ *  in some engines and announces itself as one.
+ */
+export function artistLink(track, { className = '' } = {}) {
+	const name = artistName(track) || 'Unknown artist';
+	const who = trackArtist(track);
+	if (!who) return el('span', className, name);
+
+	const link = el('button', `link-inline ${className}`.trim(), name);
+	link.type = 'button';
+	link.setAttribute('aria-label', `Go to ${who.name}`);
+	link.addEventListener('click', event => {
+		// The row behind this is what plays the track. Without this the tap
+		// would open the artist and start the song at the same time.
+		event.stopPropagation();
+		openArtist(who);
+	});
+	return link;
 }
 
 /** The album a track belongs to, when it carries one. */

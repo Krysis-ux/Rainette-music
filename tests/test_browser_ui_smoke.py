@@ -623,11 +623,20 @@ def test_track_row_reflects_now_playing_state_and_toggles_in_place():
             row(0).locator(".rw-play-action").click()
             page.wait_for_timeout(100)
             sent = page.evaluate("() => window.__rainetteSentMessages || []")
+            # The verb states an intent rather than a flip: `toggle` against a
+            # stale `playing` flag makes the pause-looking button resume, which
+            # is a real bug on a window whose broadcasts can lag a press.
+            # `toggle` is still accepted from older callers.
             toggles = [m for m in sent if isinstance(m, dict)
-                      and m.get("type") == "music_remote_control" and m.get("action") == "toggle"]
+                      and m.get("type") == "music_remote_control"
+                      and m.get("action") in ("toggle", "pause", "play")]
             assert len(toggles) == 1, (
                 "clicking the active row's own button must toggle play/pause in place, "
                 f"not restart the queue - messages sent: {sent[-3:]}"
+            )
+            assert toggles[0]["action"] == "pause", (
+                "the row was playing, so its button must ask for a pause "
+                f"- got {toggles[0]['action']}"
             )
 
             # Pausing keeps this as the current track: its button becomes Play,
@@ -645,8 +654,14 @@ def test_track_row_reflects_now_playing_state_and_toggles_in_place():
             page.wait_for_timeout(100)
             sent = page.evaluate("() => window.__rainetteSentMessages || []")
             toggles = [m for m in sent if isinstance(m, dict)
-                      and m.get("type") == "music_remote_control" and m.get("action") == "toggle"]
+                      and m.get("type") == "music_remote_control"
+                      and m.get("action") in ("toggle", "pause", "play")]
             assert len(toggles) == 2
+            # Paused row, so the button asks to resume — and asks for that
+            # specifically, rather than for "whatever the opposite is".
+            assert toggles[1]["action"] == "play", (
+                f"a paused row must ask for a play - got {toggles[1]['action']}"
+            )
 
             # Loading is current too. It must not lose row feedback or restart
             # the queue when the user presses its cancel/pause affordance.
@@ -661,8 +676,14 @@ def test_track_row_reflects_now_playing_state_and_toggles_in_place():
             page.wait_for_timeout(100)
             sent = page.evaluate("() => window.__rainetteSentMessages || []")
             toggles = [m for m in sent if isinstance(m, dict)
-                      and m.get("type") == "music_remote_control" and m.get("action") == "toggle"]
+                      and m.get("type") == "music_remote_control"
+                      and m.get("action") in ("toggle", "pause", "play")]
             assert len(toggles) == 3
+            # A loading row shows a pause affordance, so its press cancels
+            # rather than starts.
+            assert toggles[2]["action"] == "pause", (
+                f"a loading row's button must ask for a pause - got {toggles[2]['action']}"
+            )
 
             # A progress tick can be the first post-reconnect proof that audio
             # is playing. Recover the queue/row presentation from it even when
@@ -1462,6 +1483,89 @@ def test_update_install_shows_progress_then_failure_reaches_the_user():
             assert page.get_by_text(
                 "Rainette could not verify or start the update. Please try again."
             ).first.is_visible(), "the late failure must reach the user, not just the console"
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_pausing_then_skipping_does_not_pause_the_next_track():
+    """A pause owed to the track you left must not land on the track you started.
+
+    `audio` is a module-level variable that a track change replaces. The fade's
+    completion callback and the pause backstop are both deferred, so if either
+    reads that variable when it fires rather than the element it was scheduled
+    for, it pauses whatever is playing *then*. Pause, skip within the fade
+    window, and the new track stops a few hundred milliseconds in — silently,
+    with the volume restored, so nothing about it looks like a fault.
+    """
+    handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
+    server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/"
+    track_a = {"id": "a", "source": "youtube", "source_id": "src-a",
+               "title": "Track A", "artist": "Artist", "duration_s": 120}
+    track_b = {"id": "b", "source": "youtube", "source_id": "src-b",
+               "title": "Track B", "artist": "Artist", "duration_s": 120}
+
+    def resolve(page, track):
+        page.wait_for_function(
+            "sourceId => window.__rainetteSentMessages.some(m => "
+            "m.type === 'music_stream_url' && m.source_id === sourceId && !m.prefetch)",
+            arg=track["source_id"],
+        )
+        request = page.evaluate(
+            "sourceId => window.__rainetteSentMessages.filter(m => "
+            "m.type === 'music_stream_url' && m.source_id === sourceId && !m.prefetch).at(-1)",
+            track["source_id"],
+        )
+        emit_ws(page, {"type": "music_stream_url_result", "id": request["id"], "ok": True,
+                       "source_id": track["source_id"],
+                       "url": f"https://audio.invalid/{track['source_id']}.mp3"})
+
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page, diagnostics = open_fake_miniplayer(browser, base)
+
+            # The fade only runs when it is switched on; without it there is no
+            # deferred callback and the race cannot happen at all.
+            page.evaluate("() => localStorage.setItem('rainette.fade', '1')")
+
+            emit_ws(page, {"type": "music_remote_play", "tracks": [track_a, track_b], "index": 0})
+            resolve(page, track_a)
+            page.wait_for_function(
+                "() => window.__rainetteSentMessages.some(m => "
+                "m.type === 'music_now_playing_set' && m.playing === true)"
+            )
+
+            # Pause, then skip immediately — inside the fade's own window.
+            emit_ws(page, {"type": "music_remote_control", "action": "pause"})
+            emit_ws(page, {"type": "music_remote_control", "action": "next"})
+            resolve(page, track_b)
+
+            # Well past FADE_MS + the backstop delay, so any stale timer has fired.
+            page.wait_for_timeout(1200)
+
+            # The element the skip created is the last one built. Asserting on
+            # that specific instance is the whole point: a stale timer pauses
+            # whatever `audio` happens to name when it fires, so reading "the
+            # current element" is exactly the mistake under test.
+            latest = page.evaluate(
+                "() => { const all = window.__rainetteFakeAudioInstances || [];"
+                "  const a = all[all.length - 1];"
+                "  return a ? { paused: a.paused, pauseCalls: a.pauseCalls, playCalls: a.playCalls } : null; }"
+            )
+            assert latest is not None, "no audio element was created"
+            assert latest["playCalls"] > 0, f"the skipped-to track never started: {latest}"
+            assert not latest["paused"], (
+                "the track started by the skip was paused by a timer owed to the "
+                "previous track - a pause meant for the element you left landed "
+                f"on the element you started: {latest}"
+            )
+            assert not diagnostics, diagnostics
             browser.close()
     finally:
         server.shutdown()

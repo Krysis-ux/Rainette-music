@@ -1,3 +1,4 @@
+import time
 import unittest
 import tempfile
 import subprocess
@@ -386,5 +387,117 @@ class RepeatRelayTests(unittest.TestCase):
         self.assertEqual((sent[1]["repeat"], sent[1]["loop"]), ("one", True))
 
 
+class StreamCacheExpiryTests(unittest.TestCase):
+    """The cache-hit path that produced 'The operation could not be completed'.
+
+    A cached entry used to report its *remaining* life as the TTL hint, the
+    relay grant was sized from that hint, and so an entry with seconds left
+    minted a 60-second audio grant. Roughly a minute into the track every Range
+    request 404'd and AVFoundation surfaced its own error string.
+    """
+
+    def setUp(self):
+        music_bridge._stream_url_cache.clear()
+
+    tearDown = setUp
+
+    def test_a_nearly_expired_entry_is_not_served(self):
+        music_bridge._stream_cache_set("vid", url="https://a.googlevideo.com/x")
+        with music_bridge._stream_cache_lock:
+            music_bridge._stream_url_cache["vid"]["expires_at"] = time.time() + 5
+
+        # Served unconditionally, this is the five-second hint that collapsed
+        # the grant. It has to be a miss instead, so the caller re-resolves.
+        self.assertIsNone(music_bridge._stream_cache_get(
+            "vid", min_remaining_s=music_bridge.STREAM_URL_MIN_REMAINING_S))
+
+    def test_a_healthy_entry_is_still_served(self):
+        music_bridge._stream_cache_set("vid", url="https://a.googlevideo.com/x")
+        cached = music_bridge._stream_cache_get(
+            "vid", min_remaining_s=music_bridge.STREAM_URL_MIN_REMAINING_S)
+        self.assertIsNotNone(cached)
+        remaining = float(cached["expires_at"]) - time.time()
+        self.assertGreater(remaining, music_bridge.STREAM_URL_MIN_REMAINING_S)
+
+    def test_the_cdns_own_deadline_wins_when_it_is_sooner(self):
+        """Caching past the point a URL stops working is how a 'valid' entry
+        hands back a dead link."""
+        soon = int(time.time()) + 600
+        music_bridge._stream_cache_set("vid", url=f"https://a.googlevideo.com/x?expire={soon}")
+        with music_bridge._stream_cache_lock:
+            self.assertEqual(int(music_bridge._stream_url_cache["vid"]["expires_at"]), soon)
+
+    def test_an_absent_or_nonsense_expire_falls_back_to_our_own_ttl(self):
+        for url in ("https://a.googlevideo.com/x",
+                    "https://a.googlevideo.com/x?expire=banana",
+                    "https://a.googlevideo.com/x?expire=1"):          # long past
+            with self.subTest(url=url):
+                music_bridge._stream_url_cache.clear()
+                music_bridge._stream_cache_set("vid", url=url)
+                with music_bridge._stream_cache_lock:
+                    remaining = music_bridge._stream_url_cache["vid"]["expires_at"] - time.time()
+                self.assertAlmostEqual(remaining, music_bridge.STREAM_URL_CACHE_TTL_S, delta=5)
+
+    def test_expiry_parsing_rejects_the_implausible(self):
+        self.assertIsNone(music_bridge._parse_upstream_expiry("https://x/y"))
+        self.assertIsNone(music_bridge._parse_upstream_expiry("https://x/y?expire=0"))
+        far = int(time.time()) + 90 * 86_400
+        self.assertIsNone(music_bridge._parse_upstream_expiry(f"https://x/y?expire={far}"))
+        ok = int(time.time()) + 3_600
+        self.assertEqual(music_bridge._parse_upstream_expiry(f"https://x/y?expire={ok}"), float(ok))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrefetchDoesNotCountAsListeningTests(unittest.TestCase):
+    """Warming the next track's URL is not the same as playing it.
+
+    The phone looks two tracks ahead so advancing needs no round trip. Without
+    the prefetch flag every one of those lookaheads logged a play, so the
+    history filled with songs that were never heard and "recently played"
+    stopped being true.
+    """
+
+    class _CountingState:
+        def __init__(self):
+            self.plays = []
+
+        def log_play(self, track_id):
+            self.plays.append(track_id)
+
+    def setUp(self):
+        self.state = self._CountingState()
+        self.old_state = music_bridge.shared.STATE
+        self.old_notify = music_bridge.shared.notify_browsers
+        music_bridge.shared.STATE = self.state
+        music_bridge.shared.notify_browsers = lambda msg: None
+        music_bridge._stream_url_cache.clear()
+        # A warm cache, so the request takes the cache-hit path rather than
+        # shelling out to yt-dlp.
+        music_bridge._stream_cache_set("vid", url="https://a.googlevideo.com/x")
+
+    def tearDown(self):
+        music_bridge.shared.STATE = self.old_state
+        music_bridge.shared.notify_browsers = self.old_notify
+        music_bridge._stream_url_cache.clear()
+
+    def test_a_prefetch_logs_nothing(self):
+        music_bridge.cmd_music_stream_url({
+            "type": "music_stream_url", "id": "p1",
+            "source_id": "vid", "track_id": "t1", "prefetch": True,
+        })
+        self.assertEqual(self.state.plays, [])
+
+    def test_a_real_play_still_logs(self):
+        music_bridge.cmd_music_stream_url({
+            "type": "music_stream_url", "id": "p2",
+            "source_id": "vid", "track_id": "t1",
+        })
+        self.assertEqual(self.state.plays, ["t1"])
+
+    def test_the_phone_actually_sends_the_flag(self):
+        # The computer honours it; the client has to pass it for that to matter.
+        player = (Path(__file__).resolve().parents[1] / "pwa" / "src" / "player.js").read_text(encoding="utf-8")
+        self.assertIn("{ prefetch: true }", player)

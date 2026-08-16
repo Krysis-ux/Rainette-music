@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -343,6 +344,123 @@ class ClearUserDataTests(unittest.TestCase):
         self.assertEqual(result["counts"], {})
         self.assertEqual(len(self.state.list_recent_plays()), 1)
         self.assertEqual(len(self.state.list_playlists()), 1)
+
+
+class PlaybackTargetTests(unittest.TestCase):
+    """Which surface owns the audio, recorded rather than guessed.
+
+    Nothing used to record it: the desktop kept a write-only field no event
+    ever updated, the phone kept a boolean, and the wire carried a two-value
+    string defaulted to "desktop". That is why pause did not cross devices and
+    why every screen claimed the computer was playing regardless of the truth.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "music.db"
+        self.state = MusicState(self.path)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_fresh_computer_owns_its_own_playback(self):
+        target = self.state.get_playback_target()
+        self.assertEqual(target["owner_kind"], "desktop")
+        self.assertEqual(target["revision"], 0)
+
+    def test_ownership_survives_a_restart(self):
+        self.state.set_playback_target({"owner_kind": "phone", "owner_device_id": "phone-1",
+                                        "owner_name": "iPhone", "reason": "claim_by_play"})
+        # A new process, same database.
+        reopened = MusicState(self.path)
+        target = reopened.get_playback_target()
+        self.assertEqual(target["owner_device_id"], "phone-1")
+        self.assertEqual(target["owner_name"], "iPhone")
+
+    def test_the_revision_only_ever_climbs(self):
+        # Clients gate on it, so a reset would let a stale record win.
+        seen = []
+        for owner in ("phone-1", "desktop", "phone-2"):
+            seen.append(self.state.set_playback_target({"owner_device_id": owner})["revision"])
+        self.assertEqual(seen, sorted(set(seen)))
+        self.assertEqual(seen, [1, 2, 3])
+
+    def test_a_stale_writer_is_refused_rather_than_clobbering(self):
+        first = self.state.set_playback_target({"owner_device_id": "phone-1"})
+        self.state.set_playback_target({"owner_device_id": "phone-2"})
+        with self.assertRaises(ValueError):
+            self.state.set_playback_target({"owner_device_id": "phone-3"},
+                                           expected_revision=first["revision"])
+        self.assertEqual(self.state.get_playback_target()["owner_device_id"], "phone-2")
+
+    def test_changing_speakers_is_not_a_handoff(self):
+        # since_ms marks when ownership started. Picking a different output on
+        # the same machine is not a change of owner and must not reset it.
+        first = self.state.set_playback_target({"owner_device_id": "desktop", "reason": "claim_by_play"})
+        moved = self.state.set_playback_target({"sink_name": "Kitchen speaker", "reason": "sink_change"})
+        self.assertEqual(moved["since_ms"], first["since_ms"])
+
+        handoff = self.state.set_playback_target({"owner_kind": "phone", "owner_device_id": "phone-1"})
+        self.assertGreaterEqual(handoff["since_ms"], first["since_ms"])
+
+
+class DeviceSettingsTests(unittest.TestCase):
+    """Per-phone settings, so a recognised phone gets its own back."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = MusicState(Path(self.tmp.name) / "music.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_follow_mode_outlives_an_evicted_event_log(self):
+        # This lived only in memory, which is the whole reason evicting an idle
+        # device log used to silently unlink a phone.
+        self.state.set_device_follow("phone-1", True)
+        self.assertTrue(self.state.device_follow("phone-1"))
+        self.assertFalse(self.state.device_follow("phone-2"))
+
+    def test_two_devices_editing_different_keys_both_survive(self):
+        # The reason stamps are per key and not per blob: with one revision for
+        # the whole object, one of these edits has to be thrown away.
+        self.state.merge_device_settings("phone-1", [{"key": "fade", "value": True, "updated_ms": 1000}])
+        self.state.merge_device_settings("phone-1", [{"key": "haptics", "value": False, "updated_ms": 1001}])
+        settings = {row["key"]: row["value"] for row in self.state.read_device_settings("phone-1")}
+        self.assertEqual(settings, {"fade": True, "haptics": False})
+
+    def test_an_older_edit_never_overwrites_a_newer_one(self):
+        self.state.merge_device_settings("phone-1", [{"key": "fade", "value": True, "updated_ms": 2000}])
+        self.state.merge_device_settings("phone-1", [{"key": "fade", "value": False, "updated_ms": 1000}])
+        settings = {row["key"]: row["value"] for row in self.state.read_device_settings("phone-1")}
+        self.assertIs(settings["fade"], True)
+
+    def test_a_phone_with_a_wrong_clock_cannot_pin_a_key_forever(self):
+        far_future = int(time.time() * 1000) + 400_000
+        self.state.merge_device_settings("phone-1", [{"key": "fade", "value": True, "updated_ms": far_future}])
+        stamped = {row["key"]: row["updated_ms"] for row in self.state.read_device_settings("phone-1")}
+        self.assertLess(stamped["fade"], far_future)
+
+        # And a later, honest edit still lands.
+        self.state.merge_device_settings("phone-1", [{"key": "fade", "value": False,
+                                                      "updated_ms": int(time.time() * 1000) + 10}])
+        settings = {row["key"]: row["value"] for row in self.state.read_device_settings("phone-1")}
+        self.assertIs(settings["fade"], False)
+
+    def test_non_object_values_round_trip_intact(self):
+        # Settings are booleans and numbers far more often than objects; the
+        # dict-only parser would have turned every one of them into {}.
+        self.state.merge_device_settings("phone-1", [
+            {"key": "fade", "value": False, "updated_ms": 1},
+            {"key": "crossfadeMs", "value": 320, "updated_ms": 1},
+            {"key": "landingTab", "value": "search", "updated_ms": 1},
+        ])
+        settings = {row["key"]: row["value"] for row in self.state.read_device_settings("phone-1")}
+        self.assertEqual(settings, {"fade": False, "crossfadeMs": 320, "landingTab": "search"})
+
+    def test_one_phones_settings_are_not_anothers(self):
+        self.state.merge_device_settings("phone-1", [{"key": "fade", "value": True, "updated_ms": 1}])
+        self.assertEqual(self.state.read_device_settings("phone-2"), [])
 
 
 if __name__ == "__main__":

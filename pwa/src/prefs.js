@@ -107,6 +107,15 @@ export const DEFAULTS = {
 
 let cache = null;
 
+/* Told about every change so the sync layer can mirror it. A callback rather
+ * than an import, because prefsync.js imports this module and the reverse edge
+ * would make the pair circular. */
+let onPrefChanged = () => {};
+
+export function observePrefs(handler) {
+	onPrefChanged = handler || onPrefChanged;
+}
+
 function readAll() {
 	if (cache) return cache;
 	try {
@@ -128,6 +137,7 @@ export function setPref(name, value) {
 	cache = all;
 	try { localStorage.setItem(STORAGE.prefs, JSON.stringify(all)); } catch { /* quota */ }
 	if (name === 'reduceMotion' || name === 'haptics') applyMotion();
+	onPrefChanged(name);
 	return value;
 }
 

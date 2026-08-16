@@ -3,18 +3,26 @@
  * returning phone that kept a cached app.js would otherwise keep running the
  * old client — speaking a handshake the computer no longer understands, or
  * simply never seeing the new screens — until it was uninstalled. */
-const CACHE = 'rainette-pwa-v8';
+const CACHE = 'rainette-pwa-v14';
 const SHELL = [
   './',
   './index.html',
   './styles.css',
   './app.js',
   './src/state.js',
+  './src/connection.js',
+  './src/sessions.js',
+  './src/target.js',
+  './src/prefsync.js',
+  './src/codecs.js',
   './src/dom.js',
   './src/bridge.js',
   './src/player.js',
   './src/audio.js',
   './src/sheets.js',
+  './src/motion.js',
+  './src/gesture.js',
+  './src/slider.js',
   './src/tracks.js',
   './src/queue.js',
   './src/nowplaying.js',
@@ -33,7 +41,6 @@ const SHELL = [
   './src/backup.js',
   './src/import.js',
   './src/settings.js',
-  './src/video.js',
   './manifest.webmanifest',
   './icon.svg',
 ];

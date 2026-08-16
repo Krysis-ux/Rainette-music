@@ -232,18 +232,48 @@ async function ensureGraph() {
 	return true;
 }
 
-/* A graph is worth building whenever the EQ is on or the volume is set past
- * what an element can reach on its own. Below that, an untouched element is the
+/* Does writing `audio.volume` on this platform actually do anything?
+ *
+ * iOS ignores the assignment silently — no throw, no warning. Detected by
+ * writing and reading back rather than by sniffing the user agent, because the
+ * question is "does this work here", and only the element can answer it. */
+let volumeWriteIsDead = null;
+
+function volumeIsWritable() {
+	if (volumeWriteIsDead !== null) return !volumeWriteIsDead;
+	const audio = audioElement();
+	const before = audio.volume;
+	try {
+		const probe = before === 0.5 ? 0.25 : 0.5;
+		audio.volume = probe;
+		volumeWriteIsDead = audio.volume !== probe;
+		audio.volume = before;
+	} catch {
+		volumeWriteIsDead = true;
+	}
+	return !volumeWriteIsDead;
+}
+
+/* A graph is worth building whenever the EQ is on, the volume is set past what
+ * an element can reach on its own, or the element ignores volume entirely.
+ *
+ * That last clause is the whole point: without it, an iPhone got no graph until
+ * the volume was pushed *above* 100%, so the slider was inert across its entire
+ * useful range and only started working in the boost range — the inverse of
+ * what it looks like it does. Below all three, an untouched element is the
  * safer path: no CORS requirement, no reload, no risk of silence. */
 function graphIsWanted() {
-	return eq.on || Number(state.volume) > 1;
+	return eq.on || Number(state.volume) > 1 || !volumeIsWritable();
 }
 
 /* Restored settings that need the graph mean the very first track should be
  * fetched under CORS from the start. Without this every session would begin by
  * loading a track, discovering it cannot be routed, and reloading it — a restart
  * the user hears, once, for a setting they already made. */
-if (graphIsWanted()) {
+/* Deliberately the cheap half of graphIsWanted(): probing whether volume writes
+ * stick would touch the element while modules are still evaluating, and this
+ * only needs to catch settings restored from a previous session. */
+if (eq.on || Number(state.volume) > 1) {
 	try { audioElement().crossOrigin = 'anonymous'; } catch { /* element not ready */ }
 }
 
@@ -273,7 +303,9 @@ export async function setVolume(value) {
 		return wanted;
 	}
 
-	if (wanted > 1 && graph === 'idle') await ensureGraph();
+	// Not just "past unity" any more: on a platform that ignores the element's
+	// own volume, the graph is the only thing that can carry the change at all.
+	if (graph === 'idle' && graphIsWanted()) await ensureGraph();
 	applyVolume();
 	resumeContext();
 	notifyPlayerChanged();

@@ -56,6 +56,44 @@
 	   to their text and ended up under 40px, which on a phone held one-handed
 	   is a target you miss and read as a dead button. */
 	--touch: 48px;
+
+	/* An artist name sitting inside a 12.5px line cannot reach --touch without
+	   doubling every row's height. WCAG 2.2 SC 2.5.8 exempts targets inside a
+	   block of text for exactly this reason; this is the floor we hold instead,
+	   reached with padding rather than layout. */
+	--touch-inline: 32px;
+
+	/* ── Motion vocabulary ────────────────────────────────────────────────
+	   --ease, --fast and --med above keep every name and value they had. These
+	   three fill the register those two bracket without landing in, so a
+	   duration stops being decided per site.
+
+	   Response --quick | State --base | Transition --med | Arrival --slow
+	   Exit --med + --ease-in | Commit --base + --ease-spring */
+
+	/* Below ~100ms motion stops reading as motion and starts reading as
+	   response, which for a press or a thumb growing is the point. */
+	--quick: 90ms;
+	/* The workhorse: the product register is 150–250ms. */
+	--base: 200ms;
+	/* A sheet arriving carries more distance and earns more time. */
+	--slow: 420ms;
+
+	/* Exits accelerate. This curve was already written out inline at the
+	   sheet-down keyframe and again in dom.js; naming it stops it being
+	   copy-pasted a third time. */
+	--ease-in: cubic-bezier(0.4, 0, 1, 1);
+	/* A single controlled overshoot, for commits and snap-backs only —
+	   anything that overshoots twice reads as a toy. */
+	--ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+	/* ── Slider geometry ──────────────────────────────────────────────────
+	   The rail is what you see; the row is what you hit. Keeping those two
+	   numbers apart is the thing a native range input cannot do. */
+	--rs-row:      var(--touch);
+	--rs-rail:     4px;
+	--rs-thumb:    16px;
+	--rs-thumb-lg: 22px;
 }
 
 /* ── Themes ───────────────────────────────────────────────────────────────
@@ -306,6 +344,79 @@ h2 {
 /* ── Pairing ──────────────────────────────────────────────────────────── */
 
 .setup { padding-top: 22px; }
+
+/* ── Reconnect ────────────────────────────────────────────────────────────
+   Computers this phone already knows, offered above the pairing form because
+   returning to one is the common case and pasting a fresh link is the rare one.
+   Hidden entirely until there is something to show, so a first-run phone still
+   sees the form as the first thing on the screen. */
+
+.sessions { display: grid; gap: 10px; margin-bottom: 22px; }
+
+.sessions-title {
+	margin: 0;
+	color: var(--text-muted);
+	font-size: 13px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.sessions-list { display: grid; gap: 8px; }
+
+.session-row {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: center;
+	gap: 12px;
+	min-height: var(--touch);
+	padding: 10px 14px;
+	border: 1px solid var(--line-firm);
+	border-radius: var(--r-md);
+	background: var(--surface);
+	color: inherit;
+	text-align: left;
+	cursor: pointer;
+	transition: background var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+
+.session-row:active { transform: scale(0.985); background: var(--surface-high); }
+.session-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.session-icon { display: inline-flex; color: var(--accent); }
+.session-copy { display: grid; gap: 2px; min-width: 0; }
+
+.session-copy b {
+	overflow: hidden;
+	font-size: 14.5px;
+	font-weight: 570;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.session-copy span { color: var(--text-muted); font-size: 12.5px; }
+
+/* A computer we could not reach last time is dimmed, not removed: its address
+   rotating is the ordinary case and the credential is still good. */
+.session-row.is-stale .session-icon { color: var(--text-muted); }
+.session-row.is-stale .session-copy span { color: var(--warn); }
+
+.sessions-divider {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 4px 0 0;
+	color: var(--text-muted);
+	font-size: 12.5px;
+}
+
+.sessions-divider::before,
+.sessions-divider::after {
+	flex: 1;
+	height: 1px;
+	background: var(--line);
+	content: "";
+}
 
 .pair-form { display: grid; gap: 14px; }
 
@@ -706,6 +817,7 @@ h2 {
    the player" into a game of hitting a 40px strip of text between two
    transport controls. */
 .player-open {
+	position: relative;
 	display: grid;
 	grid-template-columns: auto minmax(0, 1fr);
 	align-items: center;
@@ -719,7 +831,29 @@ h2 {
 	transition: transform var(--fast) var(--ease), opacity var(--fast) var(--ease);
 }
 
-.player-open:active { transform: scale(0.985); opacity: 0.85; }
+/* Stretched behind the artwork and copy, so tapping the bar opens the card
+   while the artist name inside it can still be its own link. */
+.player-open-hit {
+	position: absolute;
+	inset: 0;
+	z-index: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	cursor: pointer;
+}
+
+.player-open-hit:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+	border-radius: var(--r-md);
+}
+
+.player-open > :not(.player-open-hit) { position: relative; z-index: 1; }
+#playerArt, .player-copy { pointer-events: none; }
+.player-copy .link-inline { pointer-events: auto; }
+
+.player-open:has(.player-open-hit:active) { transform: scale(0.985); opacity: 0.85; }
 
 .player img {
 	width: 46px;
@@ -926,6 +1060,83 @@ dialog .primary { margin-top: 10px; }
 
 .track-shell:last-child { border-bottom: 0; }
 
+/* ── Inline links ─────────────────────────────────────────────────────────
+   An artist name that opens the artist. The underline carries the affordance,
+   not the colour: colour alone fails 1.4.1, and in the mono theme --accent
+   sits at 88% lightness against --text at 97%, a gap that is invisible at this
+   size. Accent is spent on press, where it reads as feedback instead of
+   competing with the play button.
+
+   The negative margin is what makes the hit area larger than the text without
+   moving anything around it. */
+.link-inline {
+	display: inline-block;
+	min-height: var(--touch-inline);
+	padding: 7px 3px;
+	margin: -7px -3px;
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-decoration-color: color-mix(in oklab, currentColor 32%, transparent);
+	text-underline-offset: 2px;
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+	transition: color var(--fast) var(--ease), text-decoration-color var(--fast) var(--ease);
+}
+
+.link-inline:active { color: var(--accent); text-decoration-color: currentColor; }
+
+.link-inline:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+	border-radius: 3px;
+}
+
+/* Inside a track row the name stays on one line and truncates like the label it
+   replaced, rather than pushing the row taller.
+
+   justify-self is load-bearing: these are grid children, and a grid child is
+   blockified, so inline-block alone would still stretch the link across the
+   whole row. A full-width link means the most natural place to tap — the middle
+   of the row — opens the artist instead of playing the track. */
+.track-artist {
+	justify-self: start;
+	overflow: hidden;
+	max-width: 100%;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* The row's play affordance: a real button, stretched over the whole row and
+   sitting under everything else, so the whole row is tappable and focusable
+   without any of the visible content having to be inside a button. Anything
+   that needs its own tap — the artist name — raises itself above it. */
+.track-play {
+	position: absolute;
+	inset: 0;
+	z-index: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	cursor: pointer;
+}
+
+.track-play:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: -3px;
+	border-radius: var(--r-sm);
+}
+
+.track > :not(.track-play) { position: relative; z-index: 1; }
+/* Everything above the stretched button is decoration and must let its taps
+   through — except the artist link, which takes its own. */
+.track-art, .track-copy, .track-bars, .track-time { pointer-events: none; }
+.track-copy .link-inline { pointer-events: auto; }
+
 .track-actions {
 	position: absolute;
 	inset: 0;
@@ -962,6 +1173,7 @@ dialog .primary { margin-top: 10px; }
 	border: 0;
 	background: var(--bg);
 	text-align: left;
+	cursor: pointer;
 	/* Vertical panning stays with the scroller; horizontal is ours. Without
 	   this the browser claims the gesture before the handler ever sees it. */
 	touch-action: pan-y;
@@ -990,7 +1202,11 @@ dialog .primary { margin-top: 10px; }
 	white-space: nowrap;
 }
 
-.track-copy span {
+/* The artist line, whether it is a link or a plain label — artistLink returns a
+   button when there is somewhere to go and a span when there is not, and both
+   have to sit on the same line at the same size. */
+.track-copy span,
+.track-copy .track-artist {
 	overflow: hidden;
 	color: var(--text-muted);
 	font-size: 12.5px;
@@ -1135,7 +1351,14 @@ body.sheet-open { overflow: hidden; }
 .sheet-panel.dragging { transition: none; }
 
 .sheet.opening .sheet-panel { animation: sheet-up 340ms var(--ease); }
-.sheet.closing .sheet-panel { animation: sheet-down 260ms cubic-bezier(0.4, 0, 1, 1) forwards; }
+.sheet.closing .sheet-panel { animation: sheet-down var(--med) var(--ease-in) forwards; }
+
+/* When the close is being driven from JS the keyframe must stay out of it. A
+   CSS animation outranks the inline transform the drag was writing, so a sheet
+   flicked 300px down used to snap *upward* to zero for one frame and then play
+   sheet-down from there. That one-frame teleport was the largest robotic moment
+   in the app, and it was never a tuning problem. */
+.sheet.closing .sheet-panel.dragging { animation: none; }
 
 @keyframes sheet-up   { from { transform: translateY(100%); } to { transform: none; } }
 @keyframes sheet-down { from { transform: none; } to { transform: translateY(100%); } }
@@ -1273,7 +1496,11 @@ body.sheet-open { overflow: hidden; }
 	to   { opacity: 1; transform: none; }
 }
 
-.now-meta { display: grid; gap: 5px; margin-bottom: 20px; text-align: center; }
+/* justify-items matters as much as text-align here: the artist and album are
+   buttons, and a stretched button around a 90px name is a target that spans the
+   card while looking like it spans the name. Shrink-to-fit makes the hit area
+   tell the truth. */
+.now-meta { display: grid; justify-items: center; gap: 4px; margin-bottom: 20px; text-align: center; }
 
 /* The global h2 is a small uppercase muted label; a track title is the opposite
    of that in every respect, so each inherited property is answered explicitly. */
@@ -1287,63 +1514,11 @@ body.sheet-open { overflow: hidden; }
 	text-transform: none;
 }
 
-.now-artist { margin: 0; color: var(--text-soft); font-size: 14.5px; }
-
-/* ── Scrubber ─────────────────────────────────────────────────────────── */
-
-.now-seek { position: relative; height: 24px; }
-
-.now-seek-track {
-	position: absolute;
-	top: 10px;
-	right: 0;
-	left: 0;
-	height: 4px;
-	overflow: hidden;
-	border-radius: 999px;
-	background: var(--line-firm);
-	pointer-events: none;
-}
-
-.now-seek-track span {
-	display: block;
-	width: 100%;
-	height: 100%;
-	background: var(--accent);
-	transform: scaleX(var(--played, 0));
-	transform-origin: left;
-}
-
-/* The visible bar is 4px; the target is the full 24px row. */
-.now-seek-input {
-	position: absolute;
-	inset: 0;
-	width: 100%;
-	height: 100%;
-	margin: 0;
-	background: none;
-	-webkit-appearance: none;
-	appearance: none;
-}
-
-.now-seek-input::-webkit-slider-thumb {
-	width: 15px;
-	height: 15px;
-	border: 0;
-	border-radius: 50%;
-	background: var(--text);
-	box-shadow: 0 1px 6px oklch(0% 0 0 / 0.5);
-	-webkit-appearance: none;
-	appearance: none;
-}
-
-.now-seek-input::-moz-range-thumb {
-	width: 15px;
-	height: 15px;
-	border: 0;
-	border-radius: 50%;
-	background: var(--text);
-}
+/* ── Scrubber ─────────────────────────────────────────────────────────────
+   The seek control is now `.rs[data-variant="seek"]`; see the Slider section
+   near the end of this file. The four vendor-prefix trees that used to live
+   here — and which between them lost this input's ::-webkit-slider-runnable-
+   track and the volume slider's fill entirely — are gone with it. */
 
 .now-times {
 	display: flex;
@@ -1400,44 +1575,17 @@ body.sheet-open { overflow: hidden; }
 
 /* ── Volume ───────────────────────────────────────────────────────────── */
 
+/* Three columns, because there are three children. Declaring two put the
+   readout on a second implicit row, under the icon. */
 .now-volume {
 	display: grid;
-	grid-template-columns: auto minmax(0, 1fr);
+	grid-template-columns: auto minmax(0, 1fr) auto;
 	align-items: center;
 	gap: 12px;
 	margin-bottom: 18px;
 }
 
 .now-volume-icon { display: inline-flex; color: var(--text-muted); }
-
-.now-volume input {
-	width: 100%;
-	height: 22px;
-	margin: 0;
-	background: none;
-	-webkit-appearance: none;
-	appearance: none;
-}
-
-.now-volume input::-webkit-slider-runnable-track {
-	height: 4px;
-	border-radius: 999px;
-	background: var(--line-firm);
-}
-
-.now-volume input::-webkit-slider-thumb {
-	margin-top: -5.5px;
-	width: 15px;
-	height: 15px;
-	border: 0;
-	border-radius: 50%;
-	background: var(--text-soft);
-	-webkit-appearance: none;
-	appearance: none;
-}
-
-.now-volume input::-moz-range-track { height: 4px; border-radius: 999px; background: var(--line-firm); }
-.now-volume input::-moz-range-thumb { width: 15px; height: 15px; border: 0; border-radius: 50%; background: var(--text-soft); }
 
 /* ── Play on, and the action row ──────────────────────────────────────── */
 
@@ -1554,6 +1702,7 @@ body.sheet-open { overflow: hidden; }
 }
 
 .queue-row-tap {
+	position: relative;
 	display: grid;
 	grid-template-columns: auto minmax(0, 1fr);
 	align-items: center;
@@ -1565,7 +1714,28 @@ body.sheet-open { overflow: hidden; }
 	color: inherit;
 	text-align: left;
 	touch-action: pan-y;
+	cursor: pointer;
 }
+
+.queue-row-play {
+	position: absolute;
+	inset: 0;
+	z-index: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	cursor: pointer;
+}
+
+.queue-row-play:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: -3px;
+	border-radius: var(--r-sm);
+}
+
+.queue-row-tap > :not(.queue-row-play) { position: relative; z-index: 1; }
+.queue-row-tap img, .queue-row-copy { pointer-events: none; }
+.queue-row-copy .link-inline { pointer-events: auto; }
 
 .queue-row-tap img { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; background: var(--surface); }
 .queue-row-copy { display: grid; gap: 2px; min-width: 0; }
@@ -1578,8 +1748,11 @@ body.sheet-open { overflow: hidden; }
 	white-space: nowrap;
 }
 
-.queue-row-copy span {
+.queue-row-copy span,
+.queue-row-copy .queue-row-artist {
+	justify-self: start;
 	overflow: hidden;
+	max-width: 100%;
 	color: var(--text-muted);
 	font-size: 12px;
 	text-overflow: ellipsis;
@@ -1919,35 +2092,10 @@ body.sheet-open { overflow: hidden; }
 	text-align: right;
 }
 
-.eq-band input {
-	-webkit-appearance: none;
-	appearance: none;
-	width: 100%;
-	height: 26px;
-	background: none;
-}
-
-.eq-band input::-webkit-slider-runnable-track {
-	height: 4px;
-	border-radius: 999px;
-	background: var(--line-firm);
-}
-
-.eq-band input::-webkit-slider-thumb {
-	-webkit-appearance: none;
-	appearance: none;
-	width: 20px;
-	height: 20px;
-	margin-top: -8px;
-	border: 0;
-	border-radius: 50%;
-	background: var(--accent);
-}
-
-.eq-band input::-moz-range-track { height: 4px; border-radius: 999px; background: var(--line-firm); }
-.eq-band input::-moz-range-thumb { width: 20px; height: 20px; border: 0; border-radius: 50%; background: var(--accent); }
-.eq-bands.is-off input::-webkit-slider-thumb { background: var(--text-muted); }
-.eq-bands.is-off input::-moz-range-thumb { background: var(--text-muted); }
+/* A band that is switched off still shows its curve — the shape is what comes
+   back when the switch goes on — but stops claiming the accent. */
+.eq-bands.is-off .rs-thumb,
+.eq-bands.is-off .rs-fill { background: var(--text-muted); }
 
 /* ── Reduced motion ───────────────────────────────────────────────────── */
 
@@ -2078,62 +2226,62 @@ body.sheet-open { overflow: hidden; }
 .settings-slider-copy b { font-size: 14.5px; font-weight: 560; }
 .settings-slider-copy small { color: var(--text-muted); font-size: 12.5px; }
 
-.settings-slider-row input[type="range"] {
-	width: 100%;
-	height: var(--touch);
-	margin: 0;
-	background: none;
-	appearance: none;
-}
-
-.settings-slider-row input[type="range"]::-webkit-slider-runnable-track {
-	height: 4px;
-	border-radius: 999px;
-	background: var(--line-firm);
-}
-
-.settings-slider-row input[type="range"]::-webkit-slider-thumb {
-	width: 20px;
-	height: 20px;
-	margin-top: -8px;
-	border: 0;
-	border-radius: 50%;
-	background: var(--accent);
-	appearance: none;
-}
-
-.settings-slider-row input[type="range"]::-moz-range-track { height: 4px; border-radius: 999px; background: var(--line-firm); }
-.settings-slider-row input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border: 0; border-radius: 50%; background: var(--accent); }
-
 /* ── Now playing: artist and album as links ───────────────────────────── */
 
+/* Three lines, three jobs: what this is, who made it, what it came from. Each
+   steps down in size, weight and colour together, so the hierarchy survives
+   being glanced at in the dark from arm's length — which is the only way this
+   screen is ever actually read.
+
+   No text-align here. The parent centres, and these are shrink-to-fit; setting
+   `left` was what pinned the artist and album to the card's left edge while the
+   title stayed centred. */
 .now-artist,
 .now-album {
-	display: inline-block;
 	max-width: 100%;
 	margin: 0;
-	padding: 4px 0;
+	padding: 5px 4px;
 	border: 0;
 	background: none;
-	color: var(--text-soft);
 	font: inherit;
-	font-size: 14.5px;
-	text-align: left;
 }
 
-.now-album { color: var(--text-muted); font-size: 13px; }
+.now-artist { color: var(--text-soft); font-size: 15px; font-weight: 520; }
+.now-album { color: var(--text-muted); font-size: 13px; font-weight: 480; }
 
-/* Only what can actually be tapped is drawn as tappable. */
-.now-artist.is-link {
-	color: var(--accent);
+/* Only what can actually be tapped is drawn as tappable — and the underline,
+   not the colour, is what carries that. An accent-coloured name competes with
+   the play button, the only other accent object on this screen, and in the mono
+   theme --accent sits at 88% lightness against --text at 97%, a gap invisible
+   at this size. Accent is spent on press instead, where it reads as feedback. */
+.now-artist.is-link,
+.now-album {
 	text-decoration: underline;
-	text-decoration-color: color-mix(in oklab, var(--accent) 40%, transparent);
+	text-decoration-thickness: 1px;
+	text-decoration-color: color-mix(in oklab, currentColor 32%, transparent);
 	text-underline-offset: 3px;
+	transition: color var(--quick) var(--ease), text-decoration-color var(--quick) var(--ease);
+}
+
+.now-artist.is-link:focus-visible,
+.now-album:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+	border-radius: 4px;
 }
 
 .now-artist.is-link:active,
-.now-album:active { opacity: 0.65; }
-.now-artist:disabled { color: var(--text-soft); text-decoration: none; }
+.now-album:active { color: var(--accent); text-decoration-color: currentColor; }
+
+/* No artist to go to: a label, not a dead link. Underlined text that does
+   nothing is a broken promise, so the underline goes with the behaviour. */
+.now-artist:disabled,
+.now-album:disabled {
+	color: var(--text-muted);
+	text-decoration: none;
+	opacity: 1;
+	cursor: default;
+}
 
 .now-volume-value {
 	min-width: 4ch;
@@ -2143,12 +2291,12 @@ body.sheet-open { overflow: hidden; }
 	text-align: right;
 }
 
-/* Past unity the slider changes colour, so "louder than the phone normally
-   goes" is visible rather than a number you have to read. */
+/* Past unity the whole control changes colour, so "louder than the phone
+   normally goes" is visible rather than a number you have to read. The rail and
+   thumb are handled by `.rs[data-variant="volume"].is-boosted` in the Slider
+   section; these two are the readout and the icon beside it. */
 .now-volume.is-boosted .now-volume-value,
 .now-volume.is-boosted .now-volume-icon { color: var(--warn); }
-.now-volume.is-boosted input::-webkit-slider-thumb { background: var(--warn); }
-.now-volume.is-boosted input::-moz-range-thumb { background: var(--warn); }
 
 /* ── Playlists ────────────────────────────────────────────────────────── */
 
@@ -2254,22 +2402,320 @@ body.sheet-open { overflow: hidden; }
 	resize: vertical;
 }
 
-/* ── Video ────────────────────────────────────────────────────────────── */
+/* ── Slider ───────────────────────────────────────────────────────────────
+   One component, four variants: seek, volume, the five EQ bands, settings
+   volume. It replaced four native range inputs and their four divergent
+   vendor-prefix trees, which between them had already produced two independent
+   bugs — a seek thumb with no runnable-track to centre against, and a volume
+   slider whose --level fill property no stylesheet ever read.
 
-.video-head { padding-bottom: 6px; }
+   The rail is 4px because that is what reads as a progress line; the row is
+   48px because that is what a thumb can find. Those are different numbers and
+   this component keeps them apart, which is precisely what a native range
+   cannot do: ::-webkit-slider-thumb's box is the visual and the target at
+   once. */
 
-.video-stage {
-	display: grid;
-	place-items: center;
-	min-height: 210px;
-	margin: 8px 0 16px;
-	border-radius: var(--r-md);
-	background: oklch(0% 0 0 / 0.55);
+.rs {
+	position: relative;
+	display: block;
+	width: 100%;
+	height: var(--rs-row);
+	/* The whole reason this component exists. The gesture is ours, and the
+	   scroller behind it does not get to arbitrate: without this the compositor
+	   claims the touch as a candidate vertical pan, the control receives
+	   pointerdown and then pointercancel, and the only thing that survives is
+	   the UA's jump-to-position on the initial press — which is exactly what a
+	   slider that can be tapped but never dragged looks like. */
+	touch-action: none;
+	-webkit-user-select: none;
+	user-select: none;
+	/* Or every drag flashes a grey box on iOS. */
+	-webkit-tap-highlight-color: transparent;
 }
 
-.video-player {
+.rs-rail {
+	position: absolute;
+	top: 50%;
+	right: 0;
+	left: 0;
+	height: var(--rs-rail);
+	overflow: hidden;
+	border-radius: 999px;
+	background: var(--line-firm);
+	transform: translateY(-50%);
+	pointer-events: none;
+}
+
+.rs-fill {
 	width: 100%;
-	max-height: 62vh;
+	height: 100%;
+	background: var(--accent);
+	transform: scaleX(var(--rs-value, 0));
+	transform-origin: left;
+	/* A composited scaleX, not a linear-gradient recomputed per pointermove. */
+	transition: transform var(--fast) var(--ease);
+}
+
+/* No transition during a drag — the fill has to be attached to the thumb. The
+   class is toggled by the component rather than by :active, because a captured
+   pointer that leaves the element is still dragging. */
+.rs.is-grabbing .rs-fill { transition: none; }
+
+.rs-thumb {
+	position: absolute;
+	top: 50%;
+	left: calc(var(--rs-thumb) / 2 + (100% - var(--rs-thumb)) * var(--rs-value, 0));
+	width: var(--rs-thumb);
+	height: var(--rs-thumb);
+	border-radius: 50%;
+	background: var(--text);
+	box-shadow: 0 1px 6px oklch(0% 0 0 / 0.5);
+	transform: translate(-50%, -50%);
+	pointer-events: none;
+	transition:
+		left var(--fast) var(--ease),
+		width var(--quick) var(--ease-spring),
+		height var(--quick) var(--ease-spring),
+		background var(--base) var(--ease);
+}
+
+/* Grown while held, so the thumb stays visible past the fingertip covering it.
+   The `left` calc changes with it or the thumb shifts sideways as it grows. */
+.rs.is-grabbing .rs-thumb,
+.rs.is-focus .rs-thumb {
+	width: var(--rs-thumb-lg);
+	height: var(--rs-thumb-lg);
+	left: calc(var(--rs-thumb-lg) / 2 + (100% - var(--rs-thumb-lg)) * var(--rs-value, 0));
+}
+
+/* While the finger is down, `left` must not lag behind it. */
+.rs.is-grabbing .rs-thumb {
+	transition:
+		width var(--quick) var(--ease-spring),
+		height var(--quick) var(--ease-spring);
+}
+
+.rs-hit {
+	position: absolute;
+	inset: 0;
+	touch-action: none;
+	cursor: pointer;
+}
+
+.rs-hit:focus-visible { outline: none; }
+
+/* A slider reached by keyboard must show its thumb, so the ring is not
+   :focus-visible-only on the thumb itself. The class is set by the component;
+   :has() would also do it and is supported on both targets, but the class is
+   already there to drive the grow state. */
+.rs.is-focus .rs-thumb {
+	box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--accent);
+}
+
+.rs.is-disabled,
+.rs[aria-disabled="true"] { opacity: 0.4; pointer-events: none; }
+
+/* ── Slider variants ──────────────────────────────────────────────────── */
+
+/* Seek: the thumb takes the text colour because it marks a position, not a
+   value — the accent is spent on the portion already played. */
+.rs[data-variant="seek"] .rs-thumb { background: var(--text); }
+
+/* In the mono theme --accent sits at 88% lightness and --text at 97%, so the
+   thumb would be a pale dot on a pale bar. The ground supplies the separation
+   instead of the palette. */
+.theme-mono .rs[data-variant="seek"] .rs-thumb {
+	box-shadow: 0 0 0 2px var(--bg), 0 1px 6px oklch(0% 0 0 / 0.5);
+}
+
+/* Volume: past unity the whole control changes colour, because past unity the
+   app is amplifying rather than attenuating. */
+.rs[data-variant="volume"] .rs-thumb { background: var(--text-soft); }
+.rs[data-variant="volume"].is-boosted .rs-fill { background: var(--warn); }
+.rs[data-variant="volume"].is-boosted .rs-thumb { background: var(--warn); }
+
+/* EQ: fills from the centre, because 0 dB is the origin and a band cut to -6 is
+   not "less full", it is negative. translate-then-scale is what expresses a
+   span that starts anywhere; scaleX alone can only grow from an edge. */
+.rs[data-variant="eq"] .rs-fill {
+	transform: translateX(calc(var(--rs-from, 0) * 100%)) scaleX(var(--rs-span, 0));
+	transform-origin: left;
+}
+
+.rs[data-variant="eq"] .rs-thumb { background: var(--accent); }
+
+.rs-detent {
+	position: absolute;
+	top: 0;
+	left: calc(var(--rs-detent-at, 0.5) * 100%);
+	width: 2px;
+	height: 100%;
+	background: var(--line-firm);
+	transform: translateX(-50%);
+}
+
+/* ── Slider, reduced motion ───────────────────────────────────────────────
+   The two universal rules elsewhere in this file already flatten every duration
+   to ~1ms. This block exists because `left` is the one property that must not
+   merely be fast: the thumb has to land where the finger is, and 1ms of
+   interpolation on a value that changes every frame is still a value that is
+   never quite right. */
+.reduce-motion .rs-thumb,
+.reduce-motion .rs-fill { transition: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+	.rs-thumb,
+	.rs-fill { transition: none !important; }
+}
+
+/* ── Import ───────────────────────────────────────────────────────────────
+   A hundred files landing is the one moment this app is visibly doing work on
+   the user's behalf, and a single status line spends that moment saying almost
+   nothing. Each file gets a row, and each row says which of the four things it
+   is currently doing. */
+
+/* Stacked and full width. The pick and the folder pick are a primary and its
+   alternative, and a folder label does not fit the half-width a two-up row
+   would give it. */
+.import-actions { display: grid; gap: 9px; margin-top: 8px; }
+
+.import-batch {
+	display: grid;
+	gap: 8px;
+	padding: 12px 14px;
+	margin: 12px 0;
+	border: 1px solid var(--line-firm);
 	border-radius: var(--r-md);
-	background: #000;
+	background: var(--surface);
+}
+
+/* The header stays reachable while a hundred rows scroll under it, because the
+   cancel button is the one control that matters during a long import and a
+   control you have to scroll back up to find is a control you do not have.
+   The batch's own padding is cancelled and re-applied so the pinned block spans
+   the card's full width — otherwise rows would be visible sliding through the
+   gutter on either side of it. */
+.import-batch-pin {
+	position: sticky;
+	/* -4px, not 0: .sheet-body carries 4px of top padding, and pinning at 0
+	   leaves that 4px as a live gap with rows visibly sliding through it above
+	   the header. Overshooting by exactly the padding closes the seam, and the
+	   4px lost off the top of this block is its own padding. */
+	top: -4px;
+	z-index: 2;
+	display: grid;
+	gap: 8px;
+	margin: -12px -14px 0;
+	padding: 12px 14px 8px;
+	border-radius: calc(var(--r-md) - 1px) calc(var(--r-md) - 1px) 0 0;
+	background: var(--surface);
+}
+
+.import-batch-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.import-batch-head b { font-size: 14px; font-weight: 580; }
+
+.import-progress-row { display: flex; align-items: center; gap: 10px; }
+.import-progress-row .import-progress { flex: 1; }
+.import-count { flex: none; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.import-progress { height: 4px; overflow: hidden; border-radius: 999px; background: var(--line-firm); }
+.import-progress span {
+	display: block;
+	height: 100%;
+	background: var(--accent);
+	transform: scaleX(var(--done, 0));
+	transform-origin: left;
+	transition: transform var(--base) var(--ease);
+}
+
+.import-list { display: grid; gap: 1px; margin-top: 10px; }
+
+.import-card {
+	display: grid;
+	grid-template-columns: 40px minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 11px;
+	min-height: var(--touch);
+	padding: 6px 2px;
+	border-bottom: 1px solid var(--line);
+}
+
+.import-card:last-child { border-bottom: 0; }
+
+.import-card-art {
+	width: 40px;
+	height: 40px;
+	border-radius: 8px;
+	object-fit: cover;
+	background: var(--surface-high);
+	transition: opacity var(--base) var(--ease);
+}
+.import-card.is-stored .import-card-art { animation: fade-in var(--base) var(--ease); }
+
+.import-card-copy { display: grid; gap: 2px; min-width: 0; }
+.import-card-copy b { overflow: hidden; font-size: 13.5px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
+.import-card-copy span { overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The status text and the retry button share the second line, so a failure
+   states itself and offers the answer in the same breath. */
+.import-card-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.import-card-line > span { min-width: 0; }
+
+.import-card.is-failed .import-card-copy span { color: var(--danger); }
+.import-card.is-failed .import-card-art { background: color-mix(in oklab, var(--danger) 20%, var(--surface-high)); }
+
+/* Size above state: the two answer different questions — "how much of my phone
+   is this?" and "is it in yet?" — and stacking them keeps the row to three
+   columns rather than four. */
+.import-card-trail { display: grid; justify-items: center; gap: 3px; }
+.import-card-size { color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.import-card-state { display: grid; place-items: center; width: 24px; color: var(--text-muted); }
+.import-card.is-stored .import-card-state { color: var(--accent); }
+.import-card.is-failed .import-card-state { color: var(--danger); }
+
+.import-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.45; }
+
+.import-card-state .spin {
+	width: 14px;
+	height: 14px;
+	border: 2px solid color-mix(in oklab, currentColor 30%, transparent);
+	border-top-color: currentColor;
+	border-radius: 50%;
+	animation: spin 700ms linear infinite;
+}
+
+.import-retry {
+	flex: none;
+	min-height: 32px;
+	padding: 0 10px;
+	border: 1px solid var(--line-firm);
+	border-radius: 999px;
+	background: none;
+	color: var(--text-soft);
+	font-size: 12px;
+}
+
+.import-retry:active { background: var(--surface-high); }
+.import-retry:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.import-empty { padding: 28px 16px; text-align: center; color: var(--text-muted); font-size: 13.5px; line-height: 1.6; }
+.import-empty b { display: block; margin-bottom: 6px; color: var(--text-soft); font-size: 15px; font-weight: 600; }
+
+/* Offered and refused, with the reason stated next to it — the same register as
+   the boost notice, and the only honest form of a button whose feature is not
+   built on the other end yet. */
+.ghost:disabled { opacity: 0.55; cursor: default; }
+.ghost:disabled:hover { background: transparent; color: var(--text-soft); }
+
+/* ── Import, reduced motion ───────────────────────────────────────────────
+   The two universal rules elsewhere flatten every duration to 1ms, which for a
+   700ms rotation means a spinner that flickers rather than one that stops. An
+   indefinite animation has to be turned off, not sped up. */
+.reduce-motion .import-card-state .spin { animation: none !important; }
+.reduce-motion .import-card.is-stored .import-card-art { animation: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+	.import-card-state .spin { animation: none !important; }
+	.import-card.is-stored .import-card-art { animation: none !important; }
 }

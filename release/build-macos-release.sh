@@ -104,6 +104,7 @@ echo "==> Icon: $ICNS"
     --collect-all ytmusicapi \
     --collect-all yt_dlp \
     --collect-all qrcode \
+    --collect-all mutagen \
     "$ENTRY_POINT"
 
 APP_BUNDLE="$STAGE/$APP_NAME.app"
