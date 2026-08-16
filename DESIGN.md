@@ -29,6 +29,10 @@ start.bat                 zero-build fallback (pythonw main.py)
 main.py                   opens the native window, starts the local server
 server.py                 aiohttp: serves web/ + a /ws WebSocket on one port
 music_bridge.py           command handlers
+transport.py              how a phone reaches this computer, as a provider seam
+tunnel.py                 supervises whichever transport provider is selected
+local_library.py          scans folders on this computer for music files
+companion.py              pairing, device credentials, audio-relay grants
 state.py                  trimmed SQLite layer (music tables only)
 shared.py                 runtime-context module (STATE + notify_browsers)
 music.db                  created on first run
@@ -86,6 +90,36 @@ window  ⇄  ws://127.0.0.1:<port>/ws  ⇄  server.py dispatch
 
 The WebSocket message contract keeps the frontend modules in sync with the
 native application.
+
+### Where playback lives
+
+One record answers "which surface owns the audio right now", and it lives on
+this computer (`music_kv`, read and written through `state.py`). It is broadcast
+to every paired device as `music_playback_target`, and every screen that says
+"playing on ..." renders it rather than deciding for itself.
+
+That is worth stating because the obvious alternative does not work. Each
+surface used to keep its own idea: the desktop had a field nothing ever updated,
+the phone had a boolean, and the wire carried a two-value string defaulted to
+`"desktop"`. Nothing was authoritative, so pause could not cross devices and
+every screen claimed the computer was playing regardless of the truth.
+
+Two rules make it usable. **Starting playback claims ownership** — there is
+nothing to hand over, so it needs no handshake, which is why pressing play on a
+phone just works. And on an explicit transfer, **ownership moves only once the
+target acknowledges it has the track**, so a handoff that fails leaves the
+source playing instead of pausing into silence.
+
+### Reaching this computer from a phone
+
+`transport.py` is a provider seam, not a Cloudflare wrapper. Each provider
+answers the same small protocol, and unfinished setup is a *result* rather than
+an error: `PreflightResult` describes the next thing the person has to do, in
+words, with a link, so Settings can render a checklist instead of a stack trace.
+
+`cloudflare-quick` remains the default and behaves exactly as it did before the
+seam existed. The other providers are options a user may choose, never a
+migration they are pushed through.
 
 ## The window ("actual app")
 

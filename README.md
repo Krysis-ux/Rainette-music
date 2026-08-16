@@ -77,17 +77,27 @@ anywhere and there is no account to make.
 
 Setting it up is two steps, both in the desktop app's **Settings → Mobile**:
 
-1. **Download cloudflared**, then **Generate HTTPS tunnel**. Your phone talks
-   directly to your computer, so the computer needs an address on the internet
-   that uses HTTPS. The first button fetches Cloudflare's `cloudflared` helper
-   once, from Cloudflare's own release page; the second runs it, waits until the
-   address actually answers, and fills that address into *Public address for
-   this computer* for you. The tunnel carries Rainette's phone gateway and
-   nothing else, and it closes when you close Rainette.
-   If you already run a named Cloudflare tunnel, Tailscale Funnel, or your own
-   reverse proxy, paste its address into that field instead and skip both
-   buttons. Never port-forward the companion port on your router.
+1. **Choose how your phone reaches this computer**, then start it. Your phone
+   talks directly to your computer, so the computer needs an address on the
+   internet that uses HTTPS. Rainette offers several ways to get one, and they
+   trade setup against how long the address lasts:
+
+   | | What it costs you | What you get |
+   |---|---|---|
+   | **Limited tunnel** *(default)* | Nothing. One button fetches Cloudflare's `cloudflared` helper from Cloudflare's own release page. | Works immediately. The address changes every time Rainette restarts, so the phone has to scan a new code. |
+   | **Private link** *(recommended)* | The free Tailscale app, on this computer and on your phone, signed in once. | A permanent address with a real certificate, reachable **only from your own devices** — the gateway is never exposed to the open internet. |
+   | **High-quality tunnel** | The same Tailscale sign-in, plus a one-time consent. | A permanent address that anyone on the internet can reach. Only worth it for a guest's phone that will not install Tailscale. |
+   | **Your own Cloudflare tunnel** | A Cloudflare account and a domain already on Cloudflare. | A permanent address you control. |
+   | **Bring your own address** | You already run a reverse proxy or VPS. | Paste its address and skip the buttons entirely. |
+
+   Whichever you pick, the tunnel carries Rainette's phone gateway and nothing
+   else. Never port-forward the companion port on your router.
 2. **Create a pairing code** and scan it with the phone.
+
+A phone remembers the computers it has paired with, so coming back is a tap
+rather than another QR code — the credential never expires, only the address
+changes. On a Limited tunnel that address moves on every restart, which is the
+one thing the other options buy you.
 
 Pairing is two-sided on purpose. The phone shows up in a waiting list and gets
 access only once you approve it there. Each approved phone has its own listening

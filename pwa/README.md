@@ -30,10 +30,13 @@ Rainette running and its tunnel up.
 Pairing is deliberately two-sided. Possessing a link is not enough; somebody at
 the computer has to approve the phone.
 
-1. On the computer, open Rainette → **Settings → Mobile**. Press **Download
-   cloudflared** once, then **Generate HTTPS tunnel**. The desktop app runs the
-   tunnel in front of its phone gateway, waits until that address actually
-   answers, and fills it into *Public address for this computer*.
+1. On the computer, open Rainette → **Settings → Mobile** and start a
+   connection. The default, **Limited tunnel**, needs nothing: one button
+   fetches Cloudflare's `cloudflared` helper, and the app runs it in front of
+   its phone gateway, waits until the address actually answers, and fills it
+   into *Public address for this computer*. **Private link** (Tailscale) trades
+   a one-time sign-in for an address that never changes and is reachable only
+   from your own devices.
 2. Create a pairing code there.
 3. Scan the QR with the phone, or paste the pairing link into this app.
 4. The phone appears in the computer's **Waiting for approval** list. Approve it.
@@ -45,10 +48,17 @@ phone itself — an HTTPS page is not permitted to call it, so the request never
 leaves the device. Browsers report that only as "Failed to fetch" or "Load
 failed", so this app detects it and says what to do instead.
 
-A generated tunnel gets a fresh hostname on every start. A phone that already
-holds a device credential only needs the new address, not another approval, so
-re-scanning the current QR reconnects it without appearing in the waiting list
-again.
+A Limited tunnel gets a fresh hostname on every start. That is an address
+problem, not a trust problem: the credential is `(device_id, device_token)` with
+no endpoint bound into it, so a phone that already holds one needs only the new
+address, never another approval.
+
+This app therefore keeps a **Reconnect** list of the computers it has paired
+with, so returning to one is a tap rather than another QR code. The list and the
+credentials live in this browser's own storage and are never uploaded; the
+tokens are kept in a separate map from the rows, so serialising or dumping the
+list cannot leak one. Choosing a provider with a stable address on the computer
+removes the problem entirely.
 
 Each approved phone gets a distinct credential and its own listening session, so
 two people can search and play independently without interrupting each other.
