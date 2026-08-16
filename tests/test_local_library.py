@@ -603,17 +603,37 @@ class WindowsPathCaseInsensitivityTests(unittest.TestCase):
         self.state.add_local_root(str(self.music))
         return local_library.scan(self.state, [str(self.music)])
 
-    def test_within_is_case_sensitive_on_this_platform_by_default(self):
-        """The floor: POSIX must keep telling `Song.mp3` and `song.mp3` apart."""
-        self.assertTrue(local_library._within("/Music/Library", "/Music/Library/Song.mp3"))
-        self.assertFalse(local_library._within("/Music/Library", "/MUSIC/LIBRARY/Song.mp3"))
+    def test_within_matches_this_platforms_own_case_rule(self):
+        """Containment has to agree with the filesystem it is guarding.
 
+        Asserted against the real platform rather than a simulated one, because
+        the two answers are opposite and both are correct: POSIX must keep
+        `Song.mp3` and `song.mp3` apart, and Windows must not.
+        """
+        root = os.path.realpath(str(self.music))
+        inside = os.path.join(root, "Song.mp3")
+        self.assertTrue(local_library._within(root, inside))
+
+        recased = os.path.join(root.upper(), "Song.mp3")
+        if os.path.normcase("A") == os.path.normcase("a"):
+            # Case-folding filesystem (Windows, and macOS by default).
+            self.assertTrue(local_library._within(root, recased))
+        else:
+            self.assertFalse(local_library._within(root, recased))
+
+    @unittest.skipIf(os.name == "nt", "normcase is already Windows-like here; the real rule is covered above")
     def test_within_folds_case_the_way_windows_does(self):
+        """Simulated only where the real behaviour cannot be observed.
+
+        Patching normcase to str.lower drops its slash folding too, so on a
+        real Windows run this simulation is both unnecessary and wrong.
+        """
+        root = os.path.realpath(str(self.music))
         original_normcase = os.path.normcase
         os.path.normcase = str.lower
         try:
-            self.assertTrue(local_library._within("/Music/Library", "/MUSIC/LIBRARY/Song.mp3"))
-            self.assertFalse(local_library._within("/Music/Library", "/MUSIC/Other/Song.mp3"))
+            self.assertTrue(local_library._within(root, os.path.join(root.upper(), "Song.mp3")))
+            self.assertFalse(local_library._within(root, os.path.join(root.upper() + "Other", "Song.mp3")))
         finally:
             os.path.normcase = original_normcase
 
@@ -779,9 +799,15 @@ class LongPathTests(unittest.TestCase):
         local_library.os.name = "nt"
         local_library.os.path.isabs = ntpath.isabs
 
-    def test_is_a_no_op_off_windows(self):
+    def test_leaves_paths_alone_where_the_limit_does_not_exist(self):
+        """The prefix is a Windows spelling; anywhere else it would be a corrupt
+        path. Asserted against the real platform, since on Windows applying it
+        is the correct answer and skipping it would be the bug."""
         self.assertEqual(local_library.os.name, self.original_name)
-        self.assertEqual(local_library.long_path("/Music/Song.mp3"), "/Music/Song.mp3")
+        if os.name == "nt":
+            self.assertTrue(local_library.long_path(r"C:\Music\Song.mp3").startswith("\\\\?\\"))
+        else:
+            self.assertEqual(local_library.long_path("/Music/Song.mp3"), "/Music/Song.mp3")
 
     def test_prefixes_an_absolute_drive_path_on_windows(self):
         self._pretend_windows()

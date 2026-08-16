@@ -10,6 +10,7 @@ checklist rather than as a failure.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -680,8 +681,19 @@ def test_a_bare_tailscale_candidate_is_searched_on_path(monkeypatch, tmp_path):
     assert calls == ["tailscale-bin-name"]
 
 
-def test_no_window_kwargs_is_a_no_op_off_windows():
-    assert transport._no_window_kwargs() == {}
+def test_no_window_kwargs_matches_the_platform_it_runs_on():
+    """Console suppression is Windows-only plumbing.
+
+    Asserted against the real platform rather than assuming POSIX: on Windows
+    returning the flags IS the correct answer, and a test that demands {}
+    there would be demanding the bug.
+    """
+    kwargs = transport._no_window_kwargs()
+    if os.name == "nt":
+        assert kwargs.get("creationflags", 0) & subprocess.CREATE_NO_WINDOW
+        assert kwargs["startupinfo"].dwFlags & subprocess.STARTF_USESHOWWINDOW
+    else:
+        assert kwargs == {}
 
 
 def test_no_window_kwargs_hides_the_console_and_suppresses_a_new_one(monkeypatch):
@@ -778,9 +790,12 @@ def test_run_actually_decodes_non_ascii_helper_output(tmp_path):
     text = "café \u65e5\u672c\u8a9e"  # accented and non-Latin bytes together
     provider = transport.build_provider("tailscale-serve", locate_tailscale=lambda: Path("tailscale"))
     script = tmp_path / "echo_utf8.py"
+    # Written as UTF-8 explicitly: the default here is the console code page,
+    # which on Windows is cp1252 and cannot represent this source at all.
     script.write_text(
         "import sys\n"
-        f"sys.stdout.buffer.write({text!r}.encode('utf-8'))\n"
+        f"sys.stdout.buffer.write({text!r}.encode('utf-8'))\n",
+        encoding="utf-8",
     )
 
     completed = provider._run([sys.executable, str(script)], timeout=10)
