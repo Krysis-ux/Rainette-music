@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 import aiohttp
 from aiohttp import WSMsgType, web
 
+import local_library
 import shared
 import music_bridge
 import transport
@@ -1102,7 +1103,14 @@ async def _serve_local_grant(request: web.Request, grant) -> web.StreamResponse:
     stored = str((row or {}).get("file_path") or "")
     # Guarded explicitly: Path("") is Path("."), which is a real directory, so
     # letting an empty column reach is_file() would be asking the wrong question.
-    path = Path(stored) if stored else None
+    #
+    # Read through local_library.long_path(): a deeply nested library routinely
+    # exceeds Windows' ~260-character path limit, and this app's manifest does
+    # not opt into the unprefixed long-path support Windows 10 can otherwise
+    # grant. The extended-length ``\\?\`` form is used only for the syscalls
+    # below -- ``stored`` itself, what the row holds and what a rescan compares
+    # against, is never touched.
+    path = Path(local_library.long_path(stored)) if stored else None
     if not row or path is None or not await asyncio.to_thread(path.is_file):
         # Record the absence so the library stops claiming the track is here,
         # rather than waiting for the next scan to notice.

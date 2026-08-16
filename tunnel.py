@@ -710,6 +710,12 @@ class TunnelManager:
             url = self._launch(port, generation)
             if not self._is_current(generation):
                 return
+            # `on_url` runs *before* the status flips to "running": a caller
+            # that polls `status()` (or server.py's own on_url-driven config
+            # write) must never be able to observe "running" while the side
+            # effect that made the address usable has not happened yet.
+            if self._on_url is not None:
+                self._on_url(url)
             self._set_status(
                 phase="running",
                 url=url,
@@ -718,8 +724,6 @@ class TunnelManager:
                 setup_message="",
                 setup_url="",
             )
-            if self._on_url is not None:
-                self._on_url(url)
             self._start_supervisor(port, generation)
         except transport.SetupRequired as exc:
             self._require_setup(generation, exc.result)
@@ -843,9 +847,16 @@ class TunnelManager:
             name="rainette-tunnel-supervisor",
             daemon=True,
         )
+        # Started *before* it is published: `stop()` reads `self._supervisor`
+        # under the lock and, if it is set, immediately joins it.  Publishing
+        # the not-yet-started Thread first leaves a window where a `stop()`
+        # racing this method grabs that reference and calls `.join()` on a
+        # thread that was never `.start()`-ed, which raises
+        # "cannot join thread before it is started" instead of tearing down
+        # cleanly.
+        supervisor.start()
         with self._lock:
             self._supervisor = supervisor
-        supervisor.start()
 
     def _is_down(self) -> bool:
         """Decide whether the transport still works, by two different means.
@@ -922,11 +933,13 @@ class TunnelManager:
                 return
             self._next_probe_at = time.monotonic() + _HEALTH_PROBE_INTERVAL_S
             changed = bool(url) and url != previous_url
+            # Same ordering as the initial launch in `_run`: publish the new
+            # address before the status says "running" on it.
+            if changed and self._on_url is not None:
+                self._on_url(url)
             self._set_status(
                 phase="running",
                 url=url,
                 message="The tunnel is live again on a new address." if changed
                 else "The tunnel is live again.",
             )
-            if changed and self._on_url is not None:
-                self._on_url(url)

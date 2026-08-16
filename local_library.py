@@ -94,6 +94,34 @@ def parse_filename(name: str) -> dict[str, str]:
     return {"artist": "", "title": bare.strip() or "Untitled"}
 
 
+def long_path(path: str) -> str:
+    """Extended-length form of ``path``, for one Windows file syscall.
+
+    Windows refuses any file operation on an absolute path once it is roughly
+    260 characters long -- and a music library nested a few artist/album/disc
+    folders deep routinely is -- unless the path is spelled ``\\\\?\\`` (or
+    ``\\\\?\\UNC\\`` for a network share). ``CreateFileW`` honours that prefix
+    on every version of Windows, which makes it a strictly better fix here
+    than relying on the *unprefixed* long-path support Windows 10 can also
+    grant: that one additionally needs a machine-wide registry policy the
+    user has to opt into *and* a per-executable manifest declaring
+    ``longPathAware`` that this app's PyInstaller build does not carry.
+
+    Applied narrowly, at the syscall and not the path stored anywhere: a
+    prefixed path is NT-native syntax, not a filename, so it must never reach
+    the database, a comparison, or a phone. It is a no-op everywhere but
+    Windows, for a relative path, and for a path already given in this form.
+    """
+    if os.name != "nt":
+        return path
+    text = str(path or "")
+    if not text or text.startswith("\\\\?\\") or not os.path.isabs(text):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text[2:]
+    return "\\\\?\\" + text
+
+
 def _within(real_root: str, path: str) -> bool:
     """Whether ``path`` really resolves inside ``real_root``.
 
@@ -113,7 +141,12 @@ def _within(real_root: str, path: str) -> bool:
         real = os.path.realpath(path)
     except OSError:
         return False
-    root = os.path.normcase(real_root.rstrip(os.sep))
+    # normcase() first, *then* strip a trailing separator: a root recorded
+    # with the "wrong" slash style (a forward slash where os.sep is "\\") or
+    # a doubled-up separator must still collapse to exactly one, or a stray
+    # extra separator here means nothing this root ever contains compares
+    # equal again.
+    root = os.path.normcase(real_root).rstrip(os.sep)
     candidate = os.path.normcase(real)
     return candidate == root or candidate.startswith(root + os.sep)
 
@@ -136,10 +169,16 @@ def iter_audio_files(root: str) -> Iterator[str]:
     """
     real_root = os.path.realpath(str(root))
     visited = {os.path.normcase(real_root)}
+    # normcase'd, and computed once per walk rather than hoisted to module
+    # scope: a folder literally named "Node_Modules" is a different name than
+    # "node_modules" on POSIX but the same one on a case-folding filesystem,
+    # and precomputing this at import time would freeze in whatever
+    # normcase() happened to mean before a test (or a future caller) swaps it.
+    skip_names = {os.path.normcase(name) for name in SKIP_DIR_NAMES}
     for folder, dirnames, filenames in os.walk(real_root, followlinks=False):
         kept = []
         for name in dirnames:
-            if name.startswith(".") or name in SKIP_DIR_NAMES:
+            if name.startswith(".") or os.path.normcase(name) in skip_names:
                 continue
             candidate = os.path.join(folder, name)
             if not _within(real_root, candidate):
@@ -182,7 +221,7 @@ def read_tags(path: str) -> dict[str, Any]:
     if not MUTAGEN_AVAILABLE:
         return {}
     try:
-        audio = _MutagenFile(str(path), easy=True)
+        audio = _MutagenFile(long_path(str(path)), easy=True)
     except Exception:
         return {}
     if audio is None:
@@ -210,7 +249,7 @@ def describe_file(path: str) -> dict[str, Any] | None:
     Raises ``OSError`` when the file cannot be stat'd, which the caller counts
     and moves past.
     """
-    stat = os.stat(path)
+    stat = os.stat(long_path(path))
     if stat.st_size <= 0 or stat.st_size > LOCAL_SCAN_MAX_FILE_BYTES:
         return None
     name = os.path.basename(str(path))
@@ -280,7 +319,7 @@ def scan_root(state: Any, root: str, *,
     stats: dict[str, tuple[int, float]] = {}
     for path in found:
         try:
-            info = os.stat(path)
+            info = os.stat(long_path(path))
         except OSError:
             continue
         stats[path] = (int(info.st_size), float(info.st_mtime))

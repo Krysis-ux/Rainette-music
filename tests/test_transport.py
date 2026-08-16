@@ -680,6 +680,72 @@ def test_a_bare_tailscale_candidate_is_searched_on_path(monkeypatch, tmp_path):
     assert calls == ["tailscale-bin-name"]
 
 
+def test_no_window_kwargs_is_a_no_op_off_windows():
+    assert transport._no_window_kwargs() == {}
+
+
+def test_no_window_kwargs_hides_the_console_and_suppresses_a_new_one(monkeypatch):
+    """A console window flashing on every launch is a real, visible bug --
+    this pins the two pieces that prevent it: ``STARTF_USESHOWWINDOW`` (which
+    tells Windows to honour ``wShowWindow`` at all) actually set on the
+    ``STARTUPINFO`` handed back, and ``creationflags`` carrying
+    ``CREATE_NO_WINDOW`` (which stops a console from being allocated in the
+    first place, rather than merely hiding one after the fact).
+
+    None of ``subprocess.STARTUPINFO``, ``CREATE_NO_WINDOW`` or
+    ``STARTF_USESHOWWINDOW`` exist outside Windows, so this fakes them in
+    (``create=True``) the same way the rest of this suite fakes Windows-only
+    filesystem behaviour to verify it without a Windows machine.
+    """
+    created = []
+
+    class FakeSTARTUPINFO:
+        def __init__(self):
+            self.dwFlags = 0
+            created.append(self)
+
+    monkeypatch.setattr(transport.os, "name", "nt")
+    monkeypatch.setattr(transport.subprocess, "STARTUPINFO", FakeSTARTUPINFO, raising=False)
+    monkeypatch.setattr(transport.subprocess, "STARTF_USESHOWWINDOW", 0x00000001, raising=False)
+    monkeypatch.setattr(transport.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+
+    kwargs = transport._no_window_kwargs()
+
+    assert kwargs["creationflags"] == 0x08000000
+    assert kwargs["startupinfo"] is created[0]
+    assert kwargs["startupinfo"].dwFlags & 0x00000001
+
+
+def test_popen_and_run_both_forward_the_no_window_kwargs(monkeypatch):
+    """The helper is useless if the two places that actually launch a process
+    do not call it. ``_popen`` backs the long-lived cloudflared process;
+    ``_run`` backs every one-shot Tailscale command.
+    """
+    sentinel = {"marker": "no-console"}
+    monkeypatch.setattr(transport, "_no_window_kwargs", lambda: dict(sentinel))
+
+    run_calls = []
+    monkeypatch.setattr(
+        transport.subprocess, "run",
+        lambda *a, **kw: run_calls.append(kw) or subprocess.CompletedProcess(a, 0, stdout="{}", stderr=""),
+    )
+    provider = transport.build_provider("tailscale-serve", locate_tailscale=lambda: Path("tailscale"))
+    provider._run(["tailscale", "status", "--json"], timeout=5)
+    assert run_calls[0]["marker"] == "no-console"
+
+    popen_calls = []
+
+    class FakePopen:
+        def __init__(self, *a, **kw):
+            popen_calls.append(kw)
+            self.stdout = iter(())
+
+    monkeypatch.setattr(transport.subprocess, "Popen", FakePopen)
+    cloudflare = transport.build_provider("cloudflare-quick", locate_cloudflared=lambda: Path("cloudflared"))
+    cloudflare._popen(["cloudflared", "tunnel"])
+    assert popen_calls[0]["marker"] == "no-console"
+
+
 def test_run_passes_an_explicit_utf8_encoding(monkeypatch):
     """``text=True`` without an explicit ``encoding=`` decodes helper output
     with ``locale.getpreferredencoding(False)``, which on Windows is commonly

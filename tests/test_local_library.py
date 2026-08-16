@@ -7,6 +7,7 @@ Both destroy playlists, and both would be discovered by a user rather than by a
 crash, so they are pinned here.
 """
 
+import ntpath
 import os
 import tempfile
 import unittest
@@ -181,6 +182,25 @@ class LocalScannerTests(unittest.TestCase):
         titles = sorted(t["title"] for t in self.state.list_music_tracks())
         self.assertEqual(titles, ["Coda", "Says"])
 
+    def test_skip_dir_names_fold_case_the_way_windows_does(self):
+        """``node_modules`` is skipped by exact name on POSIX; on a
+        case-folding filesystem a differently-cased ``Node_Modules`` is the
+        same directory entry and must be skipped too.
+        """
+        write_track(self.music, "01 - Nils - Says.mp3")
+        write_track(self.music / "Node_Modules", "vendored.mp3")
+
+        original_normcase = os.path.normcase
+        os.path.normcase = str.lower
+        try:
+            result = self.register_and_scan()
+        finally:
+            os.path.normcase = original_normcase
+
+        self.assertEqual(result["scanned"], 1)
+        titles = [t["title"] for t in self.state.list_music_tracks()]
+        self.assertEqual(titles, ["Says"])
+
     def test_symlinks_pointing_outside_the_root_are_never_followed(self):
         """A folder of symlinks must not become a file-disclosure primitive.
 
@@ -263,6 +283,64 @@ class LocalScannerTests(unittest.TestCase):
         self.assertEqual(result["scanned"], 1)
         self.assertEqual(result["skipped"], 1)
         self.assertEqual(self.state.list_music_tracks(), [])
+
+    def test_a_locked_file_is_skipped_without_aborting_the_scan(self):
+        """A file another process holds open -- a player, an indexer,
+        antivirus -- is extremely common on Windows and raises
+        ``PermissionError`` (a subclass of ``OSError``) the moment anything
+        tries to stat or open it. One such file must cost a skipped row, never
+        the rest of the folder.
+        """
+        write_track(self.music, "Nils - Says.mp3")
+        write_track(self.music, "Nils - Locked.mp3")
+
+        real_stat = local_library.os.stat
+
+        def flaky_stat(path, *args, **kwargs):
+            if os.path.basename(str(path)) == "Nils - Locked.mp3":
+                raise PermissionError(13, "Permission denied")
+            return real_stat(path, *args, **kwargs)
+
+        local_library.os.stat = flaky_stat
+        try:
+            result = self.register_and_scan()
+        finally:
+            local_library.os.stat = real_stat
+
+        self.assertEqual(result["scanned"], 2)
+        self.assertEqual(result["added"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(
+            [os.path.basename(row["file_path"]) for row in self.state.list_music_tracks()],
+            ["Nils - Says.mp3"],
+        )
+
+    def test_a_locked_files_tags_fall_back_to_its_filename(self):
+        """The same locked-file story, one layer in: mutagen's own file open
+        can raise ``PermissionError`` even when ``os.stat`` on the same path
+        succeeded a moment earlier (the lock is taken and released by another
+        process in between). ``read_tags`` must absorb that too, the same way
+        it already absorbs a corrupt tag block.
+        """
+        if not local_library.MUTAGEN_AVAILABLE:
+            self.skipTest("mutagen is not installed in this environment")
+        write_track(self.music, "Nils - Locked.mp3")
+
+        real_mutagen_file = local_library._MutagenFile
+
+        def flaky_open(path, *args, **kwargs):
+            raise PermissionError(13, "Permission denied")
+
+        local_library._MutagenFile = flaky_open
+        try:
+            result = self.register_and_scan()
+        finally:
+            local_library._MutagenFile = real_mutagen_file
+
+        self.assertEqual(result["added"], 1)
+        rows = self.state.list_music_tracks()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["title"], "Locked")  # parse_filename fallback
 
     # ── Identity ────────────────────────────────────────────────────────────
 
@@ -612,6 +690,146 @@ class WindowsPathCaseInsensitivityTests(unittest.TestCase):
         self.assertEqual(len(rows), 1, "a case-only rename must not create a second row")
         self.assertEqual(rows[0]["file_path"], moved_path)
         self.assertEqual(rows[0]["missing_since"], "")
+
+
+class WindowsRootSeparatorTests(unittest.TestCase):
+    """A root recorded with the "wrong" trailing separator must still work.
+
+    ``os.sep`` is ``"\\"`` on Windows, so a root that ends in a forward slash
+    (typed by a user, or handed back by a web-based folder picker that never
+    thinks in native separators) or a doubled-up separator (a drive root, once
+    normcase folds a stray ``/`` onto the ``\\`` already there) must still
+    collapse to exactly one trailing separator before it is used as a
+    containment prefix. Getting the order wrong -- stripping the separator
+    before folding case, instead of after -- leaves a duplicate that no stored
+    path can ever start with, which silently breaks the rescan optimisation
+    (``unchanged_local_paths``) and, worse, absence detection
+    (``mark_local_tracks_missing``) for that entire root. Reproduced here with
+    ``os.sep`` and ``os.path.normcase`` patched to Windows' own values, the
+    same technique as ``WindowsPathCaseInsensitivityTests`` above.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.music = self.root / "Music"
+        self.state = MusicState(self.root / "music.db")
+        self.original_sep = os.sep
+        self.original_normcase = os.path.normcase
+        os.sep = "\\"
+        # A stand-in for ntpath.normcase: fold case *and* fold "/" onto "\\",
+        # exactly what makes the ordering of rstrip vs. normcase matter.
+        state.os.path.normcase = lambda s: str(s).replace("/", "\\").lower()
+
+    def tearDown(self):
+        os.sep = self.original_sep
+        state.os.path.normcase = self.original_normcase
+        self.tmp.cleanup()
+
+    def test_within_tolerates_a_root_given_with_a_trailing_forward_slash(self):
+        """A drive root has to keep its trailing separator (``C:\\`` means
+        something different from ``C:``), and a user or a web-based folder
+        picker may hand one back with the "wrong" slash regardless. Built from
+        a real temp-directory root rather than a literal ``C:\\...`` path, so
+        ``os.path.realpath`` -- which ``_within`` calls first and which is not
+        patched here -- still resolves something real on this platform.
+        """
+        write_track(self.music, "Nils - Says.mp3")
+        real_root = os.path.realpath(str(self.music))
+        candidate = os.path.join(real_root, "Nils - Says.mp3")
+        self.assertTrue(local_library._within(real_root + "/", candidate))
+
+    def test_unchanged_local_paths_matches_under_a_forward_slash_root(self):
+        self.state.upsert_local_track(
+            file_path="C:/Music/Song.mp3", file_size=10, file_mtime=1.0, title="Song",
+        )
+        unchanged = self.state.unchanged_local_paths(
+            "C:/Music/", {"C:/Music/Song.mp3": (10, 1.0)}
+        )
+        self.assertEqual(unchanged, {"C:/Music/Song.mp3"})
+
+    def test_mark_local_tracks_missing_finds_rows_under_a_forward_slash_root(self):
+        row = self.state.upsert_local_track(
+            file_path="C:/Music/Song.mp3", file_size=10, file_mtime=1.0, title="Song",
+        )
+        marked = self.state.mark_local_tracks_missing("C:/Music/", set())
+        self.assertEqual(marked, 1)
+        refreshed = self.state.get_local_track(track_id=row["id"])
+        self.assertNotEqual(refreshed["missing_since"], "")
+
+
+class LongPathTests(unittest.TestCase):
+    r"""Windows refuses any file operation on an absolute path once it is
+    roughly 260 characters long, which a music library nested a few
+    artist/album/disc folders deep hits routinely. ``long_path()`` is the
+    ``\\?\``-prefixed escape hatch for that -- exercised here with ``os.name``
+    and ``os.path.isabs`` patched to behave like Windows, since neither
+    changes just because ``os.name`` is reassigned on a POSIX interpreter.
+    """
+
+    def setUp(self):
+        self.original_name = os.name
+        self.original_isabs = os.path.isabs
+
+    def tearDown(self):
+        local_library.os.name = self.original_name
+        local_library.os.path.isabs = self.original_isabs
+
+    def _pretend_windows(self):
+        local_library.os.name = "nt"
+        local_library.os.path.isabs = ntpath.isabs
+
+    def test_is_a_no_op_off_windows(self):
+        self.assertEqual(local_library.os.name, self.original_name)
+        self.assertEqual(local_library.long_path("/Music/Song.mp3"), "/Music/Song.mp3")
+
+    def test_prefixes_an_absolute_drive_path_on_windows(self):
+        self._pretend_windows()
+        self.assertEqual(
+            local_library.long_path(r"C:\Music\Song.mp3"),
+            r"\\?\C:\Music\Song.mp3",
+        )
+
+    def test_prefixes_a_unc_share_with_its_own_form(self):
+        self._pretend_windows()
+        self.assertEqual(
+            local_library.long_path(r"\\server\share\Song.mp3"),
+            r"\\?\UNC\server\share\Song.mp3",
+        )
+
+    def test_an_already_prefixed_path_is_left_alone(self):
+        self._pretend_windows()
+        given = r"\\?\C:\Music\Song.mp3"
+        self.assertEqual(local_library.long_path(given), given)
+
+    def test_a_relative_path_is_left_alone(self):
+        r"""``\\?\`` is only valid in front of a fully-qualified path; a
+        relative path is passed straight through rather than mangled into one
+        that resolves nowhere.
+        """
+        self._pretend_windows()
+        self.assertEqual(local_library.long_path("Song.mp3"), "Song.mp3")
+
+    def test_describe_file_stats_through_the_long_path_form(self):
+        """The wiring, not just the helper: on Windows ``describe_file`` must
+        actually hand ``os.stat`` the prefixed path, not the original one.
+        """
+        self._pretend_windows()
+        seen = {}
+        real_stat_result = os.stat_result((0o100644, 1, 2, 1, 0, 0, 123, 0, 0, 0))
+
+        def fake_stat(path, *args, **kwargs):
+            seen["path"] = path
+            return real_stat_result
+
+        original_stat = local_library.os.stat
+        local_library.os.stat = fake_stat
+        try:
+            local_library.describe_file(r"C:\Music\Song.mp3")
+        finally:
+            local_library.os.stat = original_stat
+
+        self.assertEqual(seen["path"], r"\\?\C:\Music\Song.mp3")
 
 
 class LocalBridgeCommandTests(unittest.TestCase):

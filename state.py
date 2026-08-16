@@ -1553,8 +1553,13 @@ class MusicState:
         # normcase'd throughout: a no-op on POSIX, but on Windows this is what
         # keeps a rescan from re-reading every file just because a path came
         # back cased differently than the one already stored for it (a mapped
-        # drive, a reparse point, or simply Windows' own realpath).
-        prefix = os.path.normcase(str(root or "").rstrip(os.sep) + os.sep)
+        # drive, a reparse point, or simply Windows' own realpath). normcase()
+        # runs *before* the trailing separator is stripped, not after: a root
+        # recorded with a forward slash (os.sep is "\\" on Windows) would
+        # otherwise dodge the rstrip, and normcase folding it to "\\" afterwards
+        # leaves a doubled separator that no stored path can ever start with --
+        # silently defeating this whole rescan optimisation for that root.
+        prefix = os.path.normcase(str(root or "")).rstrip(os.sep) + os.sep
         with self.connect() as conn:
             rows = conn.execute(
                 "SELECT file_path, file_size, file_mtime FROM music_tracks "
@@ -1584,8 +1589,12 @@ class MusicState:
             return 0
         # normcase'd for the same reason as unchanged_local_paths above: on
         # Windows a path that is genuinely still there must not be mistaken
-        # for missing merely because of a case difference.
-        prefix = os.path.normcase(cleaned_root + os.sep)
+        # for missing merely because of a case difference. And, as there,
+        # normcase() runs before the trailing separator is stripped and
+        # re-added -- doing it in the other order leaves a doubled separator
+        # whenever the stored root used "/" instead of "\\", and nothing
+        # under that root would ever be marked missing again.
+        prefix = os.path.normcase(str(root or "")).rstrip(os.sep) + os.sep
         seen = {os.path.normcase(str(path)) for path in (seen_paths or ())}
         stamp = utc_now()
         with self.connect() as conn:
