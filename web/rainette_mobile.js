@@ -277,6 +277,10 @@ function setTunnelStatus(message, tone, generation, host) {
 	if (!status) return;
 	status.textContent = message || '';
 	status.dataset.tone = tone || '';
+	// An empty line still occupies its margins, which reads as a gap nobody put
+	// there. This is what keeps the panel from growing a blank row whenever the
+	// setup checklist above is already saying the same thing.
+	status.hidden = !message;
 }
 
 function setHelperStatus(message, tone, generation, host) {
@@ -311,7 +315,11 @@ function tunnelMessage(status) {
 	const label = status.provider_label || 'This connection';
 	const helper = status.helper;
 	if (status.phase === 'setup') {
-		return status.setup_message || `${label} needs a little setup on this computer first.`;
+		// The checklist above is already showing this exact sentence next to the
+		// button that acts on it. Repeating it here made the panel look broken —
+		// two identical paragraphs, one of them detached from its own button.
+		if (status.setup_message) return '';
+		return `${label} needs a little setup on this computer first.`;
 	}
 	if (status.phase === 'running') return `${label} is live at ${status.url} — your phone can reach this computer.`;
 	if (status.phase === 'error') return status.message || `${label} could not be started.`;

@@ -309,6 +309,76 @@ def test_a_logged_out_tailnet_is_a_login_step(monkeypatch, tmp_path):
     assert result.can_fix is False
 
 
+def test_a_sleeping_tailscale_offers_to_start_it_rather_than_blaming_the_user(monkeypatch):
+    """`tailscale up` cannot help when the daemon it talks to is not running.
+
+    On macOS the CLI is a client of a daemon the app owns, so with the app quit
+    the old panel said "open the Tailscale app once, then try again" beside a
+    button that was guaranteed to fail. Rainette can just open it.
+    """
+    # Arrange: installed, daemon not answering.
+    provider = transport.build_provider("tailscale-serve", locate_tailscale=lambda: Path("tailscale"))
+    monkeypatch.setattr(provider, "_status_json", lambda: None)
+
+    # Act
+    result = provider.preflight()
+
+    # Assert
+    assert (result.ok, result.action, result.can_fix) == (False, "login", True)
+    assert result.fix_label == "Start Tailscale"
+    assert "try again" not in result.message.lower()
+
+
+def test_starting_a_sleeping_tailscale_opens_the_app_before_running_up(monkeypatch):
+    """Order matters: `up` against a dead daemon fails for the reason just fixed."""
+    # Arrange
+    calls = []
+    answers = [None, None, {"BackendState": "Running"}]
+
+    provider = transport.build_provider("tailscale-serve", locate_tailscale=lambda: Path("tailscale"))
+    monkeypatch.setattr(transport.sys, "platform", "darwin")
+    monkeypatch.setattr(transport.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(provider, "_status_json", lambda: answers.pop(0) if answers else {"BackendState": "Running"})
+
+    def fake_subprocess_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    def fake_run(command, *, timeout):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(transport.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(provider, "_run", fake_run)
+
+    # Act
+    provider.begin_login()
+    thread = provider._login_thread
+    if thread is not None:
+        thread.join(timeout=5)
+
+    # Assert
+    assert calls[0][:2] == ["/usr/bin/open", "-a"]
+    assert calls[-1][1:] == ["up"]
+
+
+def test_a_responsive_tailscale_is_not_relaunched(monkeypatch):
+    """Opening an app that is already running would steal focus for nothing."""
+    # Arrange
+    provider = transport.build_provider("tailscale-serve", locate_tailscale=lambda: Path("tailscale"))
+    monkeypatch.setattr(transport.sys, "platform", "darwin")
+    monkeypatch.setattr(provider, "_status_json", lambda: {"BackendState": "NeedsLogin"})
+    opened = []
+    monkeypatch.setattr(transport.subprocess, "run",
+                        lambda command, **kwargs: opened.append(command) or subprocess.CompletedProcess(command, 0))
+
+    # Act
+    provider._wake_daemon()
+
+    # Assert
+    assert opened == []
+
+
 def test_a_logged_out_tailnet_with_no_auth_url_offers_to_start_the_login(monkeypatch):
     """Logged out, the daemon has no AuthURL until something runs `tailscale up`.
 
@@ -345,9 +415,10 @@ def test_starting_the_tailscale_login_runs_up_rather_than_opening_a_page(monkeyp
     if thread is not None:
         thread.join(timeout=5)
 
-    # Assert
+    # Assert: `up` is reached. It is not necessarily the first call — waking a
+    # sleeping daemon interrogates it first — so the check is that it happened.
     assert result["ok"] is True
-    assert commands and commands[0][1:] == ["up"]
+    assert ["up"] in [command[1:] for command in commands]
 
 
 def test_a_printed_auth_url_is_not_reported_as_a_tailscale_failure(monkeypatch):
