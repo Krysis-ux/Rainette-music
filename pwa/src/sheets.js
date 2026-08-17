@@ -28,6 +28,11 @@ function rubber(delta) {
 	return -(RUBBER_LIMIT * (1 - Math.exp(-over / RUBBER_LIMIT)));
 }
 
+/* How far from the true top a sheet's content may still be and have a pull-down
+ * dismiss it. Deliberately below the 8px drag threshold: a finger that means to
+ * scroll still gets to scroll, but one resting a pixel short of the top is not
+ * silently denied the gesture it is plainly making. */
+const SHEET_TOP_SLACK_PX = 2;
 /* Slowest a continuation close is allowed to start, so a sheet dragged past the
  * threshold and released dead still leaves rather than creeping. px/ms. */
 const MIN_CLOSE_VELOCITY = 0.6;
@@ -258,7 +263,14 @@ function wireDrag(panel, handle) {
 			// The sliders own their own pointers outright; the grip owns the
 			// queue reorder.
 			if (target.closest('.rs, .queue-row-grip')) return false;
-			return body.scrollTop <= 0;
+			// Not `<= 0`. A list flicked back to the top routinely settles a
+			// pixel or two short, and momentum can leave a fractional offset
+			// that never reaches zero at all — so an exact test made the
+			// pull-down refuse to start for reasons invisible to the person
+			// doing it, which is the "sometimes it just doesn't swipe" case.
+			// The slack is smaller than the drag threshold, so a genuine scroll
+			// still wins.
+			return body.scrollTop <= SHEET_TOP_SLACK_PX;
 		},
 		onStart: () => {
 			engaged = false;
