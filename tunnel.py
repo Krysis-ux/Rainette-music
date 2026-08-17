@@ -804,6 +804,12 @@ class TunnelManager:
             setup_action=result.action,
             setup_message=result.message,
             setup_url=result.url,
+            # Dropped here once, so pressing "turn it on" produced a step with
+            # no explanation and no button while asking the same question
+            # through `preflight` produced both.
+            setup_can_fix=result.can_fix,
+            setup_fix_label=result.fix_label,
+            setup_detail=result.detail,
         )
         return self.status()
 

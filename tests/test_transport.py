@@ -309,6 +309,60 @@ def test_a_logged_out_tailnet_is_a_login_step(monkeypatch, tmp_path):
     assert result.can_fix is False
 
 
+def test_a_tailnet_without_https_names_the_switch_and_says_it_is_free(monkeypatch):
+    """This is the step that reads as "it cannot connect" when it is skipped.
+
+    Without it `tailscale cert` answers "your Tailscale account does not support
+    getting TLS certs", so the phone has nothing to trust. Pointing at a
+    settings page is not enough — the message has to name the switch.
+    """
+    # Arrange: connected, named, but HTTPS is off for the tailnet.
+    provider = transport.build_provider("tailscale-serve", locate_tailscale=lambda: Path("tailscale"))
+    monkeypatch.setattr(provider, "_status_json", lambda: {
+        "BackendState": "Running",
+        "Self": {"DNSName": "box.tailnet.ts.net."},
+        "CertDomains": [],
+    })
+
+    # Act
+    result = provider.preflight()
+
+    # Assert
+    assert (result.ok, result.action) == (False, "consent")
+    assert "HTTPS Certificates" in result.message
+    assert "free" in result.detail
+    assert result.url == "https://login.tailscale.com/admin/dns"
+    # Not something Rainette can flip on somebody's account.
+    assert result.can_fix is False
+
+
+def test_the_start_button_reports_the_same_step_as_the_panel_does(tmp_path, monkeypatch):
+    """`start` and `preflight` must not describe the same state differently.
+
+    The detail line and the fix button were dropped on the start path, so
+    pressing "turn this connection on" produced a bare sentence while asking
+    the same question through the panel produced a full step.
+    """
+    # Arrange
+    manager = tunnel.TunnelManager(tmp_path, provider="tailscale-serve")
+    provider = manager.provider()
+    monkeypatch.setattr(provider, "_status_json", lambda: {
+        "BackendState": "Running",
+        "Self": {"DNSName": "box.tailnet.ts.net."},
+        "CertDomains": [],
+    })
+
+    # Act
+    status = manager.start(8765)
+    status = settle(manager)
+
+    # Assert
+    assert status["phase"] == "setup"
+    assert status["setup_action"] == "consent"
+    assert status["setup_detail"], "the start path dropped the explanation"
+    assert status["setup_detail"] == provider.preflight().detail
+
+
 def test_a_sleeping_tailscale_offers_to_start_it_rather_than_blaming_the_user(monkeypatch):
     """`tailscale up` cannot help when the daemon it talks to is not running.
 
