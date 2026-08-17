@@ -9,8 +9,10 @@ checklist rather than as a failure.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -115,10 +117,15 @@ def test_every_advertised_provider_can_be_built(tmp_path):
 
 
 def test_the_labels_the_settings_page_shows_are_the_agreed_ones():
+    """Labels describe what the user gets, not which vendor supplies it."""
     labels = {entry["id"]: entry["label"] for entry in transport.catalogue()}
     assert labels["cloudflare-quick"] == "Limited tunnel"
-    assert labels["tailscale-serve"] == "Private link"
-    assert labels["tailscale-funnel"] == "High-quality tunnel"
+    assert labels["tailscale-serve"] == "Direct on your network"
+    assert labels["tailscale-funnel"] == "Direct, plus reachable anywhere"
+    # The recommendation is the one that is both fast on a home network and
+    # still a secure context, so the phone client stays installable.
+    recommended = [entry["id"] for entry in transport.catalogue() if entry["recommended"]]
+    assert recommended == ["tailscale-serve"]
 
 
 def test_only_the_private_link_is_kept_off_the_public_internet():
@@ -177,7 +184,7 @@ def test_the_manager_switches_provider_and_remembers_it(tmp_path):
 
     # Assert
     assert status["provider"] == "tailscale-serve"
-    assert status["provider_label"] == "Private link"
+    assert status["provider_label"] == "Direct on your network"
     assert status["stable_hostname"] is True
     assert transport.read_selection(tmp_path).provider == "tailscale-serve"
 
@@ -297,6 +304,72 @@ def test_a_logged_out_tailnet_is_a_login_step(monkeypatch, tmp_path):
     # right place rather than to a generic help page.
     assert (result.ok, result.action) == (False, "login")
     assert result.url == "https://login.tailscale.com/a/abc123"
+    # A pending auth URL is the user's step to finish, so Rainette does not
+    # offer to redo it underneath them.
+    assert result.can_fix is False
+
+
+def test_a_logged_out_tailnet_with_no_auth_url_offers_to_start_the_login(monkeypatch):
+    """Logged out, the daemon has no AuthURL until something runs `tailscale up`.
+
+    That is the whole reason this step is a button: the old flow linked to a
+    login page that could not know which computer was asking.
+    """
+    # Arrange
+    provider = transport.build_provider("tailscale-serve", locate_tailscale=lambda: Path("tailscale"))
+    monkeypatch.setattr(provider, "_status_json", lambda: {"BackendState": "NeedsLogin"})
+
+    # Act
+    result = provider.preflight()
+
+    # Assert
+    assert (result.ok, result.action, result.can_fix) == (False, "login", True)
+    assert result.fix_label == "Connect Tailscale"
+
+
+def test_starting_the_tailscale_login_runs_up_rather_than_opening_a_page(monkeypatch):
+    """`tailscale up` is what makes the daemon mint the link, so it is the step."""
+    # Arrange
+    commands = []
+
+    def fake_run(command, *, timeout):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    provider = transport.build_provider("tailscale-serve", locate_tailscale=lambda: Path("tailscale"))
+    monkeypatch.setattr(provider, "_run", fake_run)
+
+    # Act
+    result = provider.begin_login()
+    thread = provider._login_thread
+    if thread is not None:
+        thread.join(timeout=5)
+
+    # Assert
+    assert result["ok"] is True
+    assert commands and commands[0][1:] == ["up"]
+
+
+def test_a_printed_auth_url_is_not_reported_as_a_tailscale_failure(monkeypatch):
+    """`tailscale up` exiting non-zero while printing a link is the normal path."""
+    # Arrange
+    provider = transport.build_provider("tailscale-serve", locate_tailscale=lambda: Path("tailscale"))
+    monkeypatch.setattr(
+        provider,
+        "_run",
+        lambda command, *, timeout: subprocess.CompletedProcess(
+            command, 1, stdout="To authenticate, visit:\n\nhttps://login.tailscale.com/a/abc123\n", stderr=""
+        ),
+    )
+
+    # Act
+    provider.begin_login()
+    thread = provider._login_thread
+    if thread is not None:
+        thread.join(timeout=5)
+
+    # Assert
+    assert provider._login_error == ""
 
 
 def test_a_tailnet_without_https_certificates_is_a_consent_step(monkeypatch):
@@ -410,20 +483,209 @@ def test_a_manual_https_address_is_accepted_and_returned():
     assert provider.discover_url(transport.ProviderHandle(), 0) == "https://music-pc.example.com"
 
 
-def test_a_named_tunnel_without_settings_asks_for_them(monkeypatch, tmp_path):
-    # Arrange: signed in to Cloudflare, but nothing configured yet.
+def _named_provider(tmp_path, monkeypatch, *, config=None, run=None):
+    """A named-tunnel provider whose home directory and CLI are under test control."""
     provider = transport.build_provider(
-        "cloudflare-named", locate_cloudflared=lambda: Path("cloudflared"), config={}
+        "cloudflare-named",
+        locate_cloudflared=lambda: Path("cloudflared"),
+        config=config or {},
     )
     monkeypatch.setattr(transport.Path, "home", staticmethod(lambda: tmp_path))
-    (tmp_path / ".cloudflared").mkdir()
+    (tmp_path / ".cloudflared").mkdir(exist_ok=True)
+    if run is not None:
+        monkeypatch.setattr(provider, "_run", run)
+    return provider
+
+
+def _sign_in(tmp_path):
     (tmp_path / ".cloudflared" / "cert.pem").write_text("x", encoding="utf-8")
+
+
+def test_a_named_tunnel_without_settings_offers_to_set_itself_up(monkeypatch, tmp_path):
+    """The step after signing in is a button Rainette presses, not a form."""
+    # Arrange: signed in to Cloudflare, but nothing configured yet.
+    provider = _named_provider(tmp_path, monkeypatch)
+    _sign_in(tmp_path)
+    monkeypatch.setattr(provider, "zone_name", lambda: "example.com")
 
     # Act
     result = provider.preflight()
 
     # Assert
-    assert (result.ok, result.action) == (False, "configure")
+    assert (result.ok, result.action) == (False, "provision")
+    assert result.can_fix is True
+    assert "music.example.com" in result.message
+
+
+def test_a_named_tunnel_that_cannot_read_the_domain_still_asks_rather_than_fails(
+    monkeypatch, tmp_path
+):
+    """Losing the zone lookup costs a prefilled box, never the feature."""
+    # Arrange
+    provider = _named_provider(tmp_path, monkeypatch)
+    _sign_in(tmp_path)
+    monkeypatch.setattr(provider, "zone_name", lambda: "")
+
+    # Act
+    result = provider.preflight()
+
+    # Assert
+    assert (result.ok, result.action) == (False, "provision")
+    assert result.can_fix is False
+
+
+def test_signing_in_is_a_button_rather_than_a_terminal_command(monkeypatch, tmp_path):
+    """The old flow told people to run a command; this one offers to do it."""
+    # Arrange: helper present, not signed in.
+    provider = _named_provider(tmp_path, monkeypatch)
+
+    # Act
+    result = provider.preflight()
+
+    # Assert
+    assert (result.ok, result.action) == (False, "login")
+    assert result.can_fix is True
+    assert "terminal" not in result.message.lower()
+    # Somebody with no account at all needs the signup page offered too.
+    assert result.url == "https://dash.cloudflare.com/sign-up"
+
+
+def test_the_missing_helper_is_a_download_rainette_can_do(monkeypatch, tmp_path):
+    # Arrange: no cloudflared anywhere.
+    provider = transport.build_provider("cloudflare-named", locate_cloudflared=lambda: None)
+    monkeypatch.setattr(transport.Path, "home", staticmethod(lambda: tmp_path))
+
+    # Act
+    result = provider.preflight()
+
+    # Assert
+    assert (result.ok, result.action, result.can_fix) == (False, "install", True)
+
+
+def test_provisioning_creates_the_tunnel_and_points_the_name_at_it(monkeypatch, tmp_path):
+    """One button has to cover both CLI calls, or it is not one button."""
+    # Arrange
+    calls = []
+
+    def fake_run(command, *, timeout):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    provider = _named_provider(tmp_path, monkeypatch, run=fake_run)
+    _sign_in(tmp_path)
+
+    # Act
+    result = provider.provision(hostname="music.example.com", tunnel_name="rainette-mac")
+
+    # Assert
+    assert result == {"ok": True, "tunnel_name": "rainette-mac", "hostname": "music.example.com"}
+    assert calls[0][1:] == ["tunnel", "create", "rainette-mac"]
+    assert calls[1][1:] == ["tunnel", "route", "dns", "rainette-mac", "music.example.com"]
+    # And the provider is now ready without anybody typing anything.
+    assert provider.preflight().ok is True
+
+
+def test_provisioning_again_lands_on_ready_rather_than_already_exists(monkeypatch, tmp_path):
+    """Pressing the button twice is the normal case, not an error."""
+    # Arrange
+    def fake_run(command, *, timeout):
+        if "create" in command:
+            return subprocess.CompletedProcess(
+                command, 1, stdout="", stderr="tunnel with name rainette-mac already exists"
+            )
+        return subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="already configured to point to tunnel rainette-mac"
+        )
+
+    provider = _named_provider(tmp_path, monkeypatch, run=fake_run)
+    _sign_in(tmp_path)
+
+    # Act
+    result = provider.provision(hostname="music.example.com", tunnel_name="rainette-mac")
+
+    # Assert
+    assert result["ok"] is True
+
+
+def test_a_dns_record_owned_by_something_else_is_a_real_failure(monkeypatch, tmp_path):
+    """Silently stealing a record that serves somebody's website would be worse."""
+    # Arrange
+    def fake_run(command, *, timeout):
+        if "create" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="An A, AAAA, or CNAME record with that host already exists"
+        )
+
+    provider = _named_provider(tmp_path, monkeypatch, run=fake_run)
+    _sign_in(tmp_path)
+
+    # Act / Assert
+    with pytest.raises(transport.TransportError):
+        provider.provision(hostname="www.example.com", tunnel_name="rainette-mac")
+
+
+def test_the_suggested_tunnel_name_is_safe_for_cloudflare(monkeypatch):
+    """Hostnames can carry anything; a tunnel name cannot."""
+    # Arrange
+    monkeypatch.setattr(transport.socket, "gethostname", lambda: "Lennon's MacBook Pro.local")
+
+    # Act
+    name = transport.CloudflareNamedProvider.suggested_tunnel_name()
+
+    # Assert
+    assert name == "rainette-lennon-s-macbook-pro"
+    assert re.fullmatch(r"[a-z0-9-]+", name)
+
+
+def test_the_zone_is_read_from_the_certificate_cloudflared_wrote(monkeypatch, tmp_path):
+    """Reading the chosen domain locally is what removes the text box."""
+    # Arrange
+    provider = _named_provider(tmp_path, monkeypatch)
+    token = base64.b64encode(
+        json.dumps({"zoneID": "zone-1", "apiToken": "secret"}).encode()
+    ).decode()
+    (tmp_path / ".cloudflared" / "cert.pem").write_text(
+        "-----BEGIN CERTIFICATE-----\nxx\n-----END CERTIFICATE-----\n"
+        f"-----BEGIN ARGO TUNNEL TOKEN-----\n{token}\n-----END ARGO TUNNEL TOKEN-----\n",
+        encoding="utf-8",
+    )
+    seen = {}
+
+    class FakeResponse:
+        def read(self, *_):
+            return json.dumps({"result": {"name": "Example.COM"}}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        seen["url"] = request.full_url
+        seen["auth"] = request.get_header("Authorization")
+        return FakeResponse()
+
+    monkeypatch.setattr(transport.urllib.request, "urlopen", fake_urlopen)
+
+    # Act
+    zone = provider.zone_name()
+
+    # Assert
+    assert zone == "example.com"
+    assert seen["url"].endswith("/zones/zone-1")
+    assert seen["auth"] == "Bearer secret"
+
+
+def test_an_unreadable_certificate_yields_no_zone_instead_of_raising(monkeypatch, tmp_path):
+    # Arrange
+    provider = _named_provider(tmp_path, monkeypatch)
+    (tmp_path / ".cloudflared" / "cert.pem").write_text("not a token", encoding="utf-8")
+
+    # Act / Assert
+    assert provider.zone_name() == ""
+    assert provider.suggested_hostname() == ""
 
 
 def test_a_named_tunnel_uses_its_configured_hostname_rather_than_scraping():
@@ -433,6 +695,75 @@ def test_a_named_tunnel_uses_its_configured_hostname_rather_than_scraping():
         config={"hostname": "music.example.com", "tunnel_name": "music"},
     )
     assert provider.discover_url(transport.ProviderHandle(), 0) == "https://music.example.com"
+
+
+# ── the manager, carrying out a setup step on the user's behalf ───────────
+
+
+def test_the_manager_refuses_a_step_the_provider_never_offered(tmp_path):
+    """`setup_step` must not become a way to call arbitrary provider methods."""
+    # Arrange
+    manager = tunnel.TunnelManager(tmp_path, provider="cloudflare-quick")
+
+    # Act / Assert
+    with pytest.raises(tunnel.TunnelError):
+        manager.setup_step("owns_url")
+
+
+def test_the_manager_refuses_a_sign_in_from_a_provider_without_one(tmp_path):
+    # Arrange: the quick tunnel has no account and so no begin_login.
+    manager = tunnel.TunnelManager(tmp_path, provider="cloudflare-quick")
+
+    # Act / Assert
+    with pytest.raises(tunnel.TunnelError):
+        manager.setup_step("login")
+
+
+def test_provisioning_through_the_manager_persists_what_it_created(tmp_path, monkeypatch):
+    """A tunnel created and then forgotten on restart would be worse than none."""
+    # Arrange
+    manager = tunnel.TunnelManager(
+        tmp_path,
+        provider="cloudflare-named",
+        binary_locator=lambda: Path("cloudflared"),
+    )
+    provider = manager.provider()
+    monkeypatch.setattr(transport.Path, "home", staticmethod(lambda: tmp_path))
+    (tmp_path / ".cloudflared").mkdir(exist_ok=True)
+    (tmp_path / ".cloudflared" / "cert.pem").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(
+        provider,
+        "_run",
+        lambda command, *, timeout: subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(provider, "zone_name", lambda: "example.com")
+
+    # Act
+    result = manager.setup_step("provision")
+
+    # Assert
+    assert result["step"] == "provision"
+    assert result["step_result"]["hostname"] == "music.example.com"
+    # Persisted, so a restart comes back ready rather than back at step one.
+    stored = transport.read_selection(tmp_path)
+    assert stored.provider == "cloudflare-named"
+    assert stored.config["hostname"] == "music.example.com"
+
+
+def test_a_setup_step_reports_the_next_step_rather_than_only_its_own_result(tmp_path, monkeypatch):
+    """The panel redraws from preflight, so every step has to return one."""
+    # Arrange: helper missing, so the step to take is the download.
+    manager = tunnel.TunnelManager(tmp_path, provider="cloudflare-named", binary_locator=lambda: None)
+    monkeypatch.setattr(transport.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(manager, "download_helper", lambda: {"phase": "downloading"})
+
+    # Act
+    result = manager.setup_step("install")
+
+    # Assert
+    assert result["setup_action"] == "install"
+    assert result["setup_can_fix"] is True
+    assert "preflight_ok" in result
 
 
 # ── the manager, driving a provider that needs setup ──────────────────────

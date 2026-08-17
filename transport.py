@@ -26,13 +26,18 @@ and the providers stay testable without a running app.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -89,12 +94,24 @@ class ProviderCapabilities:
 
 @dataclass(frozen=True)
 class PreflightResult:
-    """The next human step, or ``ok`` when there is not one."""
+    """The next human step, or ``ok`` when there is not one.
+
+    ``can_fix`` is the difference between a checklist and a wizard.  An
+    unfinished step that only carries a ``url`` leaves the person to go and do
+    something in a browser and then come back and work out what changed; the
+    same step with ``can_fix`` set is a button in Rainette that performs it.
+    Providers should set it wherever the work is genuinely the app's to do, and
+    leave it clear where the step is unavoidably the user's -- creating an
+    account, consenting to expose a tailnet, buying a domain.
+    """
 
     ok: bool
-    action: str = ""  # "" | "install" | "login" | "consent" | "configure"
+    action: str = ""  # "" | "install" | "signup" | "login" | "consent" | "configure" | "provision"
     message: str = ""
     url: str = ""  # a link the UI renders as the next step
+    can_fix: bool = False  # Rainette itself can carry this step out
+    fix_label: str = ""  # what the button that does it should say
+    detail: str = ""  # optional second line, for the "why" behind the step
 
     def as_dict(self) -> dict:
         return {
@@ -102,6 +119,9 @@ class PreflightResult:
             "setup_action": self.action,
             "setup_message": self.message,
             "setup_url": self.url,
+            "setup_can_fix": self.can_fix,
+            "setup_fix_label": self.fix_label,
+            "setup_detail": self.detail,
         }
 
 
@@ -165,15 +185,34 @@ _TAILNET_HOST_SUFFIX = ".ts.net"
 _QUICK_TUNNEL_RE = re.compile(r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com")
 _REGISTERED_MARKER = "registered tunnel connection"
 _FUNNEL_CONSENT_RE = re.compile(r"https://login\.tailscale\.com/f/funnel\?\S+")
+_TAILSCALE_AUTH_RE = re.compile(r"https://login\.tailscale\.com/\S+")
 _TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download"
 _TAILSCALE_DNS_ADMIN_URL = "https://login.tailscale.com/admin/dns"
 _TAILSCALE_LOGIN_URL = "https://login.tailscale.com/"
 _CLOUDFLARE_LOGIN_URL = "https://dash.cloudflare.com/"
+_CLOUDFLARE_SIGNUP_URL = "https://dash.cloudflare.com/sign-up"
+_CLOUDFLARE_ADD_SITE_URL = "https://dash.cloudflare.com/?to=/:account/add-site"
+_CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4"
+
+# `cloudflared tunnel login` blocks until the browser round-trip finishes, so it
+# is run on a thread and polled for its artefact rather than waited on.
+_CLOUDFLARE_LOGIN_TIMEOUT_S = 300.0
+_CLOUDFLARE_LOGIN_POLL_S = 1.0
+_CLOUDFLARE_API_TIMEOUT_S = 20.0
+# Creating a tunnel and its DNS record are two quick API calls behind the CLI.
+_CLOUDFLARE_PROVISION_TIMEOUT_S = 90.0
+
+# The subdomain Rainette suggests on the user's own zone. Nothing depends on the
+# value; it only has to be memorable and unlikely to collide with a real site.
+_DEFAULT_SUBDOMAIN = "music"
 
 # `tailscale serve`/`funnel` reconfigure a daemon and return; they never take
 # this long unless something is badly wrong.
 _TAILSCALE_COMMAND_TIMEOUT_S = 60.0
 _TAILSCALE_POLL_S = 1.0
+# `tailscale up` waits for a browser round-trip, so it gets the same patience as
+# the Cloudflare sign-in rather than the command timeout.
+_TAILSCALE_LOGIN_TIMEOUT_S = 300.0
 
 
 def _host_of(url: str) -> str:
@@ -453,11 +492,24 @@ class CloudflareQuickProvider(_CloudflareProvider):
 
 
 class CloudflareNamedProvider(_CloudflareProvider):
-    """A tunnel the user owns, on a domain already sitting on Cloudflare."""
+    """A tunnel the user owns, on a domain already sitting on Cloudflare.
+
+    Everything this provider needs beyond an account and a domain, it does
+    itself.  ``cloudflared`` already knows how to open a browser for consent
+    (``tunnel login``), mint a tunnel (``tunnel create``) and write the DNS
+    record that points at it (``tunnel route dns``); the only reason those ever
+    had to be typed into a terminal is that nothing was calling them.  So the
+    provider drives them, and :meth:`preflight` becomes a wizard: at every
+    moment it reports the single next step and whether Rainette can take it.
+
+    Two steps are genuinely not ours and stay as links: creating the account,
+    and putting a domain on Cloudflare.  Pretending otherwise would mean
+    automating somebody's signup, which is neither possible nor desirable.
+    """
 
     id = CLOUDFLARE_NAMED
-    label = "Your own Cloudflare tunnel"
-    description = "Advanced. Needs a Cloudflare account and a domain already on Cloudflare, and gives you a permanent address you control."
+    label = "Your own permanent address"
+    description = "A permanent address on a domain you own, with a real certificate. Needs a free Cloudflare account and a domain on Cloudflare — Rainette sets up the rest for you."
     capabilities = ProviderCapabilities(
         stable_hostname=True,
         needs_account=True,
@@ -468,6 +520,13 @@ class CloudflareNamedProvider(_CloudflareProvider):
         long_lived_process=True,
     )
 
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._login_lock = threading.Lock()
+        self._login_thread: threading.Thread | None = None
+        self._login_error = ""
+        self._login_started_at = 0.0
+
     @property
     def hostname(self) -> str:
         return str(self._config.get("hostname") or "").strip().rstrip("/")
@@ -476,25 +535,261 @@ class CloudflareNamedProvider(_CloudflareProvider):
     def tunnel_name(self) -> str:
         return str(self._config.get("tunnel_name") or "").strip()
 
+    # -- the artefacts cloudflared leaves behind ---------------------------
+
+    @staticmethod
+    def cert_path() -> Path:
+        """Where ``cloudflared tunnel login`` writes the account certificate."""
+        return Path.home() / ".cloudflared" / "cert.pem"
+
+    def signed_in(self) -> bool:
+        return self.cert_path().is_file()
+
+    def login_in_progress(self) -> bool:
+        thread = self._login_thread
+        return bool(thread and thread.is_alive())
+
+    # -- step: sign in -----------------------------------------------------
+
+    def begin_login(self) -> dict:
+        """Run ``cloudflared tunnel login``, which opens the browser itself.
+
+        The command blocks until the person has picked a domain in Cloudflare's
+        UI, so it cannot be waited on inline without freezing the settings page.
+        It goes on a thread; progress is observed through the certificate file
+        it writes, which is the same thing every later step checks anyway.
+        """
+        if self.signed_in():
+            return {"ok": True, "already": True}
+        binary = self.ensure_binary()
+        if binary is None:
+            raise TransportError("download the Cloudflare helper first")
+        with self._login_lock:
+            if self.login_in_progress():
+                return {"ok": True, "already": False, "pending": True}
+            self._login_error = ""
+            self._login_started_at = time.monotonic()
+            thread = threading.Thread(
+                target=self._login_worker,
+                args=(str(binary),),
+                name="rainette-cloudflare-login",
+                daemon=True,
+            )
+            self._login_thread = thread
+            thread.start()
+        return {"ok": True, "already": False, "pending": True}
+
+    def _login_worker(self, binary: str) -> None:
+        try:
+            completed = self._run([binary, "tunnel", "login"], timeout=_CLOUDFLARE_LOGIN_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            self._login_error = "Signing in to Cloudflare timed out. Try again."
+            return
+        except OSError as exc:
+            self._login_error = f"The Cloudflare helper would not run: {exc}"
+            return
+        for line in f"{completed.stdout or ''}\n{completed.stderr or ''}".splitlines():
+            if line.strip():
+                self._record(line)
+        if not self.signed_in():
+            detail = _first_line(completed.stderr) or _first_line(completed.stdout)
+            self._login_error = (
+                f"Cloudflare did not finish signing in: {detail}" if detail
+                else "Cloudflare did not finish signing in."
+            )
+
+    # -- step: work out which domain they picked ---------------------------
+
+    def _cert_credentials(self) -> dict:
+        """Pull the zone and account ids out of the certificate cloudflared wrote.
+
+        ``cert.pem`` carries an extra PEM block holding a small JSON blob.  It is
+        the only place the chosen zone is recorded locally, and reading it is
+        what lets Rainette suggest a hostname instead of asking for one.
+        """
+        try:
+            raw = self.cert_path().read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return {}
+        match = re.search(
+            r"-----BEGIN ARGO TUNNEL TOKEN-----(.*?)-----END ARGO TUNNEL TOKEN-----",
+            raw,
+            re.DOTALL,
+        )
+        if not match:
+            return {}
+        try:
+            payload = json.loads(base64.b64decode("".join(match.group(1).split())))
+        except (ValueError, binascii.Error):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def zone_name(self) -> str:
+        """The domain the user chose while signing in, or "" if it cannot be read.
+
+        Best effort on purpose.  A failure here costs a prefilled text box, not
+        the feature: :meth:`preflight` falls back to asking for the hostname.
+        """
+        credentials = self._cert_credentials()
+        zone_id = str(credentials.get("zoneID") or "").strip()
+        token = str(credentials.get("apiToken") or "").strip()
+        if not zone_id or not token:
+            return ""
+        request = urllib.request.Request(
+            f"{_CLOUDFLARE_API_BASE}/zones/{zone_id}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=_CLOUDFLARE_API_TIMEOUT_S) as response:
+                payload = json.loads(response.read(1_000_000) or b"{}")
+        except (urllib.error.URLError, OSError, ValueError):
+            return ""
+        result = payload.get("result") if isinstance(payload, dict) else None
+        name = (result or {}).get("name") if isinstance(result, dict) else ""
+        return str(name or "").strip().lower()
+
+    def suggested_hostname(self) -> str:
+        zone = self.zone_name()
+        return f"{_DEFAULT_SUBDOMAIN}.{zone}" if zone else ""
+
+    @staticmethod
+    def suggested_tunnel_name() -> str:
+        """A name that says which computer it is, without leaking anything odd."""
+        try:
+            raw = socket.gethostname().split(".")[0]
+        except OSError:
+            raw = ""
+        slug = re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-")
+        return f"rainette-{slug}" if slug else "rainette"
+
+    # -- step: create the tunnel and point the name at it ------------------
+
+    def provision(self, hostname: str = "", tunnel_name: str = "") -> dict:
+        """Create the tunnel and its DNS record, tolerating both already existing.
+
+        Re-running this is the normal case, not the exception: somebody who
+        pressed the button, quit, and came back should land on "ready" rather
+        than on "a tunnel with that name already exists".
+        """
+        binary = self.ensure_binary()
+        if binary is None:
+            raise TransportError("download the Cloudflare helper first")
+        if not self.signed_in():
+            raise TransportError("sign in to Cloudflare first")
+        name = str(tunnel_name or "").strip() or self.tunnel_name or self.suggested_tunnel_name()
+        host = str(hostname or "").strip().rstrip("/") or self.hostname or self.suggested_hostname()
+        if not host:
+            raise TransportError(
+                "Rainette could not work out your domain. Enter the address you want to use."
+            )
+        self._create_tunnel(str(binary), name)
+        self._route_dns(str(binary), name, host)
+        self._config["tunnel_name"] = name
+        self._config["hostname"] = host
+        return {"ok": True, "tunnel_name": name, "hostname": host}
+
+    def _create_tunnel(self, binary: str, name: str) -> None:
+        try:
+            completed = self._run(
+                [binary, "tunnel", "create", name],
+                timeout=_CLOUDFLARE_PROVISION_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TransportError("Creating the Cloudflare tunnel took too long") from exc
+        except OSError as exc:
+            raise TransportError(f"the Cloudflare helper would not run: {exc}") from exc
+        output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+        for line in output.splitlines():
+            if line.strip():
+                self._record(line)
+        if completed.returncode == 0 or "already exists" in output.lower():
+            return
+        detail = _first_line(completed.stderr) or _first_line(completed.stdout)
+        raise TransportError(
+            f"Cloudflare would not create the tunnel: {detail}" if detail
+            else "Cloudflare would not create the tunnel"
+        )
+
+    def _route_dns(self, binary: str, name: str, host: str) -> None:
+        try:
+            completed = self._run(
+                [binary, "tunnel", "route", "dns", name, host],
+                timeout=_CLOUDFLARE_PROVISION_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TransportError("Setting up the Cloudflare address took too long") from exc
+        except OSError as exc:
+            raise TransportError(f"the Cloudflare helper would not run: {exc}") from exc
+        output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+        for line in output.splitlines():
+            if line.strip():
+                self._record(line)
+        if completed.returncode == 0:
+            return
+        lowered = output.lower()
+        # An existing record that already points at this tunnel is the desired
+        # end state, so only a record owned by something else is a real failure.
+        if "already exists" in lowered and name.lower() in lowered:
+            return
+        if "already configured to point to tunnel" in lowered:
+            return
+        detail = _first_line(completed.stderr) or _first_line(completed.stdout)
+        raise TransportError(
+            f"Cloudflare would not point {host} at this computer: {detail}" if detail
+            else f"Cloudflare would not point {host} at this computer"
+        )
+
+    # -- the wizard ---------------------------------------------------------
+
     def preflight(self) -> PreflightResult:
         if self.ensure_binary() is None:
             return PreflightResult(
                 ok=False,
                 action="install",
-                message="Download the Cloudflare helper first.",
+                message="Rainette needs Cloudflare's helper on this computer.",
+                can_fix=True,
+                fix_label="Download the Cloudflare helper",
+                detail="A one-off download, about 40 MB. Nothing leaves this computer yet.",
             )
-        if not (Path.home() / ".cloudflared" / "cert.pem").is_file():
+        if self._login_error:
             return PreflightResult(
                 ok=False,
                 action="login",
-                message="Sign in to Cloudflare once on this computer: run `cloudflared tunnel login` in a terminal.",
-                url=_CLOUDFLARE_LOGIN_URL,
+                message=self._login_error,
+                url=_CLOUDFLARE_SIGNUP_URL,
+                can_fix=True,
+                fix_label="Try signing in again",
             )
-        if not self.tunnel_name or not self.hostname:
+        if self.login_in_progress():
             return PreflightResult(
                 ok=False,
-                action="configure",
-                message="Enter the name of your Cloudflare tunnel and the hostname it serves.",
+                action="login",
+                message="Finish signing in to Cloudflare in the browser window that just opened, then pick the domain you want to use.",
+                detail="This page updates itself as soon as Cloudflare is done.",
+            )
+        if not self.signed_in():
+            return PreflightResult(
+                ok=False,
+                action="login",
+                message="Sign in to Cloudflare and choose the domain your phone should use.",
+                url=_CLOUDFLARE_SIGNUP_URL,
+                can_fix=True,
+                fix_label="Sign in to Cloudflare",
+                detail="No account yet? Creating one is free — you will also need a domain name added to Cloudflare.",
+            )
+        if not self.tunnel_name or not self.hostname:
+            suggestion = self.suggested_hostname()
+            return PreflightResult(
+                ok=False,
+                action="provision",
+                message=(
+                    f"Rainette will set up {suggestion} for this computer."
+                    if suggestion
+                    else "Rainette will create your tunnel. Enter the address you would like to use."
+                ),
+                can_fix=bool(suggestion),
+                fix_label="Create my address",
+                detail="This creates a Cloudflare tunnel and points the address at this computer.",
             )
         return PreflightResult(ok=True, message=f"Ready. Your phone will use https://{self.hostname}")
 
@@ -564,6 +859,9 @@ class _TailscaleProvider(_BaseProvider):
         super().__init__(**kwargs)
         self._locate = locate or _locate_tailscale
         self._binary: Path | None = None
+        self._login_lock = threading.Lock()
+        self._login_thread: threading.Thread | None = None
+        self._login_error = ""
 
     def ensure_binary(self, progress: Callable[[str], None] | None = None) -> Path | None:
         """Locate only. Tailscale cannot be installed silently and should not be.
@@ -599,37 +897,126 @@ class _TailscaleProvider(_BaseProvider):
         node = (payload or {}).get("Self") or {}
         return str(node.get("DNSName") or "").strip().rstrip(".")
 
+    # -- step: bring the daemon up and signed in ---------------------------
+
+    def login_in_progress(self) -> bool:
+        thread = self._login_thread
+        return bool(thread and thread.is_alive())
+
+    def begin_login(self) -> dict:
+        """Run ``tailscale up``, which is what makes the daemon mint an auth URL.
+
+        Logged out, ``tailscale status`` reports no ``AuthURL`` at all -- the
+        daemon only produces one once something has asked it to come up.  So the
+        button that used to send people to a login page they could do nothing
+        with instead starts the thing that generates the link, and the next
+        poll of :meth:`preflight` has a real URL to offer.
+        """
+        binary = self.ensure_binary()
+        if binary is None:
+            raise TransportError("install Tailscale first")
+        with self._login_lock:
+            if self.login_in_progress():
+                return {"ok": True, "pending": True}
+            self._login_error = ""
+            thread = threading.Thread(
+                target=self._login_worker,
+                args=(str(binary),),
+                name="rainette-tailscale-login",
+                daemon=True,
+            )
+            self._login_thread = thread
+            thread.start()
+        return {"ok": True, "pending": True}
+
+    def _login_worker(self, binary: str) -> None:
+        try:
+            completed = self._run([binary, "up"], timeout=_TAILSCALE_LOGIN_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            # Not an error: `tailscale up` waits for the browser, and the daemon
+            # keeps the pending login alive after the command gives up.
+            return
+        except OSError as exc:
+            self._login_error = f"Tailscale would not start: {exc}"
+            return
+        output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+        for line in output.splitlines():
+            if line.strip():
+                self._record(line)
+        if completed.returncode != 0:
+            # A printed auth URL is the normal path, not a failure to report --
+            # and it lands a line or two below "To authenticate, visit:", so the
+            # whole output has to be searched rather than only its first line.
+            if _TAILSCALE_AUTH_RE.search(output):
+                return
+            detail = _first_line(completed.stderr) or _first_line(completed.stdout)
+            if detail:
+                self._login_error = f"Tailscale could not sign in: {detail}"
+
     def preflight(self) -> PreflightResult:
         if self.ensure_binary() is None:
             return PreflightResult(
                 ok=False,
                 action="install",
-                message="Install Tailscale on this computer, then come back.",
+                message="Rainette needs the free Tailscale app on this computer.",
                 url=_TAILSCALE_DOWNLOAD_URL,
+                detail="Install it on your phone too — that pair is what lets the two talk directly.",
+            )
+        if self._login_error:
+            return PreflightResult(
+                ok=False,
+                action="login",
+                message=self._login_error,
+                url=_TAILSCALE_LOGIN_URL,
+                can_fix=True,
+                fix_label="Try connecting again",
             )
         status = self._status_json()
         if status is None:
             return PreflightResult(
                 ok=False,
                 action="login",
-                message="Tailscale is installed but not answering. Open the Tailscale app once, then try again.",
+                message="Tailscale is installed but not answering yet. Open the Tailscale app once, then try again.",
                 url=_TAILSCALE_LOGIN_URL,
+                can_fix=True,
+                fix_label="Connect Tailscale",
             )
         backend = str(status.get("BackendState") or "")
         if backend != "Running":
+            auth_url = str(status.get("AuthURL") or "")
+            if auth_url:
+                # The daemon is waiting on the browser; the link is the whole step.
+                return PreflightResult(
+                    ok=False,
+                    action="login",
+                    message="Finish connecting Tailscale in your browser, then come back.",
+                    url=auth_url,
+                    detail="This page updates itself as soon as Tailscale is connected.",
+                )
+            if self.login_in_progress():
+                return PreflightResult(
+                    ok=False,
+                    action="login",
+                    message="Starting Tailscale on this computer…",
+                    detail="A browser window will open for you to approve it.",
+                )
             return PreflightResult(
                 ok=False,
                 action="login",
-                message="Sign in to Tailscale on this computer, then come back.",
-                url=str(status.get("AuthURL") or "") or _TAILSCALE_LOGIN_URL,
+                message="Connect this computer to your Tailscale network.",
+                url=_TAILSCALE_LOGIN_URL,
+                can_fix=True,
+                fix_label="Connect Tailscale",
+                detail="Rainette will open a browser window for you to approve it. The account is free.",
             )
         dns_name = self._dns_name(status)
         if not dns_name:
             return PreflightResult(
                 ok=False,
                 action="consent",
-                message="Turn on MagicDNS for your tailnet so this computer has a name.",
+                message="Turn on MagicDNS for your Tailscale network so this computer has a name.",
                 url=_TAILSCALE_DNS_ADMIN_URL,
+                detail="One switch on Tailscale's own settings page. Rainette cannot flip it for you.",
             )
         if not (status.get("CertDomains") or []):
             # No cert domains means HTTPS is off for the whole tailnet, and
@@ -637,8 +1024,9 @@ class _TailscaleProvider(_BaseProvider):
             return PreflightResult(
                 ok=False,
                 action="consent",
-                message="Turn on HTTPS certificates for your tailnet, then come back.",
+                message="Turn on HTTPS certificates for your Tailscale network, then come back.",
                 url=_TAILSCALE_DNS_ADMIN_URL,
+                detail="The switch is just below MagicDNS on the same page.",
             )
         return PreflightResult(ok=True, message=f"Ready. Your phone will use https://{dns_name}")
 
@@ -704,12 +1092,20 @@ class _TailscaleProvider(_BaseProvider):
 
 
 class TailscaleServeProvider(_TailscaleProvider):
-    """The recommended option: a stable name that is never on the public internet."""
+    """The recommended option: a stable name that is never on the public internet.
+
+    This is also the closest thing to "just use the local network" that a
+    browser will actually accept.  On the same Wi-Fi, Tailscale connects the two
+    devices directly and the audio never leaves the building -- but unlike a
+    bare ``http://192.168.x.x`` address it carries a real certificate, so the
+    phone client stays a secure context and keeps the two things that depend on
+    one: installing to the home screen, and working offline.
+    """
 
     id = TAILSCALE_SERVE
     mode = "serve"
-    label = "Private link"
-    description = "Recommended. A permanent address with a real certificate, reachable only from your own devices — never from the open internet. Needs the free Tailscale app on this computer and on your phone."
+    label = "Direct on your network"
+    description = "Recommended. On the same Wi-Fi your phone talks straight to this computer, so it is fast and nothing leaves your network. The address never changes, and your phone only scans a code once. Needs the free Tailscale app here and on your phone."
 
 
 class TailscaleFunnelProvider(_TailscaleProvider):
@@ -717,8 +1113,8 @@ class TailscaleFunnelProvider(_TailscaleProvider):
 
     id = TAILSCALE_FUNNEL
     mode = "funnel"
-    label = "High-quality tunnel"
-    description = "A permanent address with a real certificate that anyone on the internet can reach. Only needed for a guest's phone that will not install Tailscale."
+    label = "Direct, plus reachable anywhere"
+    description = "The same permanent address, but it also works when you are away from home. Only needed for a phone that will not install Tailscale, or for listening on mobile data."
     capabilities = replace(_TailscaleProvider.capabilities, public=True)
 
 

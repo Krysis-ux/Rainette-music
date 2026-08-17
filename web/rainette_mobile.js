@@ -19,30 +19,44 @@ let helperRequired = true;
 let providers = [];
 let selectedProvider = '';
 let providerConfig = {};
+let setupStepInFlight = false;
 
 // The first run downloads a helper binary, so the poll has to stay patient
 // while the phase is "downloading" or "starting" and go quiet once it settles.
 const TUNNEL_BUSY_POLL_MS = 1200;
 const TUNNEL_IDLE_POLL_MS = 15000;
+// A browser sign-in finishes on the person's schedule, not ours, and the only
+// sign it is done is a file appearing. Keep watching rather than going idle, or
+// the panel sits on "finish signing in" long after they have.
+const TUNNEL_SETUP_POLL_MS = 2000;
 
 // Every provider that needs something typed in, and what to call it on screen.
 // A provider missing from here simply has no settings of its own.
+//
+// The Cloudflare fields are deliberately last and described as overrides: the
+// guided steps fill both in, and somebody who has not pressed those buttons yet
+// should read them as "you do not have to touch this", not as a form to
+// complete before anything will work.
 const PROVIDER_FIELDS = {
 	'cloudflare-named': [
-		{ key: 'tunnel_name', label: 'Cloudflare tunnel name', placeholder: 'my-music-tunnel' },
-		{ key: 'hostname', label: 'Hostname it serves', placeholder: 'music.example.com' },
+		{ key: 'hostname', label: 'Address (Rainette fills this in for you)', placeholder: 'music.example.com' },
+		{ key: 'tunnel_name', label: 'Tunnel name (optional)', placeholder: 'rainette-my-computer' },
 	],
 	manual: [
 		{ key: 'public_url', label: 'Your HTTPS address for this computer', placeholder: 'https://music-pc.example.com' },
 	],
 };
 
-// What the button under a setup step should say, per the action the desktop
-// reported. An action with no entry here renders the message without a button.
+// The label for the *link* beside a step — the part of the job that is
+// unavoidably the user's, done in a browser. The button that Rainette presses
+// itself is labelled by the provider, through `setup_fix_label`.
 const SETUP_ACTIONS = {
 	install: 'Get it',
-	login: 'Sign in',
+	signup: 'Create a free account',
+	login: 'Create a free account',
 	consent: 'Allow it',
+	configure: 'Open the dashboard',
+	provision: 'Open the dashboard',
 };
 
 function isCurrentMount(generation, host) {
@@ -290,7 +304,7 @@ function helperMessage(helper) {
 	if (helper.phase === 'ready') return 'The Cloudflare helper is ready on this computer.';
 	if (helper.phase === 'error') return helper.message || 'The Cloudflare helper could not be downloaded.';
 	if (helper.busy) return helper.message || 'Downloading the Cloudflare helper…';
-	return 'The Cloudflare helper is not here yet. Download it once, then turn the connection on.';
+	return 'The Cloudflare helper is not here yet — Rainette downloads it for you, once.';
 }
 
 function tunnelMessage(status) {
@@ -341,6 +355,29 @@ function renderSetupChecklist(status, generation, host) {
 	const text = status.setup_message || '';
 	block.hidden = !action && !text;
 	message.textContent = text;
+
+	// The second line carries the "why" — what the step costs, what it needs —
+	// so the primary message can stay one short sentence.
+	const detail = host.querySelector('#rwTunnelSetupDetail');
+	if (detail) {
+		detail.textContent = status.setup_detail || '';
+		detail.hidden = !status.setup_detail;
+	}
+
+	// The step Rainette can take itself is a button that acts. Everything the
+	// user has to do in a browser stays a link beside it, so the two are never
+	// confused for one another.
+	const fix = host.querySelector('#rwTunnelSetupFix');
+	if (fix) {
+		const canFix = !!status.setup_can_fix && !setupStepInFlight;
+		fix.hidden = !status.setup_can_fix;
+		fix.disabled = !canFix;
+		fix.textContent = setupStepInFlight
+			? 'Working…'
+			: status.setup_fix_label || 'Do this for me';
+		fix.dataset.step = action;
+	}
+
 	// The URL can come from a helper's own output, so it is placed as an
 	// attribute after a scheme check rather than interpolated into markup.
 	const url = String(status.setup_url || '');
@@ -349,6 +386,36 @@ function renderSetupChecklist(status, generation, host) {
 	link.textContent = SETUP_ACTIONS[action] || '';
 	if (safe) link.setAttribute('href', safe);
 	else link.removeAttribute('href');
+}
+
+/* Carry out the one step the provider said Rainette could take.
+ *
+ * Signing in is the case that shapes this: `cloudflared tunnel login` does not
+ * return until the person has finished in the browser, so the call is fired and
+ * the panel goes back to polling rather than awaiting a result that is minutes
+ * away. Every step therefore reports through `tunnel_status` like all the rest.
+ */
+async function runSetupStep(generation, host) {
+	if (setupStepInFlight || !isCurrentMount(generation, host)) return;
+	const button = host.querySelector('#rwTunnelSetupFix');
+	const step = button?.dataset.step || '';
+	if (!step) return;
+	setupStepInFlight = true;
+	if (button) {
+		button.disabled = true;
+		button.textContent = 'Working…';
+	}
+	try {
+		const result = await nativeCall('tunnel_setup_step', step, {});
+		if (!result?.ok) throw new Error(result?.msg || 'That step could not be finished.');
+	} catch (error) {
+		if (isCurrentMount(generation, host)) {
+			setTunnelStatus(error?.message || 'That step could not be finished.', 'error', generation, host);
+		}
+	} finally {
+		setupStepInFlight = false;
+		if (isCurrentMount(generation, host)) refreshTunnel(generation, host);
+	}
 }
 
 function renderTunnel(status, generation, host) {
@@ -364,15 +431,19 @@ function renderTunnel(status, generation, host) {
 
 	const download = host.querySelector('#rwDownloadHelper');
 	if (download) {
-		download.hidden = !helperRequired;
+		// When the wizard is already offering this exact step, its button is the
+		// one to press. Two buttons that do the same thing is the confusion this
+		// panel exists to remove, so the older one steps aside.
+		const wizardOffersDownload = status.setup_action === 'install' && !!status.setup_can_fix;
+		download.hidden = !helperRequired || wizardOffersDownload;
 		download.disabled = !!helper.busy || helper.ready;
 		download.textContent = helper.busy
 			? 'Downloading…'
 			: helper.ready
-				? 'cloudflared installed'
+				? 'Helper installed'
 				: helper.phase === 'error'
 					? 'Retry the download'
-					: 'Download cloudflared';
+					: 'Download the Cloudflare helper';
 	}
 	const helperLine = host.querySelector('#rwHelperStatus');
 	if (helperLine) helperLine.hidden = !helperRequired;
@@ -523,7 +594,14 @@ async function refreshTunnel(generation, host) {
 		if (!status?.ok) throw new Error(status?.msg || 'The tunnel status is unavailable.');
 		renderTunnel(status, generation, host);
 		const working = status.busy || status.helper?.busy;
-		scheduleTunnelPoll(generation, host, working ? TUNNEL_BUSY_POLL_MS : TUNNEL_IDLE_POLL_MS);
+		// A pending setup step is watched more closely than an idle tunnel but
+		// less anxiously than a download: the thing being waited on is a person.
+		const awaitingSetup = !!status.setup_action && !working;
+		scheduleTunnelPoll(
+			generation,
+			host,
+			working ? TUNNEL_BUSY_POLL_MS : awaitingSetup ? TUNNEL_SETUP_POLL_MS : TUNNEL_IDLE_POLL_MS,
+		);
 	} catch (error) {
 		if (!isCurrentMount(generation, host)) return;
 		setTunnelStatus(error?.message || 'The tunnel status is unavailable.', 'error', generation, host);
@@ -651,7 +729,9 @@ export function renderMobile(host) {
 					<div id="rwProviderConfig" class="rw-mobile-tunnel-steps" hidden></div>
 					<div id="rwTunnelSetup" class="rw-mobile-tunnel-steps" hidden>
 						<p id="rwTunnelSetupMessage" class="rw-mobile-status" role="status" aria-live="polite"></p>
-						<a id="rwTunnelSetupLink" class="rw-btn" target="_blank" rel="noopener noreferrer" hidden></a>
+						<p id="rwTunnelSetupDetail" class="rw-mobile-note" hidden></p>
+						<button id="rwTunnelSetupFix" class="rw-btn" type="button" hidden></button>
+						<a id="rwTunnelSetupLink" class="rw-btn rw-btn-ghost" target="_blank" rel="noopener noreferrer" hidden></a>
 					</div>
 				<div class="rw-mobile-tunnel-steps">
 					<button id="rwDownloadHelper" class="rw-btn" type="button" disabled>Download cloudflared</button>
@@ -695,6 +775,7 @@ export function renderMobile(host) {
 	host.querySelector('#rwNewPairingCode')?.addEventListener('click', () => createInvitation(generation, host));
 	host.querySelector('#rwSavePwaConfig')?.addEventListener('click', () => saveConfig(generation, host));
 	host.querySelector('#rwDownloadHelper')?.addEventListener('click', () => downloadHelper(generation, host));
+	host.querySelector('#rwTunnelSetupFix')?.addEventListener('click', () => runSetupStep(generation, host));
 	host.querySelector('#rwTunnelToggle')?.addEventListener('click', () => toggleTunnel(generation, host));
 	host.querySelector('#rwTunnelProvider')?.addEventListener('change', event => {
 		selectedProvider = event.target.value || '';

@@ -1431,6 +1431,24 @@ def download_tunnel_helper() -> dict:
     return tunnel_manager().download_helper()
 
 
+def tunnel_setup_step(step: str, settings: dict | None = None) -> dict:
+    """Carry out a setup step the transport said Rainette could take itself.
+
+    A provisioned address is only useful if pairing links start using it, so the
+    address the step settled on is written straight into the PWA config rather
+    than waiting for the user to find the "save addresses" button.
+    """
+    manager = tunnel_manager()
+    result = manager.setup_step(str(step or ""), dict(settings or {}))
+    hostname = str(((result.get("step_result") or {}) if isinstance(result.get("step_result"), dict) else {}).get("hostname") or "")
+    if hostname:
+        try:
+            set_public_url(f"https://{hostname}")
+        except (ValueError, OSError):
+            pass
+    return {**result, **tunnel_status()}
+
+
 def start_tunnel() -> dict:
     """Bring up an HTTPS tunnel in front of the companion gateway.
 

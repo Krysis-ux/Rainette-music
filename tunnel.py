@@ -123,12 +123,17 @@ class TunnelStatus:
     provider_label: str = "Limited tunnel"
     stable_hostname: bool = False
     public: bool = True
-    # Unfinished setup is not a failure. These three carry the next human step —
+    # Unfinished setup is not a failure. These carry the next human step —
     # install this, sign in there, approve this once — so the settings page can
     # render a checklist with a button instead of an error nobody can act on.
-    setup_action: str = ""  # "" | "install" | "login" | "consent" | "configure"
+    # ``setup_can_fix`` is what turns that checklist into a wizard: it says the
+    # step is one Rainette can carry out, so the button acts instead of linking.
+    setup_action: str = ""  # "" | "install" | "signup" | "login" | "consent" | "configure" | "provision"
     setup_message: str = ""
     setup_url: str = ""
+    setup_can_fix: bool = False
+    setup_fix_label: str = ""
+    setup_detail: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -143,6 +148,9 @@ class TunnelStatus:
             "setup_action": self.setup_action,
             "setup_message": self.setup_message,
             "setup_url": self.setup_url,
+            "setup_can_fix": self.setup_can_fix,
+            "setup_fix_label": self.setup_fix_label,
+            "setup_detail": self.setup_detail,
             "running": self.phase == "running",
             "busy": self.phase == "starting",
             "needs_setup": self.phase == "setup",
@@ -490,13 +498,61 @@ class TunnelManager:
                 setup_action=result.action,
                 setup_message=result.message,
                 setup_url=result.url,
+                setup_can_fix=result.can_fix,
+                setup_fix_label=result.fix_label,
+                setup_detail=result.detail,
             )
         else:
-            self._set_status(setup_action="", setup_message="", setup_url="")
+            self._set_status(
+                setup_action="",
+                setup_message="",
+                setup_url="",
+                setup_can_fix=False,
+                setup_fix_label="",
+                setup_detail="",
+            )
         # Deliberately not the result's own ``ok``: "this needs setup" is a
         # perfectly successful answer to the question, and a caller that reads
         # ``ok`` as "the call worked" must not see it as a failure.
         return {**self.status(), "preflight_ok": result.ok}
+
+    def setup_step(self, step: str, settings: dict | None = None) -> dict:
+        """Carry out the one setup step the provider said Rainette could take.
+
+        The manager stays ignorant of what any particular step means.  It knows
+        only that ``preflight`` advertised ``can_fix`` for an action, and that
+        the provider exposes a method of that name; anything else is refused
+        here rather than reaching a provider that never offered it.  That keeps
+        the settings page from being able to invoke arbitrary provider methods.
+        """
+        provider = self.provider()
+        step = str(step or "")
+        options = dict(settings or {})
+        if step == "install":
+            result = {"ok": True, **self.download_helper()}
+        elif step == "login":
+            if not hasattr(provider, "begin_login"):
+                raise TunnelError(f"{provider.label} has no sign-in step")
+            result = provider.begin_login()
+        elif step == "provision":
+            if not hasattr(provider, "provision"):
+                raise TunnelError(f"{provider.label} has nothing to set up")
+            result = provider.provision(
+                hostname=str(options.get("hostname") or ""),
+                tunnel_name=str(options.get("tunnel_name") or ""),
+            )
+        else:
+            raise TunnelError(f"there is no setup step called {step!r}")
+        if step == "provision" and isinstance(result, dict) and result.get("ok"):
+            # Provisioning is the only step that produces settings worth keeping:
+            # without persisting them the tunnel would be created and then
+            # forgotten on the next restart.
+            self.set_provider(provider.id, {
+                **self.provider_config(),
+                "tunnel_name": result.get("tunnel_name", ""),
+                "hostname": result.get("hostname", ""),
+            })
+        return {**self.preflight(), "step": step, "step_result": result}
 
     # ── status ────────────────────────────────────────────────────────────
 
