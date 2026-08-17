@@ -143,6 +143,33 @@ survives: on a shared network Tailscale connects the two devices directly, but
 with a real certificate. That is why it is labelled **Direct on your network**
 and is the recommended option.
 
+### Updating itself
+
+Both desktop platforms update in place, and the root of trust for that is a
+single Ed25519 signature over a schema-2 manifest, verified against the public
+key committed in `version.py` before any field of the manifest is read. The
+payload is then streamed against the hash that signed manifest pins, so a
+swapped artifact can never reach disk under the expected name.
+
+**Nothing in that chain involves Apple or Microsoft.** Authenticode is an
+optional extra layer on Windows, enabled only when a certificate fingerprint is
+pinned; notarisation on macOS buys the absence of a Gatekeeper prompt on a
+*manual* download and has no bearing on whether an update verifies. This is why
+macOS self-update needs no paid developer identity.
+
+The platforms differ only in what they do with the verified bytes. Windows runs
+the Inno Setup installer silently. macOS expands a `ditto -ck` archive — which
+preserves the symlinks and extended attributes an `.app`'s signature is computed
+over, where `zip -r` does not — then hands the swap to a detached shell that
+waits for the app to exit, moves the old bundle aside, moves the new one in, and
+relaunches. A failed move puts the old bundle back rather than leaving none.
+
+The one case macOS must refuse is **app translocation**: a quarantined app run
+straight from a disk image executes from a read-only shadow copy, so the swap
+would fail or write somewhere that vanishes on quit. `_running_macos_bundle`
+detects it and says to move the app to Applications, because otherwise the
+failure is indistinguishable from the updater being broken.
+
 ## The window ("actual app")
 
 `main.py` prefers **pywebview** (a native WebView2 window on Windows 11). If pywebview

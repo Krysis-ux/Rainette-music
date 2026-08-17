@@ -13,6 +13,8 @@ import hashlib
 import io
 import json
 import copy
+import os
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -50,6 +52,32 @@ class VersionComparisonTests(unittest.TestCase):
 INSTALLER_NAME = "RainetteMusicSetup.exe"
 MANIFEST_NAME = "latest.json"
 SIGNATURE_NAME = f"{MANIFEST_NAME}.sig"
+
+MACOS_ARCHIVE_NAME = "RainetteMusic-macOS.zip"
+MACOS_MANIFEST_NAME = "latest-macos.json"
+MACOS_SIGNATURE_NAME = f"{MACOS_MANIFEST_NAME}.sig"
+
+_platform_patchers = []
+
+
+def setUpModule():
+    """Describe Windows by default, wherever the suite runs.
+
+    Release discovery now picks its asset names from the host platform, so on
+    macOS every Windows fixture below would otherwise stop matching and these
+    cases would pass by finding nothing. Pinning the platform keeps them
+    asserting what they were written to assert; the macOS path has its own
+    class, which pins the other way.
+    """
+    for name, value in (("IS_WINDOWS", True), ("IS_MACOS", False)):
+        patcher = mock.patch.object(main, name, value)
+        patcher.start()
+        _platform_patchers.append(patcher)
+
+
+def tearDownModule():
+    while _platform_patchers:
+        _platform_patchers.pop().stop()
 # The release keypair every fixture signs with, plus an unrelated key for the
 # attacker-holds-a-different-key cases. Generated fresh per test run: nothing
 # here depends on a specific key, only on the pin matching the signer.
@@ -865,6 +893,176 @@ class ApplyUpdateGuardTests(_SignedBuildTestCase):
 
     def test_app_version_reports_the_constant(self):
         self.assertEqual(main.WindowApi().app_version(), version.APP_VERSION)
+
+
+class MacOsUpdateTests(unittest.TestCase):
+    """The macOS half, which exists because notarisation was never the blocker.
+
+    The root of trust is the Ed25519 manifest signature, exactly as on Windows,
+    and that costs nothing from Apple. What these cases pin down is that the
+    macOS build asks for macOS artifacts, refuses Windows ones, and will not
+    try to swap a bundle it cannot safely replace.
+    """
+
+    def setUp(self):
+        for name, value in (("IS_WINDOWS", False), ("IS_MACOS", True)):
+            patcher = mock.patch.object(main, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_macos_build_asks_for_the_macos_artifacts(self):
+        self.assertEqual(
+            main._platform_update_assets(),
+            (MACOS_ARCHIVE_NAME, MACOS_MANIFEST_NAME, MACOS_SIGNATURE_NAME),
+        )
+
+    def test_a_windows_only_release_is_not_offered_to_a_mac(self):
+        """The updater must never hand a Mac an .exe it cannot run."""
+        # Arrange: a release carrying only the Windows assets.
+        release, _ = _release_fixture()
+
+        # Act
+        candidate = main._candidate_from_release(release)
+
+        # Assert
+        self.assertIsNone(candidate)
+
+    def test_a_platform_with_no_artifacts_is_refused_rather_than_guessed(self):
+        # Arrange: neither Windows nor macOS.
+        with mock.patch.object(main, "IS_MACOS", False):
+            # Act / Assert
+            self.assertIsNone(main._platform_update_assets())
+
+    def test_a_translocated_bundle_is_refused_with_an_actionable_message(self):
+        """macOS runs a quarantined app from a read-only shadow copy.
+
+        Swapping there either fails or writes somewhere that disappears on
+        quit, so it has to be refused -- and the message has to say what to do.
+        """
+        # Arrange
+        translocated = "/private/var/folders/ab/cd/AppTranslocation/XYZ/d/Rainette Music.app/Contents/MacOS/main"
+        with mock.patch.object(main.sys, "executable", translocated):
+            # Act / Assert
+            with self.assertRaises(RuntimeError) as caught:
+                main._running_macos_bundle()
+        self.assertIn("Applications", str(caught.exception))
+
+    def test_a_build_outside_a_bundle_has_nothing_to_swap(self):
+        # Arrange
+        with mock.patch.object(main.sys, "executable", "/usr/local/bin/python3"):
+            # Act / Assert
+            with self.assertRaises(RuntimeError) as caught:
+                main._running_macos_bundle()
+        self.assertIn("bundle", str(caught.exception))
+
+    def test_the_running_bundle_is_found_from_the_executable_inside_it(self):
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / "Rainette Music.app"
+            (bundle / "Contents" / "MacOS").mkdir(parents=True)
+            with mock.patch.object(main.sys, "executable", str(bundle / "Contents" / "MacOS" / "main")):
+                # Act
+                found = main._running_macos_bundle()
+
+        # Assert: resolved, because /var/folders is a symlink to /private/var
+        # on macOS and the lookup walks the real path.
+        self.assertEqual(found, bundle.resolve())
+
+    def test_an_archive_with_no_bundle_inside_is_rejected(self):
+        """A signed archive is still not an app if it does not contain one."""
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "work"
+            work.mkdir()
+            bundle = Path(tmp) / "Rainette Music.app"
+            (bundle / "Contents" / "MacOS").mkdir(parents=True)
+
+            def fake_run(command, **kwargs):
+                # Stand in for `ditto -xk`, expanding to nothing useful.
+                if command[0] == "/usr/bin/ditto":
+                    Path(command[3]).mkdir(parents=True, exist_ok=True)
+                    (Path(command[3]) / "readme.txt").write_text("not an app", encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with mock.patch.object(main.sys, "executable", str(bundle / "Contents" / "MacOS" / "main")), \
+                 mock.patch.object(main.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(main.subprocess, "Popen") as popen:
+                # Act / Assert
+                with self.assertRaises(RuntimeError) as caught:
+                    main._launch_macos_update(Path(tmp) / "update.zip", work)
+
+        self.assertIn("no application bundle", str(caught.exception))
+        popen.assert_not_called()
+
+    def test_a_bundle_whose_signature_fails_is_never_swapped_in(self):
+        """Damaged or tampered bytes must not reach the Applications folder."""
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "work"
+            work.mkdir()
+            bundle = Path(tmp) / "Rainette Music.app"
+            (bundle / "Contents" / "MacOS").mkdir(parents=True)
+
+            def fake_run(command, **kwargs):
+                if command[0] == "/usr/bin/ditto":
+                    staged = Path(command[3])
+                    (staged / "Rainette Music.app").mkdir(parents=True, exist_ok=True)
+                    return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+                if command[0] == "/usr/bin/codesign":
+                    return subprocess.CompletedProcess(command, 1, stdout="", stderr="code object is not signed")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with mock.patch.object(main.sys, "executable", str(bundle / "Contents" / "MacOS" / "main")), \
+                 mock.patch.object(main.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(main.subprocess, "Popen") as popen:
+                # Act / Assert
+                with self.assertRaises(RuntimeError) as caught:
+                    main._launch_macos_update(Path(tmp) / "update.zip", work)
+
+        self.assertIn("signature did not verify", str(caught.exception))
+        # The swap script is what actually replaces the app, so the proof that
+        # nothing was installed is that it never ran.
+        popen.assert_not_called()
+
+    def test_a_verified_bundle_hands_the_swap_to_a_detached_script(self):
+        """A process cannot delete the bundle it is running from, so the swap
+        waits for this pid to exit and then relaunches."""
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "work"
+            work.mkdir()
+            bundle = Path(tmp) / "Rainette Music.app"
+            (bundle / "Contents" / "MacOS").mkdir(parents=True)
+            calls = []
+
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                if command[0] == "/usr/bin/ditto":
+                    (Path(command[3]) / "Rainette Music.app").mkdir(parents=True, exist_ok=True)
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with mock.patch.object(main.sys, "executable", str(bundle / "Contents" / "MacOS" / "main")), \
+                 mock.patch.object(main.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(main.subprocess, "Popen") as popen:
+                # Act
+                main._launch_macos_update(Path(tmp) / "update.zip", work)
+
+                # Assert
+                script = Path(popen.call_args.args[0][1])
+                body = script.read_text(encoding="utf-8")
+
+            # Detached, or it would die with the app it is replacing.
+            self.assertTrue(popen.call_args.kwargs.get("start_new_session"))
+            self.assertIn(f'pid="{os.getpid()}"', body)
+            self.assertIn("kill -0", body)
+            self.assertIn("open ", body)
+            # A failed swap has to put the old app back rather than leave none.
+            self.assertIn('mv "$old" "$bundle"', body)
+
+        # Rainette verified these bytes itself, so the quarantine flag would only
+        # prompt about something already checked more strictly than Gatekeeper.
+        self.assertTrue(any(command[0] == "/usr/bin/xattr" for command in calls))
+        self.assertTrue(any(command[0] == "/usr/bin/codesign" for command in calls))
 
 
 if __name__ == "__main__":

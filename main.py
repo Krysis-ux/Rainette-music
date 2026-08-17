@@ -127,6 +127,32 @@ UPDATE_API_VERSION = "2022-11-28"
 WINDOWS_INSTALLER_ASSET = "RainetteMusicSetup.exe"
 WINDOWS_MANIFEST_ASSET = "latest.json"
 WINDOWS_MANIFEST_SIGNATURE_ASSET = f"{WINDOWS_MANIFEST_ASSET}.sig"
+
+# macOS updates itself from a zipped bundle rather than the .dmg: the disk image
+# is for a human dragging an icon, and mounting one to update in place is a
+# great deal of moving parts for something `ditto -xk` does in one call.
+#
+# Nothing here involves Apple. The root of trust is the same Ed25519 manifest
+# signature Windows uses (see _authenticode_pin_configured), so a free ad-hoc
+# signed build updates itself exactly as safely as a paid notarised one would.
+# Notarisation buys the absence of a Gatekeeper prompt on a *manual* download,
+# which is a different problem from this one.
+MACOS_UPDATE_ASSET = "RainetteMusic-macOS.zip"
+MACOS_MANIFEST_ASSET = "latest-macos.json"
+MACOS_MANIFEST_SIGNATURE_ASSET = f"{MACOS_MANIFEST_ASSET}.sig"
+
+
+def _platform_update_assets() -> tuple[str, str, str] | None:
+    """The (payload, manifest, signature) asset names this build updates from.
+
+    ``None`` for a platform Rainette publishes no update artifacts for, which is
+    what keeps Linux honestly unsupported rather than silently broken.
+    """
+    if IS_WINDOWS:
+        return WINDOWS_INSTALLER_ASSET, WINDOWS_MANIFEST_ASSET, WINDOWS_MANIFEST_SIGNATURE_ASSET
+    if IS_MACOS:
+        return MACOS_UPDATE_ASSET, MACOS_MANIFEST_ASSET, MACOS_MANIFEST_SIGNATURE_ASSET
+    return None
 MAX_INSTALLER_BYTES = 512 * 1024 * 1024
 MAX_INTEGRITY_ASSET_BYTES = 64 * 1024
 MAX_RELEASE_METADATA_BYTES = 2 * 1024 * 1024
@@ -137,8 +163,8 @@ SOURCE_RUN_UPDATE_MSG = (
     "Install the latest release from the Rainette repository instead."
 )
 UNSUPPORTED_PLATFORM_UPDATE_MSG = (
-    "Rainette's built-in updater installs the signed Windows release, so it "
-    "cannot update this build. Reinstall from the Rainette repository instead."
+    "Rainette publishes updates for Windows and macOS, so it cannot update this "
+    "build. Install the latest release from the Rainette repository instead."
 )
 UNCONFIGURED_KEY_UPDATE_MSG = (
     "This build has no pinned release signing key, so Rainette cannot verify an "
@@ -319,7 +345,11 @@ def _asset_from_payload(payload: object, expected_name: str) -> _UpdateAsset | N
             return None
         allowed_types = {"application/x-msdownload", "application/x-msdos-program",
                          "application/vnd.microsoft.portable-executable", "application/octet-stream"}
-    elif expected_name == WINDOWS_MANIFEST_SIGNATURE_ASSET:
+    elif expected_name == MACOS_UPDATE_ASSET:
+        if size > MAX_INSTALLER_BYTES:
+            return None
+        allowed_types = {"application/zip", "application/x-zip-compressed", "application/octet-stream"}
+    elif expected_name in (WINDOWS_MANIFEST_SIGNATURE_ASSET, MACOS_MANIFEST_SIGNATURE_ASSET):
         if size > MAX_INTEGRITY_ASSET_BYTES:
             return None
         allowed_types = {"text/plain", "application/pgp-signature", "application/octet-stream"}
@@ -350,8 +380,15 @@ def _candidate_from_release(payload: object) -> _UpdateCandidate | None:
     assets = payload.get("assets")
     if not isinstance(assets, list):
         return None
+    # A release only counts as a candidate if it carries the artifacts *this*
+    # platform installs. A macOS build must not be offered a Windows release it
+    # cannot use, and vice versa.
+    wanted = _platform_update_assets()
+    if wanted is None:
+        return None
+    payload_asset, manifest_asset, signature_asset = wanted
     selected = {}
-    for expected_name in (WINDOWS_INSTALLER_ASSET, WINDOWS_MANIFEST_ASSET, WINDOWS_MANIFEST_SIGNATURE_ASSET):
+    for expected_name in (payload_asset, manifest_asset, signature_asset):
         matches = [asset for asset in assets if isinstance(asset, dict) and asset.get("name") == expected_name]
         if len(matches) != 1:
             return None
@@ -366,9 +403,9 @@ def _candidate_from_release(payload: object) -> _UpdateCandidate | None:
         tag=str(payload["tag_name"]),
         release_version=release_version,
         version_parts=version_parts,
-        installer=selected[WINDOWS_INSTALLER_ASSET],
-        manifest=selected[WINDOWS_MANIFEST_ASSET],
-        manifest_signature=selected[WINDOWS_MANIFEST_SIGNATURE_ASSET],
+        installer=selected[payload_asset],
+        manifest=selected[manifest_asset],
+        manifest_signature=selected[signature_asset],
         notes=str(payload.get("body") or "")[:2000],
     )
 
@@ -536,13 +573,16 @@ def _validate_release_manifest(candidate: _UpdateCandidate, manifest_bytes: byte
         raise RuntimeError("release manifest is malformed")
     if manifest.get("schema") != 2:
         raise RuntimeError("release manifest schema is not supported")
-    if manifest.get("artifact") != WINDOWS_INSTALLER_ASSET:
+    wanted = _platform_update_assets()
+    if wanted is None:
+        raise RuntimeError("this platform has no installable release artifact")
+    if manifest.get("artifact") != wanted[0]:
         raise RuntimeError("release manifest named the wrong installer")
     if str(manifest.get("version") or "") != candidate.release_version:
         raise RuntimeError("release manifest version did not match its tag")
     # local-test / dev builds must stay non-installable even when validly signed.
     if manifest.get("channel") not in {"stable", "release"}:
-        raise RuntimeError("release manifest was not a stable Windows release")
+        raise RuntimeError("release manifest was not a stable release")
     # The signed hash is the installer's identity: it must match the digest
     # GitHub reports for the asset, and the streamed bytes are hashed against
     # that same digest, so a swapped installer can never reach the disk name.
@@ -694,6 +734,109 @@ try {
     if completed.returncode != 0 or not _CERT_SHA256_RE.fullmatch(signer_hash):
         raise RuntimeError("installer signer certificate could not be verified")
     return signer_hash
+
+
+def _running_macos_bundle() -> Path:
+    """The .app this process is running out of, or raise saying why it cannot.
+
+    Two situations have to be refused rather than attempted. A build that is not
+    inside a bundle has nothing to swap. And a bundle macOS has *translocated* —
+    which it does to a quarantined app run straight from a disk image — lives on
+    a read-only shadow mount, so replacing it would either fail or write to a
+    path that vanishes on quit, leaving the update silently un-applied.
+    """
+    executable = Path(sys.executable).resolve()
+    bundle = next((parent for parent in executable.parents if parent.suffix == ".app"), None)
+    if bundle is None:
+        raise RuntimeError("this build is not an application bundle")
+    # `/AppTranslocation/` is the literal marker macOS puts in the path of a
+    # translocated bundle, and the read-only mount underneath it is what the
+    # write check catches. Both are kept: the first gives a message that says
+    # what to do, the second is the guarantee that the swap can actually land.
+    if "/AppTranslocation/" in str(bundle):
+        raise RuntimeError(
+            "macOS is running Rainette from a temporary read-only copy. "
+            "Drag Rainette Music to your Applications folder, open it from there, and try again."
+        )
+    if not os.access(bundle.parent, os.W_OK):
+        raise RuntimeError(
+            f"Rainette cannot write to {bundle.parent}, so it cannot replace itself there. "
+            "Move Rainette Music to your Applications folder and try again."
+        )
+    return bundle
+
+
+def _launch_macos_update(archive: Path, work_dir: Path) -> None:
+    """Swap the running .app for the verified one and relaunch.
+
+    The archive's bytes are already authenticated by the time this runs: the
+    Ed25519 manifest signature was checked before any field of the manifest was
+    read, and the payload was streamed against the hash that manifest pins. So
+    the work here is purely mechanical.
+
+    A process cannot delete the bundle it is executing from and survive, so the
+    swap is handed to a detached shell that waits for this pid to exit first.
+    ``ditto -xk`` is used rather than ``unzip`` because it is what preserves the
+    symlinks and extended attributes an .app bundle's signature depends on.
+    """
+    bundle = _running_macos_bundle()
+    staged = work_dir / "staged"
+    staged.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(
+        ["/usr/bin/ditto", "-xk", str(archive), str(staged)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"the update archive could not be expanded: {_first_update_line(completed.stderr)}")
+    replacement = next((child for child in staged.iterdir() if child.suffix == ".app"), None)
+    if replacement is None:
+        raise RuntimeError("the update archive contained no application bundle")
+
+    # Rainette downloaded and verified this itself, so the quarantine flag would
+    # only produce a Gatekeeper prompt for bytes that are already trusted by a
+    # stronger check than Gatekeeper performs here.
+    subprocess.run(["/usr/bin/xattr", "-dr", "com.apple.quarantine", str(replacement)],
+                   capture_output=True, check=False)
+    # An ad-hoc signature still has to be intact: it is what proves the bundle
+    # was not damaged in transit or tampered with after extraction.
+    verified = subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(replacement)],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if verified.returncode != 0:
+        raise RuntimeError(f"the update's signature did not verify: {_first_update_line(verified.stderr)}")
+
+    script = work_dir / "swap.sh"
+    # The old bundle is moved aside rather than deleted outright, so a failed
+    # move back is still recoverable by hand; the trash copy is removed only
+    # once the replacement is in place.
+    script.write_text(
+        "#!/bin/sh\n"
+        "set -e\n"
+        f'pid="{os.getpid()}"\n'
+        f'bundle="{bundle}"\n'
+        f'replacement="{replacement}"\n'
+        f'work="{work_dir}"\n'
+        'i=0\n'
+        'while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 60 ]; do sleep 0.5; i=$((i+1)); done\n'
+        'old="$work/previous.app"\n'
+        'rm -rf "$old"\n'
+        'mv "$bundle" "$old"\n'
+        'if ! mv "$replacement" "$bundle"; then mv "$old" "$bundle"; exit 1; fi\n'
+        'rm -rf "$old"\n'
+        'open "$bundle"\n'
+        'rm -rf "$work"\n',
+        encoding="utf-8",
+    )
+    script.chmod(0o700)
+    subprocess.Popen(["/bin/sh", str(script)], start_new_session=True, close_fds=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _first_update_line(text: str) -> str:
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
 
 
 def _verify_windows_authenticode_trust(path: Path) -> None:
@@ -1035,11 +1178,10 @@ class WindowApi:
         """
         if not getattr(sys, "frozen", False):
             return {"status": "unsupported", "msg": SOURCE_RUN_UPDATE_MSG}
-        # The only artifact Rainette knows how to install is the signed Windows
-        # installer, driven with Inno Setup's silent switches and verified with
-        # Authenticode. Refuse here with an explanation rather than downloading
-        # an .exe no other platform can run.
-        if not IS_WINDOWS:
+        # Windows installs a signed installer, macOS swaps its own bundle. A
+        # platform Rainette publishes neither artifact for is refused here
+        # rather than downloading something it cannot run.
+        if _platform_update_assets() is None:
             return {"status": "unsupported", "msg": UNSUPPORTED_PLATFORM_UPDATE_MSG}
         if not self._update_apply_lock.acquire(blocking=False):
             return {"status": "busy", "msg": "An update is already being installed."}
@@ -1087,15 +1229,22 @@ class WindowApi:
 
             installer = _download_verified_installer(candidate, update_dir, progress=on_progress)
             self._set_update_progress("verifying", version=candidate.release_version)
-            if _authenticode_pin_configured():
-                _verify_authenticode(installer)
-            self._set_update_progress("launching", version=candidate.release_version)
-            # /autorelaunch=1 is read by the installer's [Code] to relaunch the app
-            # after a silent install; /VERYSILENT keeps the whole thing headless.
-            subprocess.Popen(
-                [str(installer), "/VERYSILENT", "/NORESTART", "/autorelaunch=1"],
-                close_fds=True,
-            )
+            # Windows first, deliberately: a host can only be one of these, and
+            # testing Windows *from* macOS means both flags can read true at
+            # once. Ordering it this way keeps that simulation honest.
+            if IS_WINDOWS:
+                if _authenticode_pin_configured():
+                    _verify_authenticode(installer)
+                self._set_update_progress("launching", version=candidate.release_version)
+                # /autorelaunch=1 is read by the installer's [Code] to relaunch the app
+                # after a silent install; /VERYSILENT keeps the whole thing headless.
+                subprocess.Popen(
+                    [str(installer), "/VERYSILENT", "/NORESTART", "/autorelaunch=1"],
+                    close_fds=True,
+                )
+            else:
+                self._set_update_progress("launching", version=candidate.release_version)
+                _launch_macos_update(installer, update_dir)
             install_started = True
             self._set_update_progress("installing", version=candidate.release_version)
         except Exception as exc:

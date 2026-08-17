@@ -242,12 +242,19 @@ class WindowIconTests(unittest.TestCase):
 
 
 class UpdaterPlatformGateTests(unittest.TestCase):
-    def test_non_windows_refuses_to_install_the_windows_installer(self):
+    def test_a_platform_with_no_release_artifacts_refuses_to_install(self):
+        """Neither Windows nor macOS means there is nothing to install.
+
+        macOS now updates itself, so the gate is no longer "not Windows" -- it
+        is "Rainette publishes nothing this platform can run", which is what
+        keeps a Linux build from downloading an .exe or a .app.
+        """
         api = main.WindowApi()
         with patch.object(main.sys, "frozen", True, create=True), \
              patch.object(main, "IS_WINDOWS", False), \
+             patch.object(main, "IS_MACOS", False), \
              patch.object(main.urllib.request, "urlopen",
-                          side_effect=AssertionError("must not download an .exe")):
+                          side_effect=AssertionError("must not download anything")):
             result = api.apply_update("anything")
         self.assertEqual(result["status"], "unsupported")
         self.assertEqual(result["msg"], main.UNSUPPORTED_PLATFORM_UPDATE_MSG)
