@@ -4,6 +4,16 @@
    keeps its own styles; these pages sit above it as route surfaces.
    ========================================================================== */
 
+/* The user agent's `[hidden] { display: none }` is a single-selector rule, so
+   any class here that sets `display` outranks it and `element.hidden = true`
+   quietly stops working — the element keeps its box, its padding and its
+   background, and paints as an empty card nobody asked for.
+
+   This had already been patched three separate times further down, once per
+   class that hit it (.rw-update-badge, .rw-command-palette, .rw-now-view).
+   Doing it once here ends the pattern instead of waiting for the fourth. */
+[hidden] { display: none !important; }
+
 /* ── Page shell ─────────────────────────────────────────────────────────── */
 .rainette-page {
 	position: fixed;

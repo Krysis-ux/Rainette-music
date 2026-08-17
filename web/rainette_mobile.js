@@ -289,6 +289,9 @@ function setHelperStatus(message, tone, generation, host) {
 	if (!status) return;
 	status.textContent = message || '';
 	status.dataset.tone = tone || '';
+	// `.rw-mobile-status` reserves 19px so a one-line message does not make the
+	// panel jump as it arrives. An empty one spends that height on nothing.
+	status.hidden = !message;
 }
 
 function tunnelTone(phase) {
@@ -363,6 +366,7 @@ function renderSetupChecklist(status, generation, host) {
 	const text = status.setup_message || '';
 	block.hidden = !action && !text;
 	message.textContent = text;
+	message.hidden = !text;
 
 	// The second line carries the "why" — what the step costs, what it needs —
 	// so the primary message can stay one short sentence.
@@ -426,6 +430,20 @@ async function runSetupStep(generation, host) {
 	}
 }
 
+/* The step panels are drawn as filled, padded cards, so one whose contents have
+ * all been hidden still paints a grey rounded box with nothing in it. Several
+ * of them stack up on a provider that needs no download and has no settings —
+ * a column of empty boxes under the picker. A container is only a container
+ * when something is actually in it. */
+function hideEmptyStepPanels(host) {
+	for (const panel of host.querySelectorAll('.rw-mobile-tunnel-steps')) {
+		const hasVisibleChild = [...panel.children].some(child => (
+			!child.hidden && (child.textContent.trim() !== '' || child.tagName === 'INPUT' || child.querySelector('input'))
+		));
+		panel.hidden = !hasVisibleChild;
+	}
+}
+
 function renderTunnel(status, generation, host) {
 	if (!isCurrentMount(generation, host)) return;
 	tunnelPhase = status.phase || '';
@@ -483,6 +501,8 @@ function renderTunnel(status, generation, host) {
 		host,
 	);
 	setTunnelStatus(tunnelMessage(status), tunnelTone(status.phase), generation, host);
+	// Last, so it sees the final visibility of everything above it.
+	hideEmptyStepPanels(host);
 }
 
 function renderProviderOptions(generation, host) {
