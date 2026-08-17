@@ -34,6 +34,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -213,6 +214,8 @@ _TAILSCALE_POLL_S = 1.0
 # `tailscale up` waits for a browser round-trip, so it gets the same patience as
 # the Cloudflare sign-in rather than the command timeout.
 _TAILSCALE_LOGIN_TIMEOUT_S = 300.0
+# How long to give the daemon to come up after its app is launched.
+_TAILSCALE_DAEMON_WAIT_S = 20.0
 
 
 def _host_of(url: str) -> str:
@@ -929,7 +932,31 @@ class _TailscaleProvider(_BaseProvider):
             thread.start()
         return {"ok": True, "pending": True}
 
+    def _wake_daemon(self) -> None:
+        """Start the Tailscale app if its daemon is not answering.
+
+        On macOS the CLI is a client of a daemon the *app* owns, so with the app
+        quit `tailscale status` returns nothing usable and `tailscale up` has
+        nothing to talk to either. Telling the user to "open the Tailscale app
+        once" is a step Rainette can simply take, and the button that offered to
+        connect was otherwise guaranteed to fail before it did anything.
+        """
+        if not sys.platform == "darwin" or self._status_json() is not None:
+            return
+        try:
+            subprocess.run(["/usr/bin/open", "-a", "Tailscale"], capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return
+        # The daemon comes up a moment after the app does; without this the
+        # `up` below would race it and fail for the reason just fixed.
+        deadline = time.monotonic() + _TAILSCALE_DAEMON_WAIT_S
+        while time.monotonic() < deadline:
+            if self._status_json() is not None:
+                return
+            time.sleep(_TAILSCALE_POLL_S)
+
     def _login_worker(self, binary: str) -> None:
+        self._wake_daemon()
         try:
             completed = self._run([binary, "up"], timeout=_TAILSCALE_LOGIN_TIMEOUT_S)
         except subprocess.TimeoutExpired:
@@ -976,10 +1003,10 @@ class _TailscaleProvider(_BaseProvider):
             return PreflightResult(
                 ok=False,
                 action="login",
-                message="Tailscale is installed but not answering yet. Open the Tailscale app once, then try again.",
-                url=_TAILSCALE_LOGIN_URL,
+                message="Tailscale is installed but not running yet.",
                 can_fix=True,
-                fix_label="Connect Tailscale",
+                fix_label="Start Tailscale",
+                detail="Rainette will open it for you and connect this computer.",
             )
         backend = str(status.get("BackendState") or "")
         if backend != "Running":
