@@ -27,6 +27,11 @@ BUNDLE_ID="com.rainette.music"
 # because a release page lists it beside RainetteMusicSetup.exe, and a filename
 # with a space in it is the one thing that reliably breaks a download link.
 DMG_NAME="RainetteMusic-macOS.dmg"
+# What the in-app updater downloads, and the manifest naming it. Both names are
+# pinned in main.py (MACOS_UPDATE_ASSET / MACOS_MANIFEST_ASSET); changing one
+# without the other means the updater stops finding releases.
+ZIP_NAME="RainetteMusic-macOS.zip"
+MANIFEST_NAME="latest-macos.json"
 ENTRY_POINT="$ROOT/main.py"
 WEB_DIR="$ROOT/web"
 SOURCE_ICON="$ROOT/web/assets/rainette-icon.ico"
@@ -166,6 +171,35 @@ if [ "$WANT_DMG" -eq 1 ]; then
         -format UDZO -ov "$OUTPUT/$DMG_NAME"
     echo "==> Disk image: $OUTPUT/$DMG_NAME"
 fi
+
+# ── Self-update payload ─────────────────────────────────────────────────────
+#
+# The disk image is for a human dragging an icon; the updater takes a zip,
+# because expanding one is a single `ditto -xk` rather than mounting, copying
+# and unmounting a volume from inside the app that is being replaced.
+#
+# `ditto -ck --keepParent` is the archiver that preserves the symlinks and
+# extended attributes an .app's code signature is computed over. `zip -r` does
+# not, and a bundle archived with it fails `codesign --verify` on the other
+# side -- which the updater treats, correctly, as a tampered download.
+ditto -ck --keepParent "$APP_BUNDLE" "$OUTPUT/$ZIP_NAME"
+ARCHIVE_SHA256="$(shasum -a 256 "$OUTPUT/$ZIP_NAME" | awk '{print $1}')"
+
+# Schema 2, same as the Windows manifest, so the updater's existing signature
+# check and hash-chain validation cover this one unchanged. No Authenticode
+# block: that layer is Windows-only, and the Ed25519 signature over these bytes
+# is the sole root of trust on both platforms.
+cat > "$OUTPUT/$MANIFEST_NAME" <<JSON
+{
+  "schema": 2,
+  "version": "$APP_VERSION",
+  "channel": "release",
+  "artifact": "$ZIP_NAME",
+  "sha256": "$ARCHIVE_SHA256"
+}
+JSON
+echo "==> Update archive: $OUTPUT/$ZIP_NAME"
+echo "==> Update manifest: $OUTPUT/$MANIFEST_NAME"
 
 echo
 echo "Built: $OUTPUT/$APP_NAME.app"

@@ -210,11 +210,49 @@ jobs:
           # a user drags out is the broken one.
           codesign --verify --deep --strict "$MOUNT/Rainette Music.app"
 
-      - name: Upload built macOS release asset
+      - name: Verify the self-update archive and its manifest
+        run: |
+          set -euo pipefail
+          ARCHIVE="release/out-macos/RainetteMusic-macOS.zip"
+          MANIFEST="release/out-macos/latest-macos.json"
+          for path in "$ARCHIVE" "$MANIFEST"; do
+            [ -f "$path" ] || { echo "expected release output is missing: $path" >&2; exit 1; }
+          done
+
+          # The updater checks the streamed bytes against the hash the signed
+          # manifest pins, so a manifest that disagrees with its own archive
+          # would ship an update no installed app could ever accept.
+          ACTUAL=$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')
+          python3 - "$MANIFEST" "$ACTUAL" "$RELEASE_VERSION" <<'PY'
+          import json, sys
+          manifest_path, actual_hash, release_version = sys.argv[1:4]
+          manifest = json.load(open(manifest_path))
+          if manifest.get("schema") != 2 or manifest.get("channel") != "release":
+              raise SystemExit("macOS manifest does not describe an installable release build")
+          if manifest.get("artifact") != "RainetteMusic-macOS.zip":
+              raise SystemExit("macOS manifest names the wrong artifact")
+          if manifest.get("version") != release_version:
+              raise SystemExit("macOS manifest version does not match the tagged build")
+          if manifest.get("sha256") != actual_hash:
+              raise SystemExit("macOS manifest checksum does not match the archive")
+          print("macOS update manifest matches its archive")
+          PY
+
+          # A bundle whose signature does not survive the round trip is one the
+          # updater will refuse after downloading it, which is the worst place
+          # to find out.
+          UNPACKED=$(mktemp -d)
+          ditto -xk "$ARCHIVE" "$UNPACKED"
+          codesign --verify --deep --strict "$UNPACKED/Rainette Music.app"
+
+      - name: Upload built macOS release assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rainette-macos-release
-          path: release/out-macos/RainetteMusic-macOS.dmg
+          path: |
+            release/out-macos/RainetteMusic-macOS.dmg
+            release/out-macos/RainetteMusic-macOS.zip
+            release/out-macos/latest-macos.json
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -224,7 +262,7 @@ jobs:
   # application, PyInstaller, or the rest of the project's dependency tree —
   # the same credential-isolation principle the old Authenticode phase used.
   windows-sign:
-    needs: [test, windows-build]
+    needs: [test, windows-build, macos-build]
     runs-on: ubuntu-latest
     environment: release-signing
 
@@ -249,14 +287,25 @@ jobs:
           name: rainette-windows-release
           path: release/out
 
-      - name: Sign the release manifest
+      - name: Download built macOS release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rainette-macos-release
+          path: release/out-macos
+
+      - name: Sign the release manifests
         env:
           RAINETTE_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
           test -n "${RAINETTE_UPDATE_SIGNING_KEY}" || { echo "UPDATE_SIGNING_KEY secret is not configured (generate one with release/new_signing_key.py)" >&2; exit 1; }
           python release/sign_manifest.py release/out/latest.json
+          # Same key, same script, same isolation: macOS updates are trusted by
+          # this Ed25519 signature alone, which is why they need nothing from
+          # Apple. Notarisation only removes Gatekeeper's prompt on a manual
+          # download and has no bearing on whether an update verifies.
+          python release/sign_manifest.py release/out-macos/latest-macos.json
 
-      - name: Verify the signature against the committed public key
+      - name: Verify both signatures against the committed public key
         run: |
           python - <<'PY'
           import base64
@@ -265,27 +314,46 @@ jobs:
           import version
           from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-          manifest = open("release/out/latest.json", "rb").read()
-          signature = base64.b64decode(open("release/out/latest.json.sig", "rb").read())
           keys = [value.strip() for value in version.UPDATE_SIGNER_PUBLIC_KEY.split(",") if value.strip()]
           if not keys:
               raise SystemExit("UPDATE_SIGNER_PUBLIC_KEY in version.py is empty - commit the public key before releasing")
-          for key in keys:
-              try:
-                  Ed25519PublicKey.from_public_bytes(base64.b64decode(key)).verify(signature, manifest)
-                  print("manifest signature verifies against the committed public key")
-                  break
-              except Exception:
-                  continue
-          else:
-              raise SystemExit("UPDATE_SIGNING_KEY does not match UPDATE_SIGNER_PUBLIC_KEY - installed apps would refuse this release")
+
+          for label, path in (
+              ("Windows", "release/out/latest.json"),
+              ("macOS", "release/out-macos/latest-macos.json"),
+          ):
+              manifest = open(path, "rb").read()
+              signature = base64.b64decode(open(f"{path}.sig", "rb").read())
+              for key in keys:
+                  try:
+                      Ed25519PublicKey.from_public_bytes(base64.b64decode(key)).verify(signature, manifest)
+                      print(f"{label} manifest signature verifies against the committed public key")
+                      break
+                  except Exception:
+                      continue
+              else:
+                  raise SystemExit(
+                      f"UPDATE_SIGNING_KEY does not match UPDATE_SIGNER_PUBLIC_KEY for the {label} manifest "
+                      "- installed apps would refuse this release"
+                  )
           PY
 
-      - name: Upload manifest signature
+      # Collected into one directory first: upload-artifact roots a multi-path
+      # upload at the paths' common ancestor, so listing them from release/out
+      # and release/out-macos would publish them nested under those names rather
+      # than as the flat assets publish expects.
+      - name: Collect the signatures
+        run: |
+          set -euo pipefail
+          mkdir -p release/signatures
+          cp release/out/latest.json.sig release/signatures/
+          cp release/out-macos/latest-macos.json.sig release/signatures/
+
+      - name: Upload manifest signatures
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rainette-windows-manifest-signature
-          path: release/out/latest.json.sig
+          path: release/signatures/
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -324,8 +392,11 @@ jobs:
           expected=(
             RainetteMusicSetup.exe
             RainetteMusic-macOS.dmg
+            RainetteMusic-macOS.zip
             latest.json
             latest.json.sig
+            latest-macos.json
+            latest-macos.json.sig
           )
           mapfile -t actual < <(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)
           mapfile -t wanted < <(printf '%s\n' "${expected[@]}" | sort)
@@ -346,11 +417,23 @@ jobs:
           if (windows.schema !== 2 || windows.channel !== 'release') {
             throw new Error('latest.json does not describe an installable release build');
           }
+
+          // The macOS manifest is the same shape and carries the same weight:
+          // a mismatch here means installed Macs either refuse the update or
+          // are offered one for a version they already have.
+          const macos = read('latest-macos.json');
+          if (macos.artifact !== 'RainetteMusic-macOS.zip' || macos.version !== process.env.RELEASE_VERSION) {
+            throw new Error('latest-macos.json does not match this tagged release');
+          }
+          if (macos.schema !== 2 || macos.channel !== 'release') {
+            throw new Error('latest-macos.json does not describe an installable release build');
+          }
           NODE
 
       # The exact-set check above is the gate; the glob then uploads precisely
       # that verified set. Filenames it can publish: RainetteMusicSetup.exe,
-      # RainetteMusic-macOS.dmg, latest.json, latest.json.sig.
+      # RainetteMusic-macOS.dmg, RainetteMusic-macOS.zip, latest.json,
+      # latest.json.sig, latest-macos.json, latest-macos.json.sig.
       - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
@@ -367,9 +450,11 @@ jobs:
             xattr -dr com.apple.quarantine "/Applications/Rainette Music.app"
             ```
 
-            There are no automatic updates on macOS — grab new versions from this page.
+            After that first install, Rainette updates itself on macOS too. Open it
+            from **Applications** rather than straight from the disk image, or macOS
+            runs it from a read-only copy that cannot be replaced.
 
             **Phone** — open the [PWA](https://music-pwa-web.vercel.app) and pair it. Nothing to install.
 
-            `latest.json` is for the updater. You don't need it.
+            The `latest*.json` files and the `.zip` are for the updater. You don't need them.
           files: release-assets/*
