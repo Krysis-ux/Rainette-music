@@ -317,6 +317,45 @@ class TestTransport:
         assert not errors, errors
         page.close()
 
+    def test_changing_track_quickly_does_not_raise_a_playback_error(self, browser, static_server):
+        """Tapping a second song before the first starts is not a failure.
+
+        `audio.play()` rejects with AbortError whenever a new load supersedes a
+        pending play, which is exactly what a second tap does. Reporting it put
+        a red toast on screen for a song that then played perfectly well.
+        """
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        row = page.locator("#recentList .track").first
+        row.wait_for(state="visible")
+
+        # The race needs a play() that is still pending when the next load
+        # lands, and against a fake computer that answers instantly it never is.
+        # So the rejection itself is staged: this is precisely what the browser
+        # hands back when a second tap supersedes the first.
+        page.evaluate(
+            """() => {
+                const audio = window.__rainetteAudio;
+                audio.play = () => Promise.reject(
+                    new DOMException('The play() request was interrupted by a new load request.', 'AbortError')
+                );
+            }"""
+        )
+
+        row.click()
+        page.wait_for_timeout(800)
+
+        # The toast element is always in the DOM; only text in it is a message.
+        toasts = page.evaluate(
+            "() => [...document.querySelectorAll('.toast')]"
+            ".map(node => node.textContent.trim()).filter(Boolean)"
+        )
+        assert not toasts, toasts
+        assert not errors, errors
+        page.close()
+
     def test_play_on_hands_the_queue_to_the_computer(self, browser, static_server):
         computer = FakeComputer()
         page, errors = open_phone(browser, static_server, computer)

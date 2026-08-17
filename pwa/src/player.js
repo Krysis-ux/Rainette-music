@@ -173,6 +173,18 @@ function readyStream(track) {
 	return entry.url;
 }
 
+/* True for a `play()` rejection that means "something newer took over", which is
+ * not a failure the user should ever be shown. Chrome, Safari and Firefox all
+ * word the message differently, so the name is what is checked. */
+function isSupersededPlay(error) {
+	return error?.name === 'AbortError';
+}
+
+/* The gesture-required rejection, which *is* worth saying — briefly. */
+export function isGestureRequired(error) {
+	return error?.name === 'NotAllowedError';
+}
+
 async function resolveStream(track, forceRefresh, { prefetch = false } = {}) {
 	// A file on this phone needs no computer and no network: the blob is right
 	// here, and asking the companion for it would fail on a source_id it has
@@ -279,7 +291,21 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 		}
 		const started = audio.play();
 		prefetchUpcoming();
-		await started;
+		try {
+			await started;
+		} catch (error) {
+			// `play()` rejects for two reasons that are not failures, and
+			// reporting them is what made switching tracks quickly throw a wall
+			// of red and then play the song anyway.
+			//
+			// AbortError: a newer load or pause superseded this play. That is
+			// the normal shape of tapping a second song before the first has
+			// started, and the newer action is the one the user wants.
+			//
+			// NotAllowedError: the browser wants a gesture first. Real, but it
+			// is a one-line instruction, not a stack trace.
+			if (!isSupersededPlay(error)) throw error;
+		}
 		rememberRecent(track);
 		// The one place a track genuinely began, so the one place worth counting.
 		// "Most popular" over a library the computer sends no view counts for is
@@ -310,7 +336,9 @@ export async function toggle() {
 		if (audio.paused) await audio.play();
 		else audio.pause();
 	} catch (error) {
-		reportError(error);
+		// Same rule as playTrack: a play superseded by a newer one is not
+		// something to shout about.
+		if (!isSupersededPlay(error)) reportError(error);
 	}
 }
 

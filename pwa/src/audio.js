@@ -92,6 +92,16 @@ let filters = [];
 let gainNode = null;
 let limiter = null;
 let graph = 'idle';
+/* There are two ways to be blocked, and conflating them is what made one bad
+ * moment disable boost and the equalizer for a whole session:
+ *
+ *  - This browser cannot build a graph at all. Permanent, so never retried.
+ *  - This *track's* media refused a CORS read. Specific to that URL — an
+ *    expired grant or a reconnect mid-probe looks exactly like this — so the
+ *    next track deserves a fresh answer.
+ */
+let blockedPermanently = false;
+let blockedFor = '';
 
 export function graphState() {
 	return graph;
@@ -192,7 +202,7 @@ function applyVolume() {
  * gets one, and so never goes silent. */
 async function ensureGraph() {
 	if (graph === 'ready') return true;
-	if (graph === 'blocked') return false;
+	if (blockedPermanently) return false;
 
 	const audio = audioElement();
 	const url = audio.currentSrc || audio.src;
@@ -200,10 +210,15 @@ async function ensureGraph() {
 	// setting stays on and this runs again when a track loads.
 	if (!url) return false;
 
+	// Same track, same refusal — no point probing it again. A different one is
+	// a different question, and gets asked.
+	if (graph === 'blocked' && blockedFor === url) return false;
+
 	const alreadyCors = audio.crossOrigin === 'anonymous';
 
 	if (!(await corsAllows(url))) {
 		graph = 'blocked';
+		blockedFor = url;
 		if (alreadyCors) {
 			// Playback was gambled on a CORS mode this computer turns out not to
 			// grant. Give the attribute back and reload, or the music stays dead
@@ -217,12 +232,16 @@ async function ensureGraph() {
 
 	audio.crossOrigin = 'anonymous';
 	if (!buildGraph(audio)) {
+		// A graph this browser refuses to build is a property of the browser,
+		// not of the track, so this one *does* stay blocked for good.
 		graph = 'blocked';
+		blockedPermanently = true;
 		if (!alreadyCors) audio.removeAttribute('crossorigin');
 		applyVolume();
 		return false;
 	}
 	graph = 'ready';
+	blockedFor = '';
 	// Media fetched before the attribute was set is still the opaque copy, which
 	// the graph would render as silence. Reloading refetches it readable.
 	if (!alreadyCors) await reloadCurrent();
@@ -282,7 +301,10 @@ if (eq.on || Number(state.volume) > 1) {
  *  track that does. */
 export async function onTrackLoaded() {
 	if (graph === 'ready') { applyGains(); applyVolume(); resumeContext(); return; }
-	if (graph === 'blocked' || !graphIsWanted()) { applyVolume(); return; }
+	// Deliberately not "blocked means give up": a new track is exactly the event
+	// that deserves a second look, and ensureGraph knows which refusals are
+	// worth retrying and which are final.
+	if (blockedPermanently || !graphIsWanted()) { applyVolume(); return; }
 	await ensureGraph();
 }
 

@@ -172,7 +172,9 @@ export function openNowPlaying() {
 					// snapping the thumb back is the only honest way to say so.
 					volume.setValue(Math.round(applied * 100), 'force');
 					paintVolume(volume.value);
-					toast('Boost needs a newer Rainette on your computer.', { icon: 'volume' });
+					// Deliberately not "update your computer": the usual cause is
+					// this one track's audio link, and the next one often works.
+					toast('Extra volume is not available for this track. Try the next one.', { icon: 'volume' });
 				},
 			});
 			paintVolume(volume.value);
