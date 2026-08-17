@@ -1046,14 +1046,23 @@ class _TailscaleProvider(_BaseProvider):
                 detail="One switch on Tailscale's own settings page. Rainette cannot flip it for you.",
             )
         if not (status.get("CertDomains") or []):
-            # No cert domains means HTTPS is off for the whole tailnet, and
-            # without a real certificate the phone cannot connect at all.
+            # No cert domains means HTTPS is off for the whole tailnet. Without
+            # it `tailscale cert` answers "your Tailscale account does not
+            # support getting TLS certs", the phone has no certificate to
+            # trust, and the whole thing reads as "cannot connect" -- so this
+            # step has to name the switch precisely rather than gesture at a
+            # settings page. It is free, and it is nobody's to flip but theirs.
             return PreflightResult(
                 ok=False,
                 action="consent",
-                message="Turn on HTTPS certificates for your Tailscale network, then come back.",
+                message="One switch left: turn on HTTPS Certificates for your Tailscale network.",
                 url=_TAILSCALE_DNS_ADMIN_URL,
-                detail="The switch is just below MagicDNS on the same page.",
+                detail=(
+                    "Open the link, scroll to the bottom of the DNS page, and press "
+                    "\"Enable HTTPS\". It is free. Without it Tailscale will not issue "
+                    "a certificate for this computer, and your phone refuses to connect "
+                    "without one."
+                ),
             )
         return PreflightResult(ok=True, message=f"Ready. Your phone will use https://{dns_name}")
 
