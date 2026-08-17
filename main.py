@@ -888,6 +888,20 @@ class WindowApi:
             log(f"tunnel helper download failed: {exc}")
             return {"ok": False, "msg": str(exc)}
 
+    def tunnel_setup_step(self, step: str, settings=None):
+        """Perform the next setup step on the user's behalf.
+
+        This is what makes the Cloudflare option a few buttons rather than a
+        terminal session: signing in and creating the tunnel are steps the
+        helper already knows how to do, and this is the call that asks it to.
+        """
+        try:
+            options = dict(settings) if isinstance(settings, dict) else {}
+            return {"ok": True, **server.tunnel_setup_step(str(step or ""), options)}
+        except Exception as exc:
+            log(f"tunnel setup step failed: {exc}")
+            return {"ok": False, "msg": str(exc)}
+
     def tunnel_start(self):
         """Generate the HTTPS tunnel and publish its address.
 

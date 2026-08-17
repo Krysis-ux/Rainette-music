@@ -34,9 +34,10 @@ the computer has to approve the phone.
    connection. The default, **Limited tunnel**, needs nothing: one button
    fetches Cloudflare's `cloudflared` helper, and the app runs it in front of
    its phone gateway, waits until the address actually answers, and fills it
-   into *Public address for this computer*. **Private link** (Tailscale) trades
-   a one-time sign-in for an address that never changes and is reachable only
-   from your own devices.
+   into *Public address for this computer*. **Direct on your network**
+   (Tailscale) trades a one-time sign-in — which Rainette starts for you — for
+   an address that never changes, is reachable only from your own devices, and
+   on a shared Wi-Fi connects the two devices directly.
 2. Create a pairing code there.
 3. Scan the QR with the phone, or paste the pairing link into this app.
 4. The phone appears in the computer's **Waiting for approval** list. Approve it.

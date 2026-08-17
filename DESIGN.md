@@ -117,9 +117,31 @@ answers the same small protocol, and unfinished setup is a *result* rather than
 an error: `PreflightResult` describes the next thing the person has to do, in
 words, with a link, so Settings can render a checklist instead of a stack trace.
 
+`PreflightResult.can_fix` is what turns that checklist into a wizard. A step
+carrying only a `url` leaves somebody to go and do a thing in a browser and then
+work out what changed; the same step with `can_fix` set is a button in Rainette
+that performs it, dispatched through `TunnelManager.setup_step`. The split is
+deliberate and is the whole design rule here: **anything the helper binaries can
+already do, Rainette does** — `cloudflared tunnel login`, `tunnel create`,
+`tunnel route dns`, `tailscale up` — and anything that is irreducibly the
+person's stays a link beside the button: creating an account, approving a
+sign-in, flipping a switch in a vendor's own dashboard. `setup_step` accepts
+only the three named steps rather than dispatching on an arbitrary attribute, so
+the settings page cannot reach into a provider through it.
+
 `cloudflare-quick` remains the default and behaves exactly as it did before the
 seam existed. The other providers are options a user may choose, never a
 migration they are pushed through.
+
+**There is deliberately no plain-LAN provider.** It has been attempted twice
+(`zeroconf` in `requirements.txt` is the fossil of one) and it cannot be made to
+work well: a page served over HTTPS may not call `http://192.168.x.x` at all
+(mixed content), and serving the client over plain HTTP on a private address
+costs it secure-context status — which means no service worker, no offline
+shell, and no Add to Home Screen. `tailscale-serve` is the version that
+survives: on a shared network Tailscale connects the two devices directly, but
+with a real certificate. That is why it is labelled **Direct on your network**
+and is the recommended option.
 
 ## The window ("actual app")
 

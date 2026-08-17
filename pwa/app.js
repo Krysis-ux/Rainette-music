@@ -6,7 +6,7 @@ import { state, STORAGE, artworkUrl, artistName, formatTime, readRecent, remembe
 import { fetchDesktopRecent, mergeRecent, fetchPlaylists, fetchPlaylistTracks, playlistSubtitle } from './src/collections.js';
 import { $, el, icon, iconButton, toast, stagger } from './src/dom.js';
 import { configureBridge, isUnsupportedCommand } from './src/bridge.js';
-import { configurePlayer, subscribe, playTrack, toggle, skip, currentTrack, isPlaying, isLoading, currentTime, duration, resetPlayback, isLinked } from './src/player.js';
+import { configurePlayer, subscribe, playTrack, toggle, skip, currentTrack, isPlaying, isLoading, currentTime, duration, resetPlayback, isLinked, isGestureRequired } from './src/player.js';
 import { renderTracks, markPlayingRows, configureTracks } from './src/tracks.js';
 import { configureSync, startEventLoop, stopEventLoop, restartEventLoop } from './src/sync.js';
 import { configureConnection, startConnectionWatch } from './src/connection.js';
@@ -897,6 +897,13 @@ function renderSearchResults() {
 }
 
 function showPlaybackError(error) {
+	// "Tap play to start" is an instruction, not a fault, and dressing it as a
+	// failure is what makes a first tap on iOS feel like the app is broken.
+	if (isGestureRequired(error)) {
+		toast('Tap play to start the music.', { icon: 'play' });
+		renderMiniBar();
+		return;
+	}
 	setStatus('', 'Playback failed');
 	toast(error?.message || 'Playback failed.', { icon: 'close' });
 	renderMiniBar();
@@ -1167,7 +1174,67 @@ wireSettings({
 });
 
 $('#testConnectionButton').addEventListener('click', () => testConnection({ reveal: false }));
-$('#installHelpButton').addEventListener('click', () => $('#installDialog').showModal());
+
+/* ── Add to Home Screen ───────────────────────────────────────────────────
+ * Chrome fires `beforeinstallprompt` and lets the page raise the real OS
+ * install sheet, so the button installs rather than explaining how to install.
+ * Safari has no equivalent and never will, so iOS keeps the written steps —
+ * but only the iOS ones, rather than a dialog listing both platforms and
+ * leaving the reader to work out which half applies to them. */
+let installPrompt = null;
+
+window.addEventListener('beforeinstallprompt', event => {
+	// Chrome would otherwise show its own mini-infobar on its own schedule.
+	// Holding the event lets the prompt come from the button the user pressed.
+	event.preventDefault();
+	installPrompt = event;
+	paintInstallButton();
+});
+
+window.addEventListener('appinstalled', () => {
+	installPrompt = null;
+	paintInstallButton();
+});
+
+function isIos() {
+	return /iPad|iPhone|iPod/.test(navigator.userAgent)
+		// iPadOS 13+ reports itself as a Mac; the touch points give it away.
+		|| (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function paintInstallButton() {
+	const button = $('#installHelpButton');
+	if (!button) return;
+	// Already installed: the row is an instruction to do something that has
+	// been done, so it goes away rather than sitting there being wrong.
+	button.hidden = isStandalone();
+	const label = button.querySelector('b');
+	if (label) label.textContent = installPrompt ? 'Install Rainette' : 'Add to Home Screen';
+}
+
+$('#installHelpButton').addEventListener('click', async () => {
+	if (installPrompt) {
+		const prompt = installPrompt;
+		// A prompt may only be used once, and holding a spent one would leave
+		// the button silently dead on a second press.
+		installPrompt = null;
+		try {
+			prompt.prompt();
+			await prompt.userChoice;
+		} catch { /* dismissed, or already installed in another tab */ }
+		paintInstallButton();
+		return;
+	}
+	// No install API here, so the dialog carries the steps — showing only the
+	// ones for the phone actually holding it.
+	const ios = isIos();
+	$('#installStepsIos').hidden = !ios;
+	$('#installNoteIos').hidden = !ios;
+	$('#installStepsOther').hidden = ios;
+	$('#installDialog').showModal();
+});
+
+paintInstallButton();
 $('#outputButton').addEventListener('click', () => openOutputPicker().then(renderSettings));
 $('#equalizerButton').addEventListener('click', () => openEqualizer());
 $('#sleepButton').addEventListener('click', () => openSleepTimer().then(renderSettings));

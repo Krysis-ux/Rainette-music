@@ -166,7 +166,7 @@ export function openPlaybackSettings({ onChanged } = {}) {
 					if (percent <= 100 || boostAvailable() || isLinked()) return;
 					slider.setValue(Math.round(applied * 100), 'force');
 					describeVolume(slider.value);
-					toast('Boost needs a newer Rainette on your computer.', { icon: 'volume' });
+					toast('Extra volume is not available for this track. Try the next one.', { icon: 'volume' });
 				},
 			});
 

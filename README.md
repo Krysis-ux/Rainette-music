@@ -85,10 +85,22 @@ Setting it up is two steps, both in the desktop app's **Settings → Mobile**:
    | | What it costs you | What you get |
    |---|---|---|
    | **Limited tunnel** *(default)* | Nothing. One button fetches Cloudflare's `cloudflared` helper from Cloudflare's own release page. | Works immediately. The address changes every time Rainette restarts, so the phone has to scan a new code. |
-   | **Private link** *(recommended)* | The free Tailscale app, on this computer and on your phone, signed in once. | A permanent address with a real certificate, reachable **only from your own devices** — the gateway is never exposed to the open internet. |
-   | **High-quality tunnel** | The same Tailscale sign-in, plus a one-time consent. | A permanent address that anyone on the internet can reach. Only worth it for a guest's phone that will not install Tailscale. |
-   | **Your own Cloudflare tunnel** | A Cloudflare account and a domain already on Cloudflare. | A permanent address you control. |
+   | **Direct on your network** *(recommended)* | The free Tailscale app, on this computer and on your phone. Rainette connects it for you — one button, then approve it in the browser. | On the same Wi-Fi the two devices talk **directly**, so it is fast and nothing leaves your network. A permanent address with a real certificate, reachable only from your own devices. |
+   | **Direct, plus reachable anywhere** | The same Tailscale sign-in, plus a one-time consent. | The same permanent address, but it also works on mobile data or a guest's phone that will not install Tailscale. |
+   | **Your own permanent address** | A free Cloudflare account and a domain already on Cloudflare. Rainette does the rest: sign in, then one button creates the tunnel and points the address at this computer. | A permanent address on a domain you own. |
    | **Bring your own address** | You already run a reverse proxy or VPS. | Paste its address and skip the buttons entirely. |
+
+   Setup is buttons, not a terminal. Where a step is genuinely yours — creating
+   an account, approving a sign-in, flipping a switch in someone's dashboard —
+   Rainette links straight to it and waits; everything else it does itself.
+
+   > **Why there is no plain local-network option.** Browsers only treat
+   > `https`, `localhost` and `127.0.0.1` as secure contexts, so a bare
+   > `http://192.168.x.x` address would cost the phone client the two things
+   > that depend on being one: adding it to the home screen, and working
+   > offline. **Direct on your network** is the version that keeps both — on a
+   > shared Wi-Fi Tailscale routes the two devices straight to each other, but
+   > with a real certificate.
 
    Whichever you pick, the tunnel carries Rainette's phone gateway and nothing
    else. Never port-forward the companion port on your router.

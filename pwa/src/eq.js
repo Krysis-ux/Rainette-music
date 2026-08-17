@@ -68,7 +68,7 @@ export function openEqualizer() {
 					// A blocked graph turned the switch back off; an unloaded one
 					// left it on, waiting for something to play.
 					note.textContent = graphState() === 'blocked'
-						? 'This phone cannot route your computer’s audio through an equalizer. Update Rainette on the computer, then try again — playback is unaffected either way.'
+						? 'The equalizer could not attach to this track. It will try again on the next one — playback is unaffected either way.'
 						: 'The equalizer switches on with the next track you play.';
 				} else {
 					note.textContent = eqIsOn()

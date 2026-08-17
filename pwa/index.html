@@ -272,9 +272,15 @@
   <dialog id="installDialog">
     <form method="dialog">
       <h2>Keep Rainette one tap away</h2>
-      <p><b>iPhone:</b> tap Share in Safari, then <b>Add to Home Screen</b>.</p>
-      <p><b>Android:</b> open the browser menu, then <b>Install app</b>.</p>
-      <p class="note">
+      <p id="installStepsIos" hidden>
+        Tap <b>Share</b> at the bottom of Safari, scroll down, then tap
+        <b>Add to Home Screen</b>.
+      </p>
+      <p id="installStepsOther" hidden>
+        Open your browser's menu, then choose <b>Install app</b> or
+        <b>Add to Home Screen</b>.
+      </p>
+      <p id="installNoteIos" class="note" hidden>
         On iPhone the Home Screen copy gets its own storage, so it starts unpaired even
         though Safari is paired. Make a second pairing code on your computer and pair the
         installed app once — after that it stays paired and you can stop using Safari.
