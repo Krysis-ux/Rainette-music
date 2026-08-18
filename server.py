@@ -739,6 +739,20 @@ async def playlist_artwork_delete(request: web.Request) -> web.StreamResponse:
     return web.json_response({"ok": True, "artwork_key": "", "artwork_url": ""})
 
 
+def _upstream_audio_headers(source_id: str, request: web.Request) -> dict[str, str]:
+    """The headers this computer wears when fetching a resolved stream.
+
+    googlevideo signs a URL for the client that resolved it, so the request is
+    repeated in yt-dlp's voice. The caller's ``Range`` is theirs and travels.
+    """
+    forward = dict(music_bridge.stream_request_headers(source_id) if source_id else {})
+    if not forward:
+        forward = {"User-Agent": request.headers.get("User-Agent", "Rainette Mobile")}
+    if "Range" in request.headers:
+        forward["Range"] = request.headers["Range"]
+    return forward
+
+
 def _audio_host_allowed(url: str) -> bool:
     try:
         parsed = urlparse(url)
@@ -761,9 +775,9 @@ async def audio_proxy(request: web.Request) -> web.StreamResponse:
     src = request.query.get("u", "")
     if not src or not _audio_host_allowed(src):
         return web.Response(status=400, text="bad or disallowed url")
-    forward = {"User-Agent": request.headers.get("User-Agent", "Mozilla/5.0")}
-    if "Range" in request.headers:
-        forward["Range"] = request.headers["Range"]
+    # `sid` names the source this URL came from, so the request can be re-issued
+    # with the headers it was resolved under.
+    forward = _upstream_audio_headers(request.query.get("sid", ""), request)
     session: aiohttp.ClientSession = request.app[CLIENT_KEY]
     try:
         upstream = await session.get(src, headers=forward)
@@ -1140,9 +1154,7 @@ async def companion_audio_relay(request: web.Request) -> web.StreamResponse:
     if not _audio_host_allowed(grant.upstream_url):
         return _json_error(404, "relay grant is not available")
     upstream_url = grant.upstream_url
-    forward = {"User-Agent": request.headers.get("User-Agent", "Rainette Mobile")}
-    if "Range" in request.headers:
-        forward["Range"] = request.headers["Range"]
+    forward = _upstream_audio_headers(grant.source_id, request)
 
     # The upstream status is known before any header reaches the phone, so a
     # retry here is free and completely invisible. This is the VPN / network-
@@ -1167,6 +1179,14 @@ async def companion_audio_relay(request: web.Request) -> web.StreamResponse:
                 return _json_error(502, str(exc))
             break
         upstream_url = fresh
+
+    # A media element cannot report a status, so an upstream error page streamed
+    # onward becomes a bare "not supported". A clean status lets the phone say
+    # which side failed. 416 is a real answer to a Range request.
+    if upstream.status >= 400 and upstream.status != 416:
+        failed = upstream.status
+        upstream.release()
+        return _json_error(502, f"this computer could not fetch the track from its source ({failed})")
 
     response = web.StreamResponse(status=upstream.status)
     for header in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):

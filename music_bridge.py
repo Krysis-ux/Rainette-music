@@ -84,6 +84,12 @@ _SEARCH_OPTS = {
     "compat_opts": _SYSTEM_TRUST_COMPAT,
 }
 
+# The player client decides what kind of URL comes back. yt-dlp's default
+# (ANDROID_VR) serves chunked URLs that refuse the open-ended `Range: bytes=0-`
+# a media element opens with, which surfaces only as "Format error". ANDROID
+# returns an ordinary progressive URL. Check this first if every track fails.
+_PLAYER_CLIENT_ARGS = {"youtube": {"player_client": ["android"]}}
+
 _STREAM_OPTS = {
     "quiet": True,
     "no_warnings": True,
@@ -97,6 +103,7 @@ _STREAM_OPTS = {
         "/bestaudio[ext=mp4]"
         "/bestaudio/best"
     ),
+    "extractor_args": _PLAYER_CLIENT_ARGS,
     "compat_opts": _SYSTEM_TRUST_COMPAT,
 }
 
@@ -137,7 +144,8 @@ def _stream_cache_get(source_id: str, *, min_remaining_s: float = 0.0) -> dict[s
 
 
 def _stream_cache_set(source_id: str, *, url: str, title: str = "", artist: str = "",
-                      duration_s=None, thumbnail_url: str = "") -> None:
+                      duration_s=None, thumbnail_url: str = "",
+                      http_headers: dict[str, str] | None = None) -> None:
     # The CDN's own deadline wins whenever it is sooner than ours; caching past
     # the point the URL stops working is how a "valid" entry serves a dead link.
     upstream_expiry = _parse_upstream_expiry(url)
@@ -147,6 +155,9 @@ def _stream_cache_set(source_id: str, *, url: str, title: str = "", artist: str 
     with _stream_cache_lock:
         _stream_url_cache[source_id] = {
             "url": url,
+            # googlevideo binds a URL to the client that minted it, so the relay
+            # has to repeat yt-dlp's headers rather than wear the phone's.
+            "http_headers": dict(http_headers or {}),
             "title": title,
             "artist": artist,
             "duration_s": duration_s,
@@ -422,16 +433,21 @@ def _extract_stream(source_id: str) -> dict[str, Any]:
     with yt_dlp.YoutubeDL(_STREAM_OPTS) as ydl:
         info = ydl.extract_info(url, download=False)
     stream_url = info.get("url")
+    headers = dict(info.get("http_headers") or {})
     if not stream_url:
-        # Some extractors nest the playable URL under requested formats.
+        # Some extractors nest the playable URL under requested formats.  The
+        # headers travel with the format, not with the video, so they are taken
+        # from whichever entry actually supplied the URL.
         for fmt in reversed(info.get("requested_formats") or info.get("formats") or []):
             if fmt.get("url"):
                 stream_url = fmt["url"]
+                headers = dict(fmt.get("http_headers") or headers)
                 break
     if not stream_url:
         raise RuntimeError("no playable stream url returned")
     return {
         "url": stream_url,
+        "http_headers": headers,
         "title": info.get("title") or "",
         "artist": info.get("uploader") or "",
         "duration_s": info.get("duration"),
@@ -463,8 +479,44 @@ def resolve_stream_url_sync(source_id: str, *, force_refresh: bool = False) -> s
         found = _extract_stream(source_id)
         _stream_cache_set(cache_key, url=found["url"], title=found["title"],
                           artist=found["artist"], duration_s=found["duration_s"],
-                          thumbnail_url=found["thumbnail_url"])
+                          thumbnail_url=found["thumbnail_url"],
+                          http_headers=found.get("http_headers"))
         return str(found["url"])
+
+
+def stream_request_headers(source_id: str) -> dict[str, str]:
+    """The headers a resolved stream URL must be re-requested with.
+
+    googlevideo signs a URL for the client that asked for it and answers a
+    request wearing anybody else's ``User-Agent`` with 403.  The relay therefore
+    cannot forward the phone's headers upstream; it has to repeat yt-dlp's.
+    Returns an empty mapping for a source that was never resolved here, which
+    leaves the caller free to fall back to whatever it did before.
+    """
+    cached = _stream_cache_get(str(source_id or "").strip())
+    return dict((cached or {}).get("http_headers") or {})
+
+
+def describe_resolve_failure(exc: BaseException) -> str:
+    """Turn a yt-dlp failure into something a person can act on.
+
+    The raw text is Python TLS internals ending in "report this issue", which
+    sends the user to file a bug about their own network. A Wi-Fi running TLS
+    inspection kills every track the same way, and only the message can say so.
+    """
+    text = str(exc)
+    lowered = text.lower()
+    if "certificate_verify_failed" in lowered or "certificate verify failed" in lowered:
+        return ("This network is blocking YouTube — its firewall is intercepting "
+                "the connection, so Rainette cannot reach the audio. Try another "
+                "Wi-Fi network or a phone hotspot.")
+    if "unable to download" in lowered and ("timed out" in lowered or "timeout" in lowered):
+        return "YouTube did not answer in time. Check this computer's internet connection."
+    if "sign in to confirm" in lowered or "bot" in lowered and "confirm" in lowered:
+        return "YouTube is asking this computer to prove it is not a bot. Try again shortly."
+    if "video unavailable" in lowered or "private video" in lowered:
+        return "That track is not available from YouTube any more."
+    return text
 
 
 def _stream_worker(req_id, source_id, track_id, log_play=True):
@@ -477,7 +529,8 @@ def _stream_worker(req_id, source_id, track_id, log_play=True):
         thumbnail_url = found["thumbnail_url"]
         _stream_cache_set(source_id,
                           url=stream_url, title=title, artist=artist,
-                          duration_s=duration_s, thumbnail_url=thumbnail_url)
+                          duration_s=duration_s, thumbnail_url=thumbnail_url,
+                          http_headers=found.get("http_headers"))
         if log_play and track_id:
             try:
                 shared.STATE.log_play(track_id)
@@ -491,7 +544,8 @@ def _stream_worker(req_id, source_id, track_id, log_play=True):
             "duration_s": duration_s, "thumbnail_url": thumbnail_url,
         })
     except Exception as e:
-        shared.notify_browsers({"type": "music_stream_url_result", "id": req_id, "ok": False, "msg": str(e), "track_id": track_id})
+        shared.notify_browsers({"type": "music_stream_url_result", "id": req_id, "ok": False,
+                                "msg": describe_resolve_failure(e), "track_id": track_id})
 
 
 # ── Playlist / track CRUD (sync, thin over MusicState) ────────────────────────
@@ -909,6 +963,9 @@ def cmd_music_now_playing_set(msg):
         # companion's transport controls routed to the device that owns audio.
         # Phone-originated state always supplies ``phone`` explicitly.
         "output_device_id": str(msg.get("output_device_id") or "desktop"),
+        # Why playback stopped. Dropping it left every failure reading as a
+        # bare "playback failed".
+        "error_reason": str(msg.get("error_reason") or ""),
     }
     if isinstance(msg.get("queue"), list):
         payload.update({
