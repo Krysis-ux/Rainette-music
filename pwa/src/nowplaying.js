@@ -32,6 +32,9 @@ export function openNowPlaying() {
 	if (!currentTrack()) return;
 	if (isNowPlayingOpen()) return;
 
+	// The mini bar floats over browse sheets; this one it must not, being the
+	// expanded form of it.
+	document.body.classList.add('now-playing-open');
 	openHandle = openSheet({
 		title: 'Now playing',
 		className: 'sheet-now',
@@ -271,6 +274,7 @@ export function openNowPlaying() {
 				observer.disconnect();
 				stop();
 				openHandle = null;
+				document.body.classList.remove('now-playing-open');
 			}).observe(document.body, { childList: true });
 		},
 	});

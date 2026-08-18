@@ -251,38 +251,12 @@ async function ensureGraph() {
 	return true;
 }
 
-/* Does writing `audio.volume` on this platform actually do anything?
- *
- * iOS ignores the assignment silently — no throw, no warning. Detected by
- * writing and reading back rather than by sniffing the user agent, because the
- * question is "does this work here", and only the element can answer it. */
-let volumeWriteIsDead = null;
-
-function volumeIsWritable() {
-	if (volumeWriteIsDead !== null) return !volumeWriteIsDead;
-	const audio = audioElement();
-	const before = audio.volume;
-	try {
-		const probe = before === 0.5 ? 0.25 : 0.5;
-		audio.volume = probe;
-		volumeWriteIsDead = audio.volume !== probe;
-		audio.volume = before;
-	} catch {
-		volumeWriteIsDead = true;
-	}
-	return !volumeWriteIsDead;
-}
-
-/* A graph is worth building whenever the EQ is on, the volume is set past what
- * an element can reach on its own, or the element ignores volume entirely.
- *
- * That last clause is the whole point: without it, an iPhone got no graph until
- * the volume was pushed *above* 100%, so the slider was inert across its entire
- * useful range and only started working in the boost range — the inverse of
- * what it looks like it does. Below all three, an untouched element is the
- * safer path: no CORS requirement, no reload, no risk of silence. */
+/* Built only when the user asked for something an element cannot do: the EQ, or
+ * a non-unity volume. Deliberately not built merely because volume writes are
+ * ignored — iOS makes them read-only, so that gave every iPhone a graph, and
+ * iOS suspends a graph in the background, which stopped the music on lock. */
 function graphIsWanted() {
-	return eq.on || Number(state.volume) > 1 || !volumeIsWritable();
+	return eq.on || Number(state.volume) !== 1;
 }
 
 /* Restored settings that need the graph mean the very first track should be
@@ -292,9 +266,15 @@ function graphIsWanted() {
 /* Deliberately the cheap half of graphIsWanted(): probing whether volume writes
  * stick would touch the element while modules are still evaluating, and this
  * only needs to catch settings restored from a previous session. */
-if (eq.on || Number(state.volume) > 1) {
+if (eq.on || Number(state.volume) !== 1) {
 	try { audioElement().crossOrigin = 'anonymous'; } catch { /* element not ready */ }
 }
+
+/* A context suspended in the background stays suspended, and that is silence
+ * with no error anywhere. */
+document.addEventListener('visibilitychange', () => {
+	if (!document.hidden) resumeContext();
+});
 
 /** Called by the player whenever a new track's media has been handed to the
  *  element, so a setting made with nothing playing takes effect on the first
