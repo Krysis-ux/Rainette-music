@@ -180,6 +180,14 @@ function isSupersededPlay(error) {
 	return error?.name === 'AbortError';
 }
 
+/* WebKit collapses every unusable source into one `NotSupportedError` reading
+ * "The operation is not supported". The `error` event can tell them apart by
+ * asking the URL; the `play()` rejection arrives first and used to bypass it. */
+async function playFailure(error, url) {
+	if (isGestureRequired(error) || error?.name !== 'NotSupportedError') return error;
+	return new Error(await diagnoseStreamFailure(url));
+}
+
 /* The gesture-required rejection, which *is* worth saying — briefly. */
 export function isGestureRequired(error) {
 	return error?.name === 'NotAllowedError';
@@ -304,7 +312,7 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 			//
 			// NotAllowedError: the browser wants a gesture first. Real, but it
 			// is a one-line instruction, not a stack trace.
-			if (!isSupersededPlay(error)) throw error;
+			if (!isSupersededPlay(error)) throw await playFailure(error, audio.currentSrc || audio.src);
 		}
 		rememberRecent(track);
 		// The one place a track genuinely began, so the one place worth counting.
@@ -639,7 +647,9 @@ async function diagnoseStreamFailure(url) {
 		if (response.ok || response.status === 206) return 'Your phone could not play this format.';
 		return `Your computer answered ${response.status}.`;
 	} catch {
-		return 'The audio stream expired or became unavailable.';
+		// No answer at all: no DNS, no route, no tunnel. A quick tunnel mints a
+		// new address every start, so a phone holding yesterday's one lands here.
+		return 'Cannot reach your computer. Open Rainette there, then rescan the code to reconnect.';
 	}
 }
 

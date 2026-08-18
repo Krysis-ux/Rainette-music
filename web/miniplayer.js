@@ -393,7 +393,9 @@ function _applyAndPlay(track, url, loadToken) {
 	let source;
 	if (graphBuilt === true) {
 		audio.crossOrigin = 'anonymous';
-		source = '/audio?u=' + encodeURIComponent(url);
+		// `sid` lets the proxy re-request upstream with the resolving headers.
+		source = '/audio?u=' + encodeURIComponent(url)
+			+ '&sid=' + encodeURIComponent(track.source_id || '');
 	} else {
 		audio.removeAttribute('crossorigin');
 		source = url;

@@ -3219,7 +3219,11 @@ function onHelperMessage(msg) {
 				if (msg.state === 'error' && msg.track) {
 					banner.dataset.kind = 'playback-error';
 					banner.style.display = '';
-					banner.textContent = `Couldn't play "${msg.track.title || 'this track'}" - playback failed.`;
+					// A named cause beats "playback failed": the common one is a
+					// network blocking YouTube, which retrying cannot get past.
+					banner.textContent = msg.error_reason
+						? `Couldn't play "${msg.track.title || 'this track'}" — ${msg.error_reason}`
+						: `Couldn't play "${msg.track.title || 'this track'}" - playback failed.`;
 				} else if (banner.dataset.kind === 'playback-error') {
 					banner.style.display = 'none';
 					banner.textContent = '';

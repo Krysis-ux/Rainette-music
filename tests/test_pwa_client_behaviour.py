@@ -497,3 +497,115 @@ class TestSyncedLyrics:
         assert page.evaluate("() => Math.round(window.__rainetteAudio.currentTime)") == 10
         assert not errors, errors
         page.close()
+
+
+class TestTransportStaysWhereItIsPut:
+    """One tap on pause means paused, and nothing restarts playback after."""
+
+    def _count_transport(self, page):
+        page.evaluate(
+            """() => {
+                const audio = window.__rainetteAudio;
+                window.__calls = { play: 0, pause: 0 };
+                const play = audio.play.bind(audio);
+                const pause = audio.pause.bind(audio);
+                audio.play = () => { window.__calls.play += 1; return play(); };
+                audio.pause = () => { window.__calls.pause += 1; return pause(); };
+            }"""
+        )
+
+    def test_one_pause_tap_does_not_start_a_play_pause_loop(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+        page.wait_for_function(
+            "() => document.querySelector('#playPauseButton').dataset.state === 'playing'"
+        )
+
+        self._count_transport(page)
+        page.locator("#playPauseButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#playPauseButton').dataset.state === 'paused'"
+        )
+        # Long enough for a status tick, an event-loop round trip and any
+        # re-render to have happened.
+        page.wait_for_timeout(2000)
+
+        calls = page.evaluate("() => window.__calls")
+        assert page.evaluate("() => window.__rainetteAudio.paused") is True, (
+            "playback restarted itself after a single pause"
+        )
+        assert calls["play"] == 0, f"pause was undone by {calls['play']} play call(s)"
+        assert calls["pause"] <= 1, f"pause fired {calls['pause']} times for one tap"
+        assert not errors, errors
+        page.close()
+
+    def test_a_paused_track_stays_at_its_position(self, browser, static_server):
+        """The loop's other half: the position kept jumping backwards."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+        page.wait_for_function(
+            "() => document.querySelector('#playPauseButton').dataset.state === 'playing'"
+        )
+
+        page.evaluate("() => window.__rainetteAudio.__seek(42)")
+        page.locator("#playPauseButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#playPauseButton').dataset.state === 'paused'"
+        )
+        page.wait_for_timeout(1500)
+
+        assert page.evaluate("() => window.__rainetteAudio.currentTime") == 42, (
+            "the position moved while paused"
+        )
+        assert not errors, errors
+        page.close()
+
+
+class TestTheMiniBarStaysReachable:
+    """Opening an artist must not hide what is playing."""
+
+    def test_the_player_is_still_visible_over_an_artist_profile(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+
+        page.locator("#recentList .track .link-inline").first.click()
+        page.locator(".sheet-catalog").wait_for(state="visible")
+
+        assert page.locator("#player").is_visible(), "the artist sheet hid the player"
+        # `is_visible` only checks layout, so confirm it actually paints on top.
+        on_top = page.evaluate(
+            """() => {
+                const bar = document.querySelector('#player');
+                const box = bar.getBoundingClientRect();
+                const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+                return !!(hit && bar.contains(hit));
+            }"""
+        )
+        assert on_top, "the player is laid out but painted underneath the sheet"
+        assert not errors, errors
+        page.close()
+
+    def test_the_mini_bar_gets_out_of_the_way_of_the_expanded_player(self, browser, static_server):
+        """It is the same player: two copies on screen would be nonsense."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+        page.locator("#playerOpen").click()
+        page.locator(".sheet-now").wait_for(state="visible")
+
+        assert not page.locator("#player").is_visible()
+        assert not errors, errors
+        page.close()

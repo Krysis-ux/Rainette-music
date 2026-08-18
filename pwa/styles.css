@@ -2719,3 +2719,10 @@ body.sheet-open { overflow: hidden; }
 	.import-card-state .spin { animation: none !important; }
 	.import-card.is-stored .import-card-art { animation: none !important; }
 }
+
+/* A full sheet (z-index 70) buried the player at 40. Raised only while a browse
+   sheet is up: over an action sheet it would eat taps meant for the buttons. */
+body.catalog-sheet-open .player { z-index: 80; }
+
+/* The one sheet it must never float over: the expanded player itself. */
+body.now-playing-open .player { display: none; }
