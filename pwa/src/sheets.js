@@ -73,13 +73,6 @@ export function afterSheetSettles(fn) {
 
 /** Open a sheet. `build(api)` fills the body; `api.body` is the scroller and
  *  `api.close()` dismisses. Returns a handle the caller can keep. */
-/* A browse sheet is somewhere the user reads, so the mini bar stays on top of
- * it. Over a modal it would swallow taps meant for the sheet's own buttons. */
-function syncCatalogSheetFlag() {
-	const browsing = !!document.querySelector('.sheet-catalog');
-	document.body.classList.toggle('catalog-sheet-open', browsing);
-}
-
 export function openSheet({ title = '', className = '', full = false, build }) {
 	const root = el('div', `sheet ${className}`.trim());
 	root.setAttribute('role', 'dialog');
@@ -97,7 +90,6 @@ export function openSheet({ title = '', className = '', full = false, build }) {
 	// The page behind must not scroll under a sheet; on iOS that is the
 	// difference between a sheet and a sheet that fights the user.
 	document.body.classList.add('sheet-open');
-	syncCatalogSheetFlag();
 
 	let closing = false;
 	const handle = {
@@ -113,7 +105,6 @@ export function openSheet({ title = '', className = '', full = false, build }) {
 			const index = open.indexOf(handle);
 			if (index >= 0) open.splice(index, 1);
 			if (!open.length) document.body.classList.remove('sheet-open');
-			syncCatalogSheetFlag();
 			if (!fromHistory && history.state?.rainetteSheet) {
 				selfPops += 1;
 				history.back();

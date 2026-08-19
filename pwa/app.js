@@ -15,12 +15,12 @@ import { configureTarget, playbackSourceLabel } from './src/target.js';
 import { observePrefs } from './src/prefs.js';
 import { syncPrefs, markPrefChanged, flushPrefs } from './src/prefsync.js';
 import { reportCodecSupport } from './src/codecs.js';
-import { wireMiniBar } from './src/nowplaying.js';
+import { wireMiniBar, openNowPlaying } from './src/nowplaying.js';
 import { openQueueSheet } from './src/queue.js';
 import { configureExtras, setLinked, openOutputPicker, sleepShouldStopAfterTrack, openTrackMenu, openSleepTimer, sleepLabel } from './src/extras.js';
 import { closeAllSheets } from './src/sheets.js';
 import { openScanner, scanningIsPossible } from './src/scanner.js';
-import { artistRow, albumRow, openArtist, openFollowedArtists, loadFollowed, hydrateArtistArt, artistLink, trackArtist } from './src/catalog.js';
+import { artistRow, albumRow, openArtist, openFollowedArtists, loadFollowed, hydrateArtistArt, artistLink, trackArtist, configureCatalog } from './src/catalog.js';
 import { artistsFromTracks, searchArtists } from './src/artists.js';
 import { sortControl, sortTracks, sortArtists, ARTIST_SORTS } from './src/sorting.js';
 import { openEqualizer, eqSummary, eqOnTrackLoaded } from './src/eq.js';
@@ -1037,6 +1037,9 @@ configurePlayer({
 // Press and hold any row for its menu, which is how an artist is reachable from
 // the library, the queue and the recent list rather than only from search.
 configureTracks({ onMenu: (track, list) => openTrackMenu(track, list) });
+// Playing from an artist or album opens the card over that page, because the
+// mini bar is behind the sheet and would otherwise be the only sign of it.
+configureCatalog({ onStartedPlaying: () => openNowPlaying() });
 configureSync({
 	onStatus: setStatus,
 	onLibrary: showLibraryTracks,

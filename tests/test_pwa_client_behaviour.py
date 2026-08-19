@@ -567,23 +567,63 @@ class TestTransportStaysWhereItIsPut:
         page.close()
 
 
-class TestTheMiniBarStaysReachable:
-    """Opening an artist must not hide what is playing."""
+class TestPlayingFromAnArtistPage:
+    """The card opens over the profile, and closing it returns there."""
 
-    def test_the_player_is_still_visible_over_an_artist_profile(self, browser, static_server):
+    @staticmethod
+    def _player_on_top(page):
+        """Is the mini bar the thing under your thumb, or is a sheet over it?
+
+        `is_visible` only reports layout, and the bar stays laid out behind a
+        sheet — so it answers True for a bar nobody can see or tap.
+        """
+        return page.evaluate(
+            """() => {
+                const bar = document.querySelector('#player');
+                if (!bar || bar.hidden) return false;
+                const box = bar.getBoundingClientRect();
+                if (!box.width) return false;
+                const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+                return !!(hit && bar.contains(hit));
+            }"""
+        )
+
+    def test_playing_from_an_artist_opens_the_card_over_the_profile(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        page.locator("#recentList .track .link-inline").first.click()
+        page.locator(".sheet-catalog").wait_for(state="visible")
+        # The mini bar stays behind the sheet; the card is what reports playback.
+        assert not self._player_on_top(page)
+
+        page.locator(".sheet-catalog .track").first.click()
+        page.locator(".sheet-now").wait_for(state="visible")
+
+        # The profile is still underneath, so closing the card returns to it
+        # rather than dropping the user back on the page they started from.
+        assert page.locator(".sheet-catalog").count() == 1
+        page.locator(".sheet-now .now-top button").first.click()
+        page.locator(".sheet-now").wait_for(state="detached")
+        assert page.locator(".sheet-catalog").is_visible()
+        assert not errors, errors
+        page.close()
+
+    def test_the_mini_bar_returns_once_the_profile_is_closed(self, browser, static_server):
         computer = FakeComputer()
         page, errors = open_phone(browser, static_server, computer)
         page.locator("#appView").wait_for(state="visible")
 
         page.locator("#recentList .track").first.click()
         page.locator("#player").wait_for(state="visible")
-
         page.locator("#recentList .track .link-inline").first.click()
         page.locator(".sheet-catalog").wait_for(state="visible")
+        assert not self._player_on_top(page), "the mini bar sat on top of the profile"
 
-        assert page.locator("#player").is_visible(), "the artist sheet hid the player"
-        # `is_visible` only checks layout, so confirm it actually paints on top.
-        on_top = page.evaluate(
+        page.keyboard.press("Escape")
+        page.locator(".sheet-catalog").wait_for(state="detached")
+        page.wait_for_function(
             """() => {
                 const bar = document.querySelector('#player');
                 const box = bar.getBoundingClientRect();
@@ -591,21 +631,57 @@ class TestTheMiniBarStaysReachable:
                 return !!(hit && bar.contains(hit));
             }"""
         )
-        assert on_top, "the player is laid out but painted underneath the sheet"
         assert not errors, errors
         page.close()
 
-    def test_the_mini_bar_gets_out_of_the_way_of_the_expanded_player(self, browser, static_server):
-        """It is the same player: two copies on screen would be nonsense."""
+
+class TestSheetsCanBePulledDown:
+    """A sheet must close by dragging it, not only by its button."""
+
+    @staticmethod
+    def _drag_down(page, selector, distance=320):
+        box = page.locator(selector).bounding_box()
+        start_x = box["x"] + box["width"] / 2
+        start_y = box["y"] + 12
+        page.mouse.move(start_x, start_y)
+        page.mouse.down()
+        # Several steps: one jump reads as a teleport and never crosses the
+        # threshold that decides the axis.
+        for step in range(1, 13):
+            page.mouse.move(start_x, start_y + distance * step / 12)
+            page.wait_for_timeout(16)
+        page.mouse.up()
+
+    def test_the_now_playing_card_closes_when_pulled_down(self, browser, static_server):
         computer = FakeComputer()
         page, errors = open_phone(browser, static_server, computer)
         page.locator("#appView").wait_for(state="visible")
-
         page.locator("#recentList .track").first.click()
         page.locator("#player").wait_for(state="visible")
         page.locator("#playerOpen").click()
         page.locator(".sheet-now").wait_for(state="visible")
 
-        assert not page.locator("#player").is_visible()
+        self._drag_down(page, ".sheet-now .sheet-grabber")
+
+        page.locator(".sheet-now").wait_for(state="detached")
+        # Closing the card is a minimise, not a stop.
+        assert page.evaluate("() => window.__rainetteAudio.paused") is False
+        page.locator("#player").wait_for(state="visible")
+        assert not errors, errors
+        page.close()
+
+    def test_the_artwork_is_a_drag_handle_too(self, browser, static_server):
+        """The grabber is a small target; the art is the obvious big one."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+        page.locator("#playerOpen").click()
+        page.locator(".sheet-now").wait_for(state="visible")
+
+        self._drag_down(page, ".sheet-now .now-art-shell")
+
+        page.locator(".sheet-now").wait_for(state="detached")
         assert not errors, errors
         page.close()

@@ -50,9 +50,10 @@ export function openNowPlaying() {
 				onClick: () => handle.close(),
 			}));
 
-			const artShell = el('div', 'now-art-shell');
+			const artShell = el('div', 'now-art-shell sheet-drag');
 			const art = document.createElement('img');
 			art.className = 'now-art';
+			art.draggable = false;
 			art.alt = '';
 			art.referrerPolicy = 'no-referrer';
 			art.decoding = 'async';
