@@ -346,6 +346,11 @@ def test_the_start_button_reports_the_same_step_as_the_panel_does(tmp_path, monk
     # Arrange
     manager = tunnel.TunnelManager(tmp_path, provider="tailscale-serve")
     provider = manager.provider()
+    # Without this the test asks the *host* whether Tailscale is installed, so
+    # it reported "install" on a clean machine and only passed where a developer
+    # happened to have it. The question here is whether start and preflight
+    # agree, which has nothing to do with either.
+    monkeypatch.setattr(provider, "ensure_binary", lambda *_a, **_k: Path("tailscale"))
     monkeypatch.setattr(provider, "_status_json", lambda: {
         "BackendState": "Running",
         "Self": {"DNSName": "box.tailnet.ts.net."},
