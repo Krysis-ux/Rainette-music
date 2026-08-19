@@ -197,6 +197,30 @@ export function dragGesture(element, {
 		onMove?.({ dx, dy, velocity: velocity(), event });
 	});
 
+	/* Pointer events alone cannot hold a vertical drag on a scrollable panel.
+	 * The browser owns the pan, and the moment it starts scrolling it takes the
+	 * pointer away with a pointercancel — so the drag never engages and the
+	 * sheet can only be closed with its button. `touch-action` is the usual
+	 * answer, but the sheet body has to stay scrollable, so it cannot be
+	 * `none`.
+	 *
+	 * Claiming it on the first touchmove is what works: `preventDefault` is
+	 * honoured while the browser is still deciding, and refused once a scroll is
+	 * under way. Only for gestures `canStart` already accepted (the body at its
+	 * top), only downward, and only on the y axis, so a scroll and a horizontal
+	 * swipe both behave exactly as before. */
+	element.addEventListener('touchmove', event => {
+		if (pointerId === null || axis !== 'y' || !preventScroll) return;
+		if (!event.cancelable || event.touches.length !== 1) return;
+		const dy = event.touches[0].clientY - startY;
+		if (engaged) { event.preventDefault(); return; }
+		const mode = typeof direction === 'function' ? direction() : direction;
+		if (mode === 'positive' && dy <= 0) return;
+		if (mode === 'negative' && dy >= 0) return;
+		if (Math.abs(dy) < 2) return;
+		event.preventDefault();
+	}, { passive: false, signal: controller.signal });
+
 	listen('pointerup', event => {
 		if (event.pointerId !== pointerId) return;
 		lastX = event.clientX;

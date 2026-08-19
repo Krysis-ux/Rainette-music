@@ -17,6 +17,14 @@ import { playTrack, queueAddEnd } from './player.js';
 import { rememberRecent, artistName } from './state.js';
 import { artistRef, knownArtist, resolveArtistImages } from './artists.js';
 
+/* What to do once a track starts from inside a browse sheet. `nowplaying.js`
+ * already imports this module, so it is handed in rather than imported back. */
+let onStartedPlaying = () => {};
+
+export function configureCatalog(options = {}) {
+	onStartedPlaying = options.onStartedPlaying || onStartedPlaying;
+}
+
 /* ── Shapes ───────────────────────────────────────────────────────────────
  * The computer speaks one album shape everywhere, but which key holds the id
  * depends on whether it came from a search, an artist catalog, or a track's
@@ -484,7 +492,13 @@ function startList(list, { index = 0, shuffle = false } = {}) {
 		at = 0;
 	}
 	playTrack(queue[at], queue, at)
-		.then(() => rememberRecent(queue[at]))
+		.then(() => {
+			rememberRecent(queue[at]);
+			// The mini bar is hidden under a sheet, so without this a track
+			// started from an artist page gives no sign of what is playing. The
+			// card opens *over* the profile: closing it returns here, not home.
+			onStartedPlaying();
+		})
 		.catch(error => toast(error?.message || 'Playback failed.', { icon: 'close' }));
 }
 

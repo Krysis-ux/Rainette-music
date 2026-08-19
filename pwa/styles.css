@@ -1368,7 +1368,10 @@ body.sheet-open { overflow: hidden; }
 	display: grid;
 	place-items: center;
 	flex: none;
-	padding: 10px 0 4px;
+	/* Was 10px 0 4px: a 4px bar inside 14px of padding is a hard thing to catch
+	   with a thumb, which is most of why sheets "could not be swiped down" and
+	   had to be closed with the button. The bar itself does not move. */
+	padding: 14px 0 12px;
 	/* The grabber is the one place a downward drag is unambiguous, so it never
 	   pans the content behind it. */
 	touch-action: none;
@@ -1401,6 +1404,9 @@ body.sheet-open { overflow: hidden; }
 }
 
 .sheet-message { margin: 0 0 16px; color: var(--text-soft); font-size: 14px; line-height: 1.55; }
+/* Starting a native image drag cancels the pointer, which silently killed any
+   sheet pull-down or row swipe begun on artwork. Nothing here wants it. */
+img { -webkit-user-drag: none; }
 .sheet-drag { touch-action: none; }
 .sheet-buttons { display: grid; gap: 9px; margin-top: 8px; }
 
@@ -2719,10 +2725,6 @@ body.sheet-open { overflow: hidden; }
 	.import-card-state .spin { animation: none !important; }
 	.import-card.is-stored .import-card-art { animation: none !important; }
 }
-
-/* A full sheet (z-index 70) buried the player at 40. Raised only while a browse
-   sheet is up: over an action sheet it would eat taps meant for the buttons. */
-body.catalog-sheet-open .player { z-index: 80; }
 
 /* The one sheet it must never float over: the expanded player itself. */
 body.now-playing-open .player { display: none; }
