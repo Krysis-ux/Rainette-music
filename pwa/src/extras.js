@@ -9,6 +9,7 @@ import { command, commandError } from './bridge.js';
 import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
 import { playlistChoices, addTrackToPlaylist, isLocalPlaylist, createLocalPlaylist } from './playlists.js';
 import { isLocalTrack } from './local.js';
+import { trackDownloadItems } from './downloadmenu.js';
 import {
 	queueAddNext, queueAddEnd, isPlaying, toggle, playTrack, pauseLocal, localSession,
 	currentTrack, currentTime, seekTo, subscribe,
@@ -470,6 +471,10 @@ export async function openTrackMenu(track, list = []) {
 			album ? { id: 'album', label: `Go to ${album.title}`, icon: 'album', run: () => openAlbum(album) } : null,
 			{ id: 'playlist', label: 'Add to playlist', icon: 'plus', run: () => openAddToPlaylist(track) },
 			{ id: 'lyrics', label: 'Lyrics', icon: 'mic', run: () => openLyrics(track) },
+			// Keeping-it and going-somewhere are different kinds of action, so
+			// the download rows sit below the navigation ones rather than among
+			// them. `trackDownloadItems` decides which of them apply.
+			...trackDownloadItems(track),
 			list.length > 1 ? { id: 'queue-all', label: `Queue all ${list.length}`, icon: 'listAdd', run: () => { for (const item of list) queueAddEnd(item); toast(`Queued ${list.length} tracks`, { icon: 'listAdd' }); } } : null,
 		].filter(Boolean),
 	});

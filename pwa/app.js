@@ -27,6 +27,8 @@ import { openEqualizer, eqSummary, eqOnTrackLoaded } from './src/eq.js';
 import { pref } from './src/prefs.js';
 import { wireSettings, paintSettingsValues } from './src/settings.js';
 import { listLocalTracks } from './src/local.js';
+import { refreshDownloaded, onDownloadsChanged } from './src/downloads.js';
+import { runListDownload } from './src/downloadmenu.js';
 import { localPlaylists, isLocalPlaylist, localPlaylistTracks, openPlaylistEditor, openPlaylistMenu } from './src/playlists.js';
 
 const setupView = $('#setupView');
@@ -611,7 +613,7 @@ async function renderLocalLibrary() {
 	if (!libraryOwns(token)) return;
 	if (!tracks.length) {
 		target.replaceChildren(el('p', 'empty',
-			'No music added from this phone yet. Settings → Music on this phone adds MP3s straight from your files — they stay on the device.'));
+			'Nothing on this phone yet. Download a song from anywhere in Rainette to keep it here, or add your own files from Settings → Music on this phone. Either way they stay on the device.'));
 		return;
 	}
 	const sorted = sortTracks(tracks, librarySort.current());
@@ -737,7 +739,13 @@ async function renderPlaylistTracks(playlistId, name = '') {
 				renderPlaylistTracks(playlistId, updated.name);
 			},
 		}));
-		head.append(edit);
+		// "All of it" is a question only the head of a list can ask, which is why
+		// downloading a whole playlist lives here and not on any of its rows.
+		const download = el('button', 'chip', 'Download all');
+		download.type = 'button';
+		download.disabled = !tracks.length;
+		download.addEventListener('click', () => runListDownload(tracks, { title: name || 'Playlist' }));
+		head.append(edit, download);
 		target.append(head);
 
 		const list = el('div', 'track-list');
@@ -1301,6 +1309,18 @@ if ('serviceWorker' in navigator) {
 
 pairDeviceName.placeholder = defaultDeviceName();
 renderRecent();
+
+/* Which tracks are already on this phone, so the download controls can answer
+ * synchronously while a list is being drawn. Keys only — no blobs — so this is
+ * cheap enough to sit in the boot path.
+ *
+ * The repaint afterwards is what makes a download land visibly: a track saved
+ * from a menu has to show as saved everywhere it appears, and the Local files
+ * page has to grow a row without being reopened. */
+refreshDownloaded().catch(() => {});
+onDownloadsChanged(() => {
+	if (activeTab === 'library' && library.mode === 'local') renderLocalLibrary().catch(() => {});
+});
 
 const scanned = readPairingParams(location.hash);
 if (scanned) {

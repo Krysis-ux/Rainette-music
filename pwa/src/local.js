@@ -107,6 +107,13 @@ async function readRow(id) {
 	return transact('readonly', store => store.get(id));
 }
 
+/** One stored row, blob and all. The only reason a caller outside this module
+ *  wants this is to hand the bytes somewhere else — saving a copy to the phone's
+ *  own file system, which is what `downloads.js` does with it. */
+export async function localRow(id) {
+	return readRow(String(id || ''));
+}
+
 export async function removeLocalTrack(id) {
 	await transact('readwrite', store => store.delete(id));
 	releaseUrl(id);
@@ -223,6 +230,80 @@ export async function importOne(file) {
 	const row = buildRowFrom(file, tags);
 	await transact('readwrite', store => store.put(row));
 	return row;
+}
+
+/* ── Downloads ────────────────────────────────────────────────────────────
+ * A track fetched from the computer and kept here, which is the same thing as
+ * an imported file once it has landed: same store, same row shape, same page.
+ * The only difference is provenance, and it is recorded rather than inferred —
+ * `catalog_key` is what lets a list ask "is this one already here?" without
+ * reading four hundred blobs to find out.
+ *
+ * Nothing in this section uploads. Bytes travel from the paired computer to
+ * this phone and stop; the categorical claim at the top of this file is about
+ * files leaving, and none do.
+ */
+
+/* Kept apart from `fileId`'s namespace so an imported file and a downloaded
+ * track can never collide on an id, and so a downloaded row is recognisable as
+ * one without consulting anything else. */
+function downloadRowId(catalogKey) {
+	const stamp = String(catalogKey || '');
+	let hash = 5381;
+	for (let i = 0; i < stamp.length; i += 1) hash = ((hash * 33) ^ stamp.charCodeAt(i)) >>> 0;
+	return `dl-${hash.toString(36)}`;
+}
+
+/** The row id a given catalog track would occupy once downloaded. Stable, so
+ *  downloading the same track twice updates one row instead of making two. */
+export function downloadedId(catalogKey) {
+	return downloadRowId(catalogKey);
+}
+
+/** Store a downloaded track. Metadata comes from the catalog rather than from
+ *  the file's own tags: the computer already knows the real artist, album and
+ *  cover, and a YouTube-sourced M4A frequently carries none of them. That is
+ *  why a downloaded row looks *better* in the list than an imported one, not
+ *  worse. */
+export async function saveDownloadedTrack({
+	catalogKey, blob, title, artist, album, artwork = null, duration_s = 0, file_name = '',
+}) {
+	if (!blob) throw new Error('That download arrived empty.');
+	const row = {
+		id: downloadRowId(catalogKey),
+		blob,
+		size: blob.size || 0,
+		added_at: Date.now(),
+		title: title || 'Untitled',
+		artist: artist || '',
+		album: album || '',
+		duration_s: Number(duration_s) || 0,
+		artwork,
+		file_name: file_name || `${title || 'track'}.m4a`,
+		catalog_key: String(catalogKey || ''),
+		downloaded: true,
+	};
+	await transact('readwrite', store => store.put(row));
+	// A re-download replaces the bytes behind an id that may already have live
+	// object URLs pointing at the old blob. Dropping them makes the next play
+	// mint fresh ones rather than serve what was just replaced.
+	releaseUrl(row.id);
+	const art = artUrls.get(row.id);
+	if (art) URL.revokeObjectURL(art);
+	artUrls.delete(row.id);
+	return row;
+}
+
+/** Every row id currently in the store. The download buttons need a synchronous
+ *  answer to "is this already here?" while drawing a list, and this is the whole
+ *  of what that costs — keys only, no blobs. */
+export async function localTrackIds() {
+	try {
+		const keys = await transact('readonly', store => store.getAllKeys());
+		return new Set((keys || []).map(String));
+	} catch {
+		return new Set();
+	}
 }
 
 /* An id that is stable for the same file picked twice, so re-importing a folder

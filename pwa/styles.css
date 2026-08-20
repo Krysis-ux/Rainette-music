@@ -1220,6 +1220,61 @@ dialog .primary { margin-top: 10px; }
 	font-variant-numeric: tabular-nums;
 }
 
+/* ── The list-download sheet ─────────────────────────────────────────────── */
+
+.sheet-download .sheet-body { display: grid; gap: 12px; }
+
+.download-count {
+	margin: 0;
+	color: var(--text);
+	font-size: 14px;
+	font-weight: 560;
+}
+
+.download-bar {
+	overflow: hidden;
+	height: 6px;
+	border-radius: 999px;
+	background: var(--surface);
+}
+
+.download-fill {
+	display: block;
+	width: 0;
+	height: 100%;
+	border-radius: 999px;
+	background: var(--accent);
+	transition: width 180ms var(--ease);
+}
+
+/* The track being fetched right now. Fixed to one line and ellipsed: a long
+   title must not reflow the sheet on every track. */
+.download-now {
+	overflow: hidden;
+	margin: 0;
+	color: var(--text-muted);
+	font-size: 12.5px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.download-stop {
+	justify-self: start;
+	padding: 9px 18px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-sm);
+	background: none;
+	color: var(--text-soft);
+	font-size: 13px;
+	font-weight: 560;
+}
+
+.download-stop:disabled { opacity: 0.5; }
+
+@media (prefers-reduced-motion: reduce) {
+	.download-fill { transition: none; }
+}
+
 /* A live equaliser marks the playing row. Colour alone gets lost in a list of
    similar rows; movement does not. */
 .track-bars { display: none; align-items: flex-end; gap: 2px; height: 14px; }
