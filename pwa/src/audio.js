@@ -49,6 +49,48 @@ export const EQ_PRESETS = {
  * the gain is what makes 200% loud rather than distorted. */
 export const VOLUME_MAX = 2;
 
+/* Does building a graph on this platform cost background playback?
+ *
+ * WebKit suspends an AudioContext whenever the page is hidden, and a suspended
+ * context is silence with no error anywhere. On an iPhone that makes a graph
+ * the difference between music that survives the screen locking and music that
+ * stops the moment it does — including a Home Screen app the user has simply
+ * switched away from.
+ *
+ * Detected by the touch-capable-Mac test rather than by user agent, because
+ * iPadOS has reported itself as "MacIntel" since iPadOS 13 and a plain
+ * /iPad/ test misses every modern iPad.
+ */
+const SUSPENDS_GRAPH_IN_BACKGROUND = (() => {
+	try {
+		const platform = navigator.platform || '';
+		if (/iPad|iPhone|iPod/.test(platform)) return true;
+		// iPadOS: a Mac that reports touch points is not a Mac.
+		if (/Mac/.test(platform) && Number(navigator.maxTouchPoints) > 1) return true;
+		return false;
+	} catch {
+		return false;
+	}
+})();
+
+/** Can the in-app volume control actually change what comes out?
+ *
+ *  Only where the element's own volume is writable, or where a graph may be
+ *  built to carry it. On an iPhone neither is true any more: the element
+ *  ignores writes, and the graph that would honour them is the thing that
+ *  stops the music on lock. The phone's own buttons still work, and a slider
+ *  that silently does nothing is worse than no slider.
+ */
+export function volumeIsAdjustable() {
+	return !SUSPENDS_GRAPH_IN_BACKGROUND || eq.on;
+}
+
+/** True where turning the equaliser on costs playback in the background, so
+ *  the surface offering it can say so before it is switched on. */
+export function graphCostsBackgroundPlayback() {
+	return SUSPENDS_GRAPH_IN_BACKGROUND;
+}
+
 const STORE = {
 	on: 'rainette.pwa.eq.on',
 	gains: 'rainette.pwa.eq.gains',
@@ -251,12 +293,27 @@ async function ensureGraph() {
 	return true;
 }
 
-/* Built only when the user asked for something an element cannot do: the EQ, or
- * a non-unity volume. Deliberately not built merely because volume writes are
- * ignored — iOS makes them read-only, so that gave every iPhone a graph, and
- * iOS suspends a graph in the background, which stopped the music on lock. */
+/* Built only when the user asked for something an element cannot do, and only
+ * when it is worth what it costs.
+ *
+ * An earlier pass here removed one trigger for exactly this reason: iOS makes
+ * element volume read-only, and treating that as "needs a graph" gave every
+ * iPhone one, which stopped the music on lock. But the remaining trigger has
+ * the same effect by a slower route — a stored volume of anything other than
+ * exactly 1 is enough, and almost nobody leaves a volume slider at precisely
+ * unity. So in practice every iPhone still ended up with a graph, and the
+ * music still stopped when the screen went off.
+ *
+ * The trade is only worth making for something the graph alone can do and the
+ * platform cannot. The equaliser qualifies: there is no other way to have it,
+ * and asking for it is deliberate. Volume does not — the phone has hardware
+ * buttons an inch from the user's thumb, and paying for an in-app duplicate of
+ * them with playback that dies on lock is a bargain nobody would knowingly
+ * make. So volume alone no longer builds a graph where a graph is suspended in
+ * the background. */
 function graphIsWanted() {
-	return eq.on || Number(state.volume) !== 1;
+	if (eq.on) return true;
+	return !SUSPENDS_GRAPH_IN_BACKGROUND && Number(state.volume) !== 1;
 }
 
 /* Restored settings that need the graph mean the very first track should be
@@ -266,7 +323,7 @@ function graphIsWanted() {
 /* Deliberately the cheap half of graphIsWanted(): probing whether volume writes
  * stick would touch the element while modules are still evaluating, and this
  * only needs to catch settings restored from a previous session. */
-if (eq.on || Number(state.volume) !== 1) {
+if (eq.on || (!SUSPENDS_GRAPH_IN_BACKGROUND && Number(state.volume) !== 1)) {
 	try { audioElement().crossOrigin = 'anonymous'; } catch { /* element not ready */ }
 }
 

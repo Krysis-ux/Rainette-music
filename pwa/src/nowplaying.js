@@ -10,7 +10,9 @@ import { openSheet } from './sheets.js';
 import { openQueueSheet } from './queue.js';
 import { openAddToPlaylist, openLyrics, openSleepTimer, openOutputPicker, openTrackMenu, sleepLabel } from './extras.js';
 import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
-import { setVolume, volume as currentVolume, boostAvailable, resumeContext, VOLUME_MAX } from './audio.js';
+import {
+	setVolume, volume as currentVolume, boostAvailable, resumeContext, VOLUME_MAX, volumeIsAdjustable,
+} from './audio.js';
 import { isLocalTrack, localArtworkUrl } from './local.js';
 import {
 	currentTrack, isPlaying, isLoading, currentTime, duration, isLinked,
@@ -182,7 +184,19 @@ export function openNowPlaying() {
 				},
 			});
 			paintVolume(volume.value);
-			volumeRow.append(volumeIcon, volume.root, volumeValue);
+			/* On a platform where the only volume that works is a graph, and a
+			 * graph is what stops the music when the screen locks, there is no
+			 * honest slider to draw. Saying which buttons do work is worth more
+			 * than a control that moves and changes nothing — which is what was
+			 * there before, on every iPhone. */
+			if (volumeIsAdjustable()) {
+				volumeRow.append(volumeIcon, volume.root, volumeValue);
+			} else {
+				volumeRow.classList.add('is-external');
+				volumeIcon.innerHTML = icon('volume', 18);
+				volumeRow.append(volumeIcon, el('span', 'now-volume-note',
+					'Use your phone’s volume buttons. An in-app slider would need an audio graph, and that stops playback when the screen locks.'));
+			}
 
 			// ── Actions ─────────────────────────────────────────────────────
 			const actions = el('div', 'now-actions');

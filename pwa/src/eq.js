@@ -15,6 +15,7 @@ import {
 	EQ_BANDS, EQ_MIN, EQ_MAX, EQ_PRESETS,
 	eqIsOn, eqGains, eqPresetName, eqSummary,
 	setEqOn, setBandGain, applyPreset, graphState, onTrackLoaded,
+	graphCostsBackgroundPlayback,
 } from './audio.js';
 
 export { eqSummary, eqPresetName, eqIsOn };
@@ -148,6 +149,14 @@ export function openEqualizer() {
 
 			note.textContent = eqIsOn() ? 'Shapes audio playing on this phone.' : 'Audio plays untouched.';
 			body.append(toggleRow, presets, sliders, reset, note);
+			/* The equaliser needs an audio graph, and WebKit suspends one
+			 * whenever the page is hidden. Said here rather than discovered
+			 * later, because "the music stops when I lock my phone" is not a
+			 * symptom anybody would connect back to this switch. */
+			if (graphCostsBackgroundPlayback()) {
+				body.append(el('p', 'catalog-note',
+					'On an iPhone the equalizer needs an audio graph, and iOS silences one whenever the screen locks or you switch apps. With it on, playback will not continue in the background.'));
+			}
 			paintToggle();
 
 			if (!currentTrack()) {

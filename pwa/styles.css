@@ -2794,3 +2794,13 @@ body.now-playing-open .player { display: none; }
 	-webkit-user-select: text;
 	user-select: text;
 }
+
+/* The volume row where there is no slider to draw: an icon and a sentence,
+   laid out like the row it replaces so the card does not shift. */
+.now-volume.is-external { align-items: flex-start; }
+
+.now-volume-note {
+	color: var(--text-muted);
+	font-size: 11.5px;
+	line-height: 1.45;
+}
