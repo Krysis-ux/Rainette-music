@@ -1,9 +1,14 @@
-/* Bump this whenever the pairing protocol changes, or whenever a module is
- * added or its behaviour changes. Requests below are served cache-first, so a
- * returning phone that kept a cached app.js would otherwise keep running the
- * old client — speaking a handshake the computer no longer understands, or
- * simply never seeing the new screens — until it was uninstalled. */
-const CACHE = 'rainette-pwa-v16';
+/* The suffix is a digest of every file in SHELL, and it is not maintained by
+ * hand: `tests/test_output_and_phone_sync.py` recomputes it and fails when it
+ * has drifted, printing the value to paste back.
+ *
+ * It exists because three separate fixes to the sheet drag (#19, #22, #23) all
+ * shipped without touching this line. Stale-while-revalidate meant each one
+ * still cost a load running the previous JavaScript before it healed — so a
+ * gesture fix could be tested on a phone, appear not to work, and be "fixed"
+ * again. Tying the cache name to the bytes it holds ends that: any change to a
+ * client file is a new cache, and CI will not let the two disagree. */
+const CACHE = 'rainette-pwa-v16-a1fc264f';
 const SHELL = [
   './',
   './index.html',

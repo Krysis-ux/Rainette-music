@@ -168,11 +168,17 @@ class FrontendReleaseContractTests(unittest.TestCase):
     def test_phone_client_cache_is_versioned_with_the_pairing_client(self):
         """A returning phone must not keep serving the previous app.js.
 
-        The service worker answers same-origin GETs cache-first, so a client
-        change only reaches an installed phone when the cache name changes.
+        The worker answers stale-while-revalidate, so a client change reaches an
+        installed phone one load late unless the cache name changes with it.
+
+        The name now carries a `-<digest>` suffix of the shell's contents, which
+        is what makes the two impossible to disagree about; that the digest is
+        the *right* one is checked in test_output_and_phone_sync.py. Here it is
+        only allowed for, so this contract keeps testing what it is about -- the
+        version moving forward.
         """
         worker = (ROOT / "pwa" / "sw.js").read_text(encoding="utf-8")
-        self.assertRegex(worker, r"const CACHE = 'rainette-pwa-v(?:[3-9]|\d{2,})'")
+        self.assertRegex(worker, r"const CACHE = 'rainette-pwa-v(?:[3-9]|\d{2,})(?:-[0-9a-f]{8})?'")
 
 
 if __name__ == "__main__":

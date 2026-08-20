@@ -5,6 +5,7 @@ nothing raised, just a control that did nothing — so each test states the
 symptom it prevents rather than only the mechanism.
 """
 
+import hashlib
 import re
 import unittest
 from pathlib import Path
@@ -250,6 +251,42 @@ class PhoneClientShellTests(unittest.TestCase):
         # offline shell rather than a partial one.
         worker = (ROOT / "pwa" / "sw.js").read_text(encoding="utf-8")
         self.assertIn(".catch(() => {})", worker)
+
+    def test_the_cache_name_matches_the_files_it_would_hold(self):
+        """A changed client file must mean a changed cache name.
+
+        This is the regression guard for a real and repeated failure. Three
+        separate fixes to the sheet pull-down (#19, #22, #23) each shipped
+        without touching CACHE. The worker answers stale-while-revalidate, so a
+        missed bump is not permanent -- but it does cost one load running the
+        *previous* JavaScript. That is enough to test a gesture fix on a phone,
+        watch it not work, and conclude the fix was wrong when it was only
+        late.
+
+        Tying the cache name to a digest of the shell makes the two impossible
+        to disagree about: change any client file and this fails until the name
+        follows.
+        """
+        worker = (ROOT / "pwa" / "sw.js").read_text(encoding="utf-8")
+        shell = re.search(r"const SHELL = \[(.*?)\];", worker, re.S).group(1)
+
+        digest = hashlib.sha256()
+        for relative in sorted(re.findall(r"'\./([^']*)'", shell)):
+            path = ROOT / "pwa" / relative
+            # './' names the directory, not a file; index.html covers it.
+            if not relative or not path.is_file():
+                continue
+            digest.update(relative.encode())
+            digest.update(path.read_bytes())
+        expected = digest.hexdigest()[:8]
+
+        name = re.search(r"const CACHE = '([^']+)'", worker).group(1)
+        self.assertTrue(
+            name.endswith("-" + expected),
+            f"pwa/sw.js CACHE is {name!r}; the shell now digests to {expected!r}.\n"
+            f"A client file changed without the cache name following it. Set it to "
+            f"a bumped version plus that digest, e.g. 'rainette-pwa-v17-{expected}'.",
+        )
 
 
 class PlaybackTargetBroadcastTests(unittest.TestCase):
