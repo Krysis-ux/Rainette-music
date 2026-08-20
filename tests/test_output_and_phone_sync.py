@@ -277,7 +277,12 @@ class PhoneClientShellTests(unittest.TestCase):
             if not relative or not path.is_file():
                 continue
             digest.update(relative.encode())
-            digest.update(path.read_bytes())
+            # Newlines are normalised because the repository carries no
+            # .gitattributes, so a Windows checkout converts these text files to
+            # CRLF and an unnormalised digest would name a different build on
+            # every platform -- which is what this test caught the first time it
+            # ran in CI, having passed on macOS.
+            digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
         expected = digest.hexdigest()[:8]
 
         name = re.search(r"const CACHE = '([^']+)'", worker).group(1)
