@@ -2601,3 +2601,33 @@ html.rw-reduced-motion .rw-now-btn:hover, html.rw-reduced-motion .rw-now-output:
 @media (prefers-reduced-motion: reduce) {
 	.rw-download-pill { transition: none; }
 }
+
+/* ── Watched folders, on the Downloads page ──────────────────────────────── */
+.rw-local-roots { display: grid; gap: 8px; margin: 10px 0 16px; }
+
+.rw-local-root {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 12px;
+	padding: 10px 14px;
+	border: 1px solid var(--rw-border);
+	border-radius: var(--rw-radius-bubble);
+	background: var(--rw-surface);
+}
+
+.rw-local-root-copy { display: grid; gap: 2px; min-width: 0; }
+
+/* A path is the one string here that must not be shortened into ambiguity, so
+   it wraps rather than ellipsing -- two folders can share every visible
+   character and differ only in the part an ellipsis would eat. */
+.rw-local-root-copy b {
+	font: 500 13px/1.4 var(--rw-font);
+	color: var(--rw-text);
+	overflow-wrap: anywhere;
+}
+
+.rw-local-root-copy span {
+	font: 400 12px/1.4 var(--rw-font);
+	color: var(--rw-text-muted);
+}

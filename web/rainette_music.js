@@ -42,6 +42,7 @@ const pageState = {
 	results: [],
 	resultArtists: [],
 	resultAlbums: [],
+	local: { roots: [], tracks: 0, missing: 0, bytes: 0, loaded: false, scanning: false },
 	playlists: [],
 	folders: [],
 	openPlaylist: null,
@@ -93,6 +94,7 @@ const TAB_META = {
 	search: { label: 'Search', eyebrow: 'Catalog', title: 'Search the catalog', sub: 'Find songs, artists, and albums without leaving the listening flow.' },
 	songs: { label: 'Songs', eyebrow: 'Library', title: 'Your songs', sub: 'All locally saved and played songs, with songs first across the library.' },
 	following: { label: 'Following', eyebrow: 'Library', title: 'Following', sub: 'Artists you chose to follow, kept separate from listening history.' },
+	downloads: { label: 'Downloads', eyebrow: 'Library', title: 'On this computer', sub: 'Tracks you downloaded, plus any folders of your own music Rainette watches.' },
 	playlists: { label: 'Playlists', eyebrow: 'Collection', title: 'Playlists', sub: 'Create, open, and manage your saved listening sets.' },
 	recent: { label: 'Recents', eyebrow: 'History', title: 'Recently played', sub: 'Return to recently played songs, artists, and albums.' },
 	insights: { label: 'Insights', eyebrow: 'History', title: 'Listening insights', sub: 'What you actually played — totals, daily rhythm, and your heavy rotation.' },
@@ -102,7 +104,7 @@ const TAB_META = {
 };
 
 function navItems() {
-	const ids = ['home', 'search', 'songs', 'following', 'recent', 'playlists', 'insights', 'mobile'];
+	const ids = ['home', 'search', 'songs', 'downloads', 'following', 'recent', 'playlists', 'insights', 'mobile'];
 	if (QUEUE_SUPPORTED) ids.push('queue');
 	ids.push('settings');
 	return ids;
@@ -699,6 +701,112 @@ function renderSongs() {
 	body.appendChild(list);
 }
 
+/* ── On this computer ─────────────────────────────────────────────────────
+ *
+ * The local library had a complete backend -- watched folders, a scanner, a
+ * status payload -- and no interface at all, so the only way to see a folder of
+ * your own music was from the phone. Downloading made that gap visible: a track
+ * saved on this computer landed somewhere the computer could not show you.
+ *
+ * This is that page. It is deliberately the same list component the rest of the
+ * app uses, because a downloaded track is an ordinary track and the moment it
+ * needs its own kind of row is the moment the design has gone wrong.
+ */
+
+function requestLocalStatus() {
+	sendHelper({ type: 'music_local_status', id: 'mls_' + Math.random().toString(36).slice(2) });
+}
+
+function renderDownloads() {
+	const body = _host?.querySelector('#rwMusicBody');
+	if (!body) return;
+	body.innerHTML = '';
+
+	const local = pageState.local;
+
+	// ── What this page can do ────────────────────────────────────────────
+	const bar = el('div', 'rw-toolbar');
+	const add = btn('Add a folder…', 'rw-btn rw-btn-ghost', async () => {
+		// The path has to originate at this computer: music_local_roots refuses
+		// an add that arrived from a phone, because a device that could name a
+		// path could name "/" and turn the library into a home directory.
+		const api = window.pywebview?.api;
+		if (!api?.pick_music_folder) {
+			downloadStatus('Choosing a folder needs the desktop app window');
+			return;
+		}
+        const chosen = await Promise.resolve(api.pick_music_folder()).catch(() => null);
+		if (!chosen?.ok || !chosen.path) return;   // a cancelled picker is "not now"
+		sendHelper({ type: 'music_local_roots', id: 'mlr_' + Math.random().toString(36).slice(2),
+			action: 'add', path: chosen.path });
+	});
+	const rescan = btn(local.scanning ? 'Scanning…' : 'Rescan', 'rw-btn rw-btn-ghost', () => {
+		if (pageState.local.scanning) return;
+		pageState.local.scanning = true;
+		sendHelper({ type: 'music_local_scan', id: 'mlsc_' + Math.random().toString(36).slice(2) });
+		renderDownloads();
+	});
+	rescan.disabled = local.scanning;
+	bar.append(el('div', 'rw-track-title', 'On this computer'), add, rescan);
+	body.appendChild(bar);
+
+	// ── What is here ─────────────────────────────────────────────────────
+	if (local.loaded) {
+		const parts = [`${local.tracks} track${local.tracks === 1 ? '' : 's'}`, formatBytes(local.bytes)];
+		// Missing is not an error: it is usually an external drive that is not
+		// plugged in, and the scan marks rather than deletes for that reason.
+		if (local.missing) parts.push(`${local.missing} not reachable right now`);
+		body.appendChild(el('div', 'rw-status-line', parts.join(' · ')));
+	}
+
+	// ── Watched folders ──────────────────────────────────────────────────
+	const folders = el('div', 'rw-local-roots');
+	if (!local.roots.length && local.loaded) {
+		folders.appendChild(el('div', 'rw-status-line',
+			'No folders watched yet. Downloads land in a Rainette Downloads folder that is added here automatically the first time you download something.'));
+	}
+	for (const root of local.roots) {
+		const row = el('div', 'rw-local-root');
+		const copy = el('div', 'rw-local-root-copy');
+		copy.append(el('b', '', root.path || ''));
+		const detail = [];
+		if (root.track_count) detail.push(`${root.track_count} track${root.track_count === 1 ? '' : 's'}`);
+		if (root.last_error) detail.push(root.last_error);
+		if (detail.length) copy.append(el('span', '', detail.join(' · ')));
+		row.append(copy, btn('Remove', 'rw-btn rw-btn-ghost', async () => {
+			const ok = await confirmDialog({
+				title: 'Stop watching this folder?',
+				message: `${root.path}\n\nThe files stay where they are. Rainette forgets the tracks it found in them.`,
+				confirmLabel: 'Stop watching',
+				danger: true,
+			});
+			if (!ok) return;
+			sendHelper({ type: 'music_local_roots', id: 'mlr_' + Math.random().toString(36).slice(2),
+				action: 'remove', path: root.path });
+		}));
+		folders.appendChild(row);
+	}
+	body.appendChild(folders);
+
+	// ── The tracks ───────────────────────────────────────────────────────
+	const tracks = pageState.library.tracks.filter(track => String(track.source || '') === 'local');
+	const list = trackList('rwLocalTracks');
+	if (!tracks.length) {
+		list.appendChild(_empty(
+			local.loaded ? 'Nothing downloaded yet' : 'Reading your library…',
+			'Download a song from its More menu, or add a folder of music you already have.'));
+	}
+	for (const track of tracks) list.appendChild(trackCard(track, trackActions(track, tracks)));
+	body.appendChild(list);
+}
+
+function formatBytes(bytes) {
+	const mb = Number(bytes || 0) / (1024 * 1024);
+	if (mb < 1) return `${Math.max(0, Math.round(Number(bytes || 0) / 1024))} KB`;
+	if (mb < 1024) return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+	return `${(mb / 1024).toFixed(1)} GB`;
+}
+
 function renderFollowing() {
 	const body = _host?.querySelector('#rwMusicBody');
 	if (!body) return;
@@ -849,9 +957,20 @@ function renderArtistDetail() {
 	}
 	if (view.msg) body.appendChild(el('div', 'rw-status-line', view.msg));
 	const list = trackList('rwArtistCatalog');
-	if (view.albums?.length) {
+	/* ytmusicapi files EPs inside the artist's album section and marks them with
+	 * a release type; `music_bridge` passes that through as `release_type`. The
+	 * phone client already shelves them separately, and an EP listed as an album
+	 * is wrong in the one place a listener actually notices. Without the marker
+	 * a release stays with the albums rather than being guessed at from its
+	 * track count. */
+	const shelves = shelveReleases(view.albums || []);
+	if (shelves.albums.length) {
 		list.appendChild(section('Albums'));
-		for (const album of view.albums) list.appendChild(albumCard(album));
+		for (const album of shelves.albums) list.appendChild(albumCard(album));
+	}
+	if (shelves.eps.length) {
+		list.appendChild(section('EPs'));
+		for (const album of shelves.eps) list.appendChild(albumCard(album));
 	}
 	if (view.singles?.length) {
 		list.appendChild(section('Singles'));
@@ -869,6 +988,15 @@ function renderArtistDetail() {
 	body.appendChild(list);
 }
 
+/* Split a release list on the marker YouTube Music already provides. Kept as
+ * one function so the desktop and the phone answer "is this an EP?" the same
+ * way -- see pwa/src/catalog.js:shelveReleases. */
+function shelveReleases(albums) {
+	const all = Array.isArray(albums) ? albums : [];
+	const isEp = album => String(album?.release_type || '').trim().toLowerCase() === 'ep';
+	return { albums: all.filter(a => !isEp(a)), eps: all.filter(isEp) };
+}
+
 function renderAlbumDetail() {
 	if (pageState.tab === 'mobile') unmountMobile();
 	const body = _host?.querySelector('#rwMusicBody');
@@ -876,18 +1004,27 @@ function renderAlbumDetail() {
 	if (!body || !view) return;
 	body.innerHTML = '';
 	const album = view.album || {};
+	const kind = String(album.release_type || '').trim().toLowerCase() === 'ep' ? 'EP' : 'Album';
 	const head = el('div', 'rw-toolbar rw-detail-head');
+	const download = btn('Download all', 'rw-btn rw-btn-ghost', () => {
+		const list = (pageState.view?.tracks || []).filter(t => String(t.source || '') !== 'local');
+		startDownload(list, album.title || kind.toLowerCase());
+	});
 	head.append(
 		btn('Back', 'rw-btn rw-btn-ghost', () => { pageState.view = null; applyTab(); }),
-		el('div', 'rw-track-title', album.title || 'Album'),
+		el('div', 'rw-track-title', album.title || kind),
+		download,
 		btn('Start mix', 'rw-btn rw-btn-primary', () => startMixFromSeed({ kind: 'album', album })),
 	);
 	body.appendChild(head);
 	if (view.loading) {
-		body.appendChild(createRainetteLoader('Loading album'));
+		// Nothing to download until the track list has arrived.
+		download.disabled = true;
+		body.appendChild(createRainetteLoader(`Loading ${kind.toLowerCase()}`));
 		return;
 	}
 	const tracks = view.tracks || [];
+	download.disabled = !tracks.length;
 	const list = trackList('rwAlbumTracks');
 	if (!tracks.length) list.appendChild(_empty('No tracks found', 'Try searching this album title.'));
 	for (const track of tracks) list.appendChild(trackCard(track, trackActions(track, tracks)));
@@ -3107,6 +3244,7 @@ function applyTab() {
 		sendHelper({ type: 'music_recent', id: 'mrec_' + Math.random().toString(36).slice(2) });
 	}
 	else if (pageState.tab === 'songs') { renderSongs(); refreshLibraryIndex(); }
+	else if (pageState.tab === 'downloads') { renderDownloads(); requestLocalStatus(); refreshLibraryIndex(); }
 	else if (pageState.tab === 'following') { renderFollowing(); refreshLibraryIndex(); }
 	else if (pageState.tab === 'playlists') { renderPlaylists(); sendHelper({ type: 'music_playlist_list', id: 'pll_' + Math.random().toString(36).slice(2) }); }
 	else if (pageState.tab === 'recent') { renderRecent(); sendHelper({ type: 'music_recent', id: 'mrec_' + Math.random().toString(36).slice(2) }); }
@@ -3142,6 +3280,28 @@ function motionDisabled() {
 function onHelperMessage(msg) {
 	if (!_mounted || !msg) return;
 	switch (msg.type) {
+		case 'music_local_status_result':
+		case 'music_local_roots_result':
+		case 'music_local_scan_result': {
+			if (msg.type === 'music_local_scan_result') pageState.local.scanning = false;
+			if (msg.ok) {
+				pageState.local = {
+					roots: Array.isArray(msg.roots) ? msg.roots : [],
+					tracks: Number(msg.tracks || 0),
+					missing: Number(msg.missing || 0),
+					bytes: Number(msg.bytes || 0),
+					loaded: true,
+					scanning: pageState.local.scanning,
+				};
+			} else if (msg.msg) {
+				downloadStatus(msg.msg);
+			}
+			// A scan changes which tracks exist, so the library behind the list
+			// is stale even when the status payload is not.
+			if (msg.type === 'music_local_scan_result') refreshLibraryIndex();
+			if (!pageState.view && pageState.tab === 'downloads') renderDownloads();
+			break;
+		}
 		case 'music_download_progress': {
 			const at = msg.total > 1 ? ` (${(msg.index || 0) + 1} of ${msg.total})` : '';
 			const pct = msg.ratio ? ` ${Math.round(msg.ratio * 100)}%` : '';
@@ -3156,9 +3316,11 @@ function onHelperMessage(msg) {
 			} else {
 				downloadStatus(`${msg.done} track${msg.done === 1 ? '' : 's'} saved to your library`);
 			}
-			// The scan that just ran may have added tracks, so the library the
-			// user is looking at is now out of date.
-			sendHelper({ type: 'music_library_index', id: 'lib_' + Math.random().toString(36).slice(2) });
+			// The scan that just ran may have added tracks, and the downloads
+			// folder may have just become a watched root, so both the library
+			// and the status behind the Downloads page are out of date.
+			refreshLibraryIndex();
+			requestLocalStatus();
 			break;
 		}
 		case 'music_catalog_search_result': {
@@ -3427,6 +3589,7 @@ function onHelperMessage(msg) {
 				followed_artists: msg.followed_artists || [],
 			};
 			if (!pageState.view && pageState.tab === 'songs') renderSongs();
+			if (!pageState.view && pageState.tab === 'downloads') renderDownloads();
 			if (!pageState.view && pageState.tab === 'following') renderFollowing();
 			break;
 		case 'music_artist_followed':

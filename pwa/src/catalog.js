@@ -10,6 +10,7 @@
 
 import { el, icon, iconButton, toast, stagger } from './dom.js';
 import { openSheet } from './sheets.js';
+import { runListDownload } from './downloadmenu.js';
 import { command, commandError } from './bridge.js';
 import { renderTracks } from './tracks.js';
 import { sortTracks, sortControl, RELEASE_SORTS, sortReleases } from './sorting.js';
@@ -458,15 +459,24 @@ function renderAlbumHeader(album, tracks, handle) {
 		toast(`Queued ${tracks.length} tracks`, { icon: 'listAdd' });
 	});
 
+	// "All of it" is a question the head of a release can ask, exactly as a
+	// playlist can. An EP opens this same sheet, so this covers both.
+	const download = el('button', 'chip', 'Download');
+	download.type = 'button';
+	download.disabled = !tracks.length;
+	download.addEventListener('click', () => runListDownload(tracks, {
+		title: album.title || releaseLabel(album.releaseType, 'Album'),
+	}));
+
 	// An album opened from search names its artist but cannot be navigated to
 	// one, so the link is only offered when there is genuinely somewhere to go.
 	if (album.artistId || album.artist) {
 		const link = el('button', 'chip', album.artist || 'Artist');
 		link.type = 'button';
 		link.addEventListener('click', () => openArtist({ id: album.artistId, name: album.artist }));
-		actions.append(play, shuffle, queue, link);
+		actions.append(play, shuffle, queue, download, link);
 	} else {
-		actions.append(play, shuffle, queue);
+		actions.append(play, shuffle, queue, download);
 	}
 
 	head.append(art, meta, actions);

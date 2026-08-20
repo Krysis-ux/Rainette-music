@@ -256,10 +256,13 @@ def test_core_release_browser_flow():
                     f"browser smoke startup failed at {page.url}; diagnostics={diagnostics[-10:]}"
                 ) from error
 
-            assert page.locator("#rwMusicTabs button").all_inner_texts()[:7] == [
+            assert page.locator("#rwMusicTabs button").all_inner_texts()[:8] == [
                 "Home",
                 "Search",
                 "Songs",
+                # Downloads sits with Songs because both are "music you have",
+                # and apart from Recents because that is history, not holdings.
+                "Downloads",
                 "Following",
                 "Recents",
                 "Playlists",
