@@ -221,15 +221,21 @@ export function dragGesture(element, {
 		event.preventDefault();
 	}, { passive: false, signal: controller.signal });
 
+	/** The pointer was released, or taken away from a drag that had already
+	 *  engaged — which amounts to the same thing for the caller. */
+	const finish = () => {
+		const data = payload();
+		const id = pointerId;
+		reset();
+		if (id !== null) releaseCapture(id);
+		onEnd?.(data);
+	};
+
 	listen('pointerup', event => {
 		if (event.pointerId !== pointerId) return;
 		lastX = event.clientX;
 		lastY = event.clientY;
-		const data = payload();
-		const id = pointerId;
-		reset();
-		releaseCapture(id);
-		onEnd?.(data);
+		finish();
 	});
 
 	listen('pointercancel', event => {
@@ -237,12 +243,24 @@ export function dragGesture(element, {
 		abandon();
 	});
 
-	/* An iOS system edge-swipe steals the pointer and fires neither pointerup
+	/* An iOS system gesture can take the pointer away and fire neither pointerup
 	 * nor pointercancel, which is what leaves a row stuck mid-swipe. It also
 	 * fires on a normal release, right after pointerup — harmless, because
-	 * pointerId is null by then and this returns immediately. */
+	 * pointerId is null by then and this returns immediately.
+	 *
+	 * A capture lost *after* the drag engaged is not the user changing their
+	 * mind. The finger moved, and that movement is exactly as real as it would
+	 * have been had the pointer been released instead. Treating it as a cancel
+	 * throws the travel away and springs the surface back to where it started,
+	 * which on a sheet is the difference between one that can be pulled down
+	 * and one that can be pulled down and never dismissed — every time,
+	 * whatever the throw. So an engaged drag ends here, and the caller judges
+	 * it on distance and velocity exactly as it judges a release.
+	 *
+	 * Before it engaged there is nothing to judge, and abandoning is right. */
 	listen('lostpointercapture', event => {
 		if (event.pointerId !== pointerId) return;
+		if (engaged) { finish(); return; }
 		abandon();
 	});
 

@@ -1318,6 +1318,28 @@ renderRecent();
  * from a menu has to show as saved everywhere it appears, and the Local files
  * page has to grow a row without being reopened. */
 refreshDownloaded().catch(() => {});
+
+/* Name the running build, and say plainly whether it is the one being served.
+ *
+ * An installed Home Screen app can keep an old service worker and its caches
+ * for a long time, and nothing on screen distinguished a fix that did not work
+ * from one that had never arrived. Three sheet-gesture fixes were each judged
+ * on a phone that was still running the code from before them. */
+(async () => {
+	const line = $('#clientBuild');
+	if (!line) return;
+	try {
+		// The worker names its cache after a digest of the files it holds, so the
+		// cache the browser actually has is the build the app is actually running.
+		const names = await caches.keys();
+		const mine = names.filter(name => name.startsWith('rainette-pwa-'));
+		const running = mine.length ? mine.join(', ') : 'no offline copy yet';
+		const worker = navigator.serviceWorker?.controller ? 'active' : 'not in control';
+		line.textContent = `Client build ${running} · service worker ${worker}`;
+	} catch {
+		line.textContent = 'Client build unknown on this browser.';
+	}
+})();
 onDownloadsChanged(() => {
 	if (activeTab === 'library' && library.mode === 'local') renderLocalLibrary().catch(() => {});
 });

@@ -209,6 +209,12 @@
           The pairing key never leaves this browser. It travels in the link fragment, which
           browsers keep to themselves, so the site hosting this page never receives it.
         </p>
+        <!-- Which copy of the client is actually running. An installed Home Screen
+             app can hold an old service worker for a long time, and without this
+             there is no way to tell a fix that did not work from one that never
+             arrived — which is exactly how three sheet-gesture fixes were each
+             judged to have failed. -->
+        <p id="clientBuild" class="privacy-note build-line"></p>
       </section>
     </div>
   </main>

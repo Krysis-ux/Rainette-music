@@ -2783,3 +2783,14 @@ img { -webkit-user-drag: none; }
 
 /* The one sheet it must never float over: the expanded player itself. */
 body.now-playing-open .player { display: none; }
+
+/* The running build. Quiet by design -- it is a diagnostic, not information
+   anybody needs while using the app -- but selectable, because the whole point
+   is being able to read it back to somebody. */
+.build-line {
+	margin-top: 6px;
+	font-variant-numeric: tabular-nums;
+	opacity: 0.72;
+	-webkit-user-select: text;
+	user-select: text;
+}
