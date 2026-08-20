@@ -2804,3 +2804,31 @@ body.now-playing-open .player { display: none; }
 	font-size: 11.5px;
 	line-height: 1.45;
 }
+
+/* A saved computer and the control that forgets it. The row keeps the whole
+   width it had; the forget button is laid beside it rather than inside it,
+   because a button within a button is markup no engine makes reachable. */
+.session-shell {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 8px;
+}
+
+.session-forget {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 38px;
+	height: 38px;
+	padding: 0;
+	border: 1px solid var(--line);
+	border-radius: 50%;
+	background: none;
+	color: var(--text-muted);
+	transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease),
+		background var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+
+.session-forget:active { transform: scale(0.9); background: var(--surface-high); }
+.session-forget:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

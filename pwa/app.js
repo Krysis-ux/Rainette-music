@@ -10,7 +10,9 @@ import { configurePlayer, subscribe, playTrack, toggle, skip, currentTrack, isPl
 import { renderTracks, markPlayingRows, configureTracks } from './src/tracks.js';
 import { configureSync, startEventLoop, stopEventLoop, restartEventLoop } from './src/sync.js';
 import { configureConnection, startConnectionWatch } from './src/connection.js';
-import { rememberSession, forgetAllSessions, recentSessions, sessionToken, markSessionStale } from './src/sessions.js';
+import {
+	rememberSession, forgetAllSessions, recentSessions, sessionToken, markSessionStale, forgetSession,
+} from './src/sessions.js';
 import { configureTarget, playbackSourceLabel } from './src/target.js';
 import { observePrefs } from './src/prefs.js';
 import { syncPrefs, markPrefChanged, flushPrefs } from './src/prefsync.js';
@@ -18,7 +20,7 @@ import { reportCodecSupport } from './src/codecs.js';
 import { wireMiniBar, openNowPlaying } from './src/nowplaying.js';
 import { openQueueSheet } from './src/queue.js';
 import { configureExtras, setLinked, openOutputPicker, sleepShouldStopAfterTrack, openTrackMenu, openSleepTimer, sleepLabel } from './src/extras.js';
-import { closeAllSheets } from './src/sheets.js';
+import { closeAllSheets, confirmSheet } from './src/sheets.js';
 import { openScanner, scanningIsPossible } from './src/scanner.js';
 import { artistRow, albumRow, openArtist, openFollowedArtists, loadFollowed, hydrateArtistArt, artistLink, trackArtist, configureCatalog } from './src/catalog.js';
 import { artistsFromTracks, searchArtists } from './src/artists.js';
@@ -154,6 +156,12 @@ function renderRecentSessions() {
 	if (!rows.length) return;
 
 	list.replaceChildren(...rows.map(row => {
+		/* A shell, because forgetting a computer is its own control and a button
+		 * inside a button is invalid markup no engine makes keyboard-reachable —
+		 * the same reason a track row puts its artist link beside the play
+		 * target rather than inside it. */
+		const shell = el('div', 'session-shell');
+
 		const button = el('button', 'session-row');
 		button.type = 'button';
 		const copy = el('span', 'session-copy');
@@ -168,7 +176,29 @@ function renderRecentSessions() {
 		button.setAttribute('aria-label', `Reconnect to ${row.computer_name}`);
 		button.classList.toggle('is-stale', Boolean(row.stale));
 		button.addEventListener('click', () => reconnectSession(row));
-		return button;
+
+		const forget = el('button', 'session-forget');
+		forget.type = 'button';
+		forget.innerHTML = icon('close', 16);
+		forget.setAttribute('aria-label', `Forget ${row.computer_name}`);
+		forget.title = `Forget ${row.computer_name}`;
+		forget.addEventListener('click', async () => {
+			// Confirmed, because the key goes with it: this is not hiding a row,
+			// it is discarding the credential that makes reconnecting a tap.
+			const sure = await confirmSheet({
+				title: `Forget ${row.computer_name}?`,
+				message: 'This phone drops its saved key for that computer. Pair again with a QR code to come back.',
+				confirmLabel: 'Forget',
+				danger: true,
+			});
+			if (!sure) return;
+			forgetSession(row.device_id);
+			renderRecentSessions();
+			toast('Computer forgotten', { icon: 'check' });
+		});
+
+		shell.append(button, forget);
+		return shell;
 	}));
 }
 
