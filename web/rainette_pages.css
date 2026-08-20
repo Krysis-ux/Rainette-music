@@ -2569,3 +2569,35 @@ html.rw-reduced-motion .rw-now-btn:hover, html.rw-reduced-motion .rw-now-output:
 	.rw-mobile-pair-layout { grid-template-columns: 1fr; }
 	.rw-mobile-device { align-items: flex-start; flex-direction: column; }
 }
+
+/* ── Download status ─────────────────────────────────────────────────────
+   A pill rather than a dialog. A download is not a question the user has to
+   answer, and a modal per track would make downloading an album unusable. It
+   sits above the player bar so it never covers the transport. */
+.rw-download-pill {
+	position: fixed;
+	right: 18px;
+	bottom: 96px;
+	z-index: 60;
+	max-width: min(420px, calc(100vw - 36px));
+	padding: 10px 16px;
+	border: 1px solid var(--rw-border);
+	border-radius: 999px;
+	background: var(--rw-surface);
+	box-shadow: var(--rw-shadow-lg);
+	color: var(--rw-text);
+	font: 500 13px/1.3 var(--rw-font);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	opacity: 0;
+	transform: translateY(6px);
+	pointer-events: none;
+	transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.rw-download-pill.is-shown { opacity: 1; transform: translateY(0); }
+
+@media (prefers-reduced-motion: reduce) {
+	.rw-download-pill { transition: none; }
+}

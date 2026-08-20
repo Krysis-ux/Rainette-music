@@ -447,6 +447,51 @@ function playAction(track, queue) {
 	}, active ? (currentTrackState() === 'loading' ? 'Cancel loading' : (pageState.queue?.playing ? 'Pause' : 'Resume')) : 'Play');
 }
 
+/* ── Downloading ──────────────────────────────────────────────────────────
+ *
+ * The computer keeps what it downloads as a real file in a real folder, so the
+ * library machinery that already exists owns it from there: `music_bridge`
+ * registers the downloads folder as a scan root and rescans it, and the track
+ * arrives in the library like any other file on this disk.
+ *
+ * Offered in the same two places as on the phone -- a track's More menu, and
+ * the head of a playlist -- so the two clients answer "where do I download
+ * this?" the same way.
+ */
+
+let _downloadPill = null;
+let _downloadHide = 0;
+
+/* One small pill rather than a dialog. A download is not a question, and a
+ * modal per track would make downloading an album unusable. */
+function downloadStatus(text, { sticky = false } = {}) {
+	if (!_downloadPill) {
+		_downloadPill = el('div', 'rw-download-pill');
+		document.body.appendChild(_downloadPill);
+	}
+	_downloadPill.textContent = text;
+	_downloadPill.classList.add('is-shown');
+	clearTimeout(_downloadHide);
+	if (!sticky) {
+		_downloadHide = setTimeout(() => _downloadPill?.classList.remove('is-shown'), 4200);
+	}
+}
+
+function startDownload(tracks, label) {
+	const list = (Array.isArray(tracks) ? tracks : [tracks]).filter(Boolean);
+	if (!list.length) { downloadStatus('Nothing to download'); return; }
+	downloadStatus(list.length > 1 ? `Downloading ${label}…` : `Downloading ${list[0].title || 'track'}…`, { sticky: true });
+	sendHelper({
+		type: 'music_download_track',
+		id: 'dl_' + Math.random().toString(36).slice(2),
+		tracks: list,
+	});
+}
+
+function downloadAction(track) {
+	return { label: 'Download', run: () => startDownload([track], track.title || 'track') };
+}
+
 function trackActions(track, queue, extras = []) {
 	return [
 		playAction(track, queue),
@@ -502,6 +547,8 @@ async function openTrackMenu(track, queue, extras = []) {
 		items.push({ label: 'Add to queue', run: () => window.RainetteMusic?.queueAddEnd?.(track) });
 	}
 	items.push({ label: 'Add to playlist', run: () => openAddToPlaylist(track) });
+	// A file already on this disk has nothing to fetch.
+	if (String(track.source || '') !== 'local') items.push(downloadAction(track));
 	items.push({ label: 'Start mix', run: () => startMixFromSeed({ kind: 'track', track }) });
 	if (artist) items.push({ label: 'Open artist', run: () => openArtist({ id: artistId(track), name: artist, thumbnail_url: track.thumbnail_url || '' }) });
 	if (album?.title) items.push({ label: 'Open album', run: () => openAlbum(album) });
@@ -920,6 +967,9 @@ function renderPlaylistDetail(body) {
 			if (tracks.length) window.RainetteMusic?.playQueue(tracks, 0);
 		}),
 	);
+	head.appendChild(btn('Download all', 'rw-btn rw-btn-ghost', () => {
+		startDownload((pl._tracks || []).filter(t => String(t.source || '') !== 'local'), pl.name || 'playlist');
+	}));
 	if (pl.kind === 'smart') head.appendChild(btn('Edit rules', 'rw-btn rw-btn-ghost', () => smartPlaylistDialog(pl)));
 	body.appendChild(head);
 	if (pl.kind === 'smart') body.appendChild(el('div', 'rw-status-line', 'Smart playlist membership is controlled by deterministic rules.'));
@@ -3092,6 +3142,25 @@ function motionDisabled() {
 function onHelperMessage(msg) {
 	if (!_mounted || !msg) return;
 	switch (msg.type) {
+		case 'music_download_progress': {
+			const at = msg.total > 1 ? ` (${(msg.index || 0) + 1} of ${msg.total})` : '';
+			const pct = msg.ratio ? ` ${Math.round(msg.ratio * 100)}%` : '';
+			downloadStatus(`Downloading ${msg.title || 'track'}${at}${pct}`, { sticky: true });
+			break;
+		}
+		case 'music_download_result': {
+			if (!msg.ok && !msg.done) {
+				downloadStatus(msg.msg || 'That download did not finish');
+			} else if (msg.failed) {
+				downloadStatus(`${msg.done} saved, ${msg.failed} could not be fetched`);
+			} else {
+				downloadStatus(`${msg.done} track${msg.done === 1 ? '' : 's'} saved to your library`);
+			}
+			// The scan that just ran may have added tracks, so the library the
+			// user is looking at is now out of date.
+			sendHelper({ type: 'music_library_index', id: 'lib_' + Math.random().toString(36).slice(2) });
+			break;
+		}
 		case 'music_catalog_search_result': {
 			if (!pageState.searchRequestId || msg.id !== pageState.searchRequestId) break;
 			clearTimeout(_searchTimeout);

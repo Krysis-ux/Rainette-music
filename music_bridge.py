@@ -10,6 +10,7 @@ consumes the resolved URL directly.
 from __future__ import annotations
 
 import json
+import re
 import socket
 import threading
 import time
@@ -1822,6 +1823,247 @@ def cmd_music_local_roots(msg):
                                 "tracks": 0, "missing": 0, "bytes": 0})
 
 
+# ── Downloading a track onto this computer ────────────────────────────────
+#
+# The phone has its own download path (``pwa/src/downloads.js``) and keeps what
+# it fetches in its own storage. This is the computer's, and it lands the file
+# in a real folder so the existing library machinery owns it from there: the
+# folder is registered as a scan root once, and after each download that one
+# root is rescanned. Nothing here has to teach the library what a track is.
+#
+# Format is a passthrough, for the same reason it is on the phone: the format
+# ladder above asks YouTube for M4A, converting to MP3 would cost a second
+# generation of lossy damage plus an ffmpeg dependency this app does not have,
+# and ``local_library.AUDIO_SUFFIXES`` already counts ``.m4a`` as music.
+#
+# Tags, however, are written. A YouTube M4A frequently carries no artist, album
+# or cover at all, and a scan of untagged files produces a folder of filenames.
+# The catalog row knows the real answers, so they are written into the file --
+# which also means the track keeps them if it is ever copied somewhere else.
+
+DOWNLOADS_FOLDER_NAME = "Rainette Downloads"
+
+# A ceiling on one track, so a wedged upstream cannot hold the worker forever.
+_DOWNLOAD_TIMEOUT_S = 180
+_DOWNLOAD_CHUNK = 1 << 16
+
+# Only one download runs at a time. Each costs a yt-dlp resolve and a stream,
+# and a "download all" on a long playlist would otherwise open thirty of both.
+_download_lock = threading.Lock()
+
+
+def downloads_dir() -> Path:
+    """Where downloaded tracks land, created on demand.
+
+    Under the user's own Music folder when there is one, because that is where
+    a person looks for music and where other players already index. Falls back
+    to the app data directory when there is not -- a download that lands
+    somewhere odd is better than one that fails.
+    """
+    music = Path.home() / "Music"
+    if music.is_dir():
+        base: Path = music
+    else:
+        # Imported here rather than at module scope: server imports this module
+        # while it is still loading, so a top-level import would be circular.
+        import server
+
+        base = server.APP_DATA_DIR
+    target = base / DOWNLOADS_FOLDER_NAME
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _safe_stem(artist: str, title: str) -> str:
+    """A file name every platform this runs on will accept.
+
+    Windows is the strictest and is what the character class is drawn from; the
+    length cap is there because a very long name is refused outright on some
+    filesystems even when every character in it is legal.
+    """
+    stem = f"{artist} - {title}" if artist else (title or "track")
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", stem)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned[:120] or "track"
+
+
+def _write_tags(path: Path, track: dict[str, Any], artwork: bytes | None) -> None:
+    """Write catalog metadata into the downloaded file.
+
+    Never raises: a file that plays with poor tags beats a download reported as
+    failed because a tag block would not take. Mirrors ``local_library.read_tags``
+    in being categorically forgiving.
+    """
+    if not local_library.MUTAGEN_AVAILABLE:
+        return
+    try:
+        from mutagen.mp4 import MP4, MP4Cover  # type: ignore
+
+        audio = MP4(str(path))
+        if track.get("title"):
+            audio["\xa9nam"] = [str(track["title"])]
+        artist = str(track.get("artist") or track.get("uploader") or "")
+        if artist:
+            audio["\xa9ART"] = [artist]
+        album = str(track.get("album") or (track.get("metadata") or {}).get("album_name") or "")
+        if album:
+            audio["\xa9alb"] = [album]
+        if artwork:
+            fmt = MP4Cover.FORMAT_PNG if artwork[:8] == b"\x89PNG\r\n\x1a\n" else MP4Cover.FORMAT_JPEG
+            audio["covr"] = [MP4Cover(artwork, imageformat=fmt)]
+        audio.save()
+    except Exception:
+        return
+
+
+def _fetch_artwork(url: str) -> bytes | None:
+    if not url or not url.startswith(("http://", "https://")):
+        return None
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "RainetteMusic"})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = response.read(4 << 20)
+        return data or None
+    except Exception:
+        return None
+
+
+def _download_one(track: dict[str, Any], folder: Path, on_bytes) -> Path:
+    """Fetch one track into ``folder`` and return where it landed.
+
+    Written to a ``.part`` file and renamed only once the body is complete, so
+    an interrupted download never leaves something the next scan would index as
+    a track. Raises on failure; the caller counts it and moves on.
+    """
+    source_id = str(track.get("source_id") or track.get("id") or "")
+    if not source_id:
+        raise ValueError("that track has no source")
+
+    url = resolve_stream_url_sync(source_id)
+    if not url:
+        raise RuntimeError("no audio stream came back for that track")
+
+    headers = dict(stream_request_headers(source_id) or {})
+    headers.setdefault("User-Agent", "RainetteMusic")
+    request = urllib.request.Request(url, headers=headers)
+
+    stem = _safe_stem(str(track.get("artist") or ""), str(track.get("title") or ""))
+    with urllib.request.urlopen(request, timeout=_DOWNLOAD_TIMEOUT_S) as response:
+        content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        suffix = {
+            "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/aac": ".aac",
+            "audio/mpeg": ".mp3", "audio/webm": ".weba", "audio/ogg": ".ogg",
+            "audio/flac": ".flac", "audio/wav": ".wav",
+        }.get(content_type, ".m4a")
+        total = int(response.headers.get("Content-Length") or 0)
+
+        final = folder / (stem + suffix)
+        partial = folder / (stem + suffix + ".part")
+        received = 0
+        with open(partial, "wb") as handle:
+            while True:
+                chunk = response.read(_DOWNLOAD_CHUNK)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                received += len(chunk)
+                on_bytes(received, total)
+
+    if not received:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError("that download arrived empty")
+
+    _write_tags(partial, track, _fetch_artwork(str(track.get("thumbnail_url") or "")))
+    partial.replace(final)
+    return final
+
+
+def cmd_music_download_track(msg):
+    """Download one track, or a list of them, into the downloads folder.
+
+    Refused outright when the message carries an ``origin_device_id``. That
+    stamp is the gateway's mark of a command from a phone, and a phone has no
+    business filling this computer's disk -- it has its own download path and
+    its own storage. Same discipline as ``cmd_music_local_roots``, for the same
+    reason: writing to this machine is a decision made at this machine.
+    """
+    req_id = msg.get("id")
+    if str(msg.get("origin_device_id") or "").strip():
+        shared.notify_browsers({"type": "music_download_result", "id": req_id, "ok": False,
+                                "msg": "downloads are saved on the computer itself",
+                                "done": 0, "failed": 0, "total": 0})
+        return
+    raw = msg.get("tracks")
+    tracks = [t for t in raw if isinstance(t, dict)] if isinstance(raw, (list, tuple)) else []
+    single = msg.get("track")
+    if not tracks and isinstance(single, dict):
+        tracks = [single]
+    _run_bg(_download_worker, req_id, tracks)
+
+
+def _download_worker(req_id, tracks):
+    if not tracks:
+        shared.notify_browsers({"type": "music_download_result", "id": req_id, "ok": False,
+                                "msg": "nothing to download", "done": 0, "failed": 0, "total": 0})
+        return
+    if not _download_lock.acquire(blocking=False):
+        shared.notify_browsers({"type": "music_download_result", "id": req_id, "ok": False,
+                                "busy": True, "msg": "a download is already running",
+                                "done": 0, "failed": 0, "total": len(tracks)})
+        return
+
+    total = len(tracks)
+    done = 0
+    failed = 0
+    first_error = ""
+    try:
+        folder = downloads_dir()
+        # Registered once, before anything is written, so even a run that fails
+        # every track leaves the folder watched rather than orphaned.
+        try:
+            shared.STATE.add_local_root(str(folder))
+        except Exception:
+            pass
+
+        for index, track in enumerate(tracks):
+            title = str(track.get("title") or "track")
+
+            def progress(received, size, _i=index, _t=title):
+                shared.notify_browsers({
+                    "type": "music_download_progress", "id": req_id,
+                    "index": _i, "total": total, "title": _t,
+                    "received": received, "size": size,
+                    "ratio": (received / size) if size else 0.0,
+                })
+
+            try:
+                _download_one(track, folder, progress)
+                done += 1
+            except Exception as exc:
+                failed += 1
+                if not first_error:
+                    first_error = describe_resolve_failure(exc)
+
+        # One scan of one root, after the whole run rather than per track: the
+        # walk costs the same either way and thirty of them would not.
+        try:
+            local_library.scan(shared.STATE, [str(folder)])
+        except Exception:
+            pass
+
+        shared.notify_browsers({
+            "type": "music_download_result", "id": req_id, "ok": done > 0,
+            "done": done, "failed": failed, "total": total,
+            "folder": str(folder), "msg": first_error if done == 0 else "",
+            **_local_status_payload(),
+        })
+    except Exception as exc:
+        shared.notify_browsers({"type": "music_download_result", "id": req_id, "ok": False,
+                                "msg": str(exc), "done": done, "failed": failed, "total": total})
+    finally:
+        _download_lock.release()
+
+
 def cmd_music_local_status(msg):
     req_id = msg.get("id")
     try:
@@ -1953,5 +2195,6 @@ DISPATCH = {
     "music_local_roots":            cmd_music_local_roots,
     "music_local_scan":             cmd_music_local_scan,
     "music_local_status":           cmd_music_local_status,
+    "music_download_track":         cmd_music_download_track,
     "music_client_capabilities":    cmd_music_client_capabilities,
 }
