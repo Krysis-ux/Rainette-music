@@ -8,6 +8,36 @@ import { isLocalTrack, localStreamUrl } from './local.js';
 
 const audio = new Audio();
 audio.preload = 'metadata';
+/* In the document, not merely in memory.
+ *
+ * `new Audio()` produces a detached element, and on iOS a detached element is a
+ * second-class one: Safari ties background playback and the lock-screen session
+ * to media it can find in the page, and an element that was never inserted is
+ * liable to be stopped the moment the app is backgrounded or the screen locks.
+ * On a Home Screen app that is the whole complaint -- music that stops when you
+ * switch away from it.
+ *
+ * Inserting costs nothing and changes nothing visually: the UA stylesheet gives
+ * an <audio> without `controls` `display: none`, and that is left alone -- the
+ * same element is `display: none` in a Safari tab, where playback survives
+ * backgrounding perfectly, so hiding is demonstrably not what stops it. */
+function attachAudio() {
+	// Defensive to the point of paranoia, because this is an enhancement and the
+	// player is not: nothing here may be able to stop the module evaluating.
+	// `new Audio()` is an element in every browser, but it is also the one thing
+	// a test harness stubs, and an exception thrown at module scope takes the
+	// whole app down rather than just this.
+	try {
+		if (!(audio instanceof Node) || audio.isConnected) return;
+		// iOS will not reliably keep a video-capable element playing inline
+		// without this, and it costs nothing on an audio element anywhere else.
+		audio.setAttribute('playsinline', '');
+		(document.body || document.documentElement)?.append(audio);
+	} catch { /* detached is how it worked before; it still plays */ }
+}
+
+if (document.body) attachAudio();
+else document.addEventListener('DOMContentLoaded', attachAudio, { once: true });
 
 let reportError = () => {};
 /* Fired once a track's media has been handed to the element. The equaliser

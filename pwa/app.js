@@ -28,8 +28,11 @@ import { sortControl, sortTracks, sortArtists, ARTIST_SORTS } from './src/sortin
 import { openEqualizer, eqSummary, eqOnTrackLoaded } from './src/eq.js';
 import { pref } from './src/prefs.js';
 import { wireSettings, paintSettingsValues } from './src/settings.js';
-import { listLocalTracks } from './src/local.js';
+import {
+	listLocalTracks, localTrackCount, localBytes, formatBytes, clearLocalTracks,
+} from './src/local.js';
 import { refreshDownloaded, onDownloadsChanged } from './src/downloads.js';
+import { graphState, graphCostsBackgroundPlayback } from './src/audio.js';
 import { runListDownload } from './src/downloadmenu.js';
 import { localPlaylists, isLocalPlaylist, localPlaylistTracks, openPlaylistEditor, openPlaylistMenu } from './src/playlists.js';
 
@@ -651,6 +654,34 @@ async function renderLocalLibrary() {
 		emptyMessage: 'No music added from this phone yet.',
 		onPlay: playFromList(sorted),
 	});
+
+	/* "Get rid of all of this" belongs where all of this is, not only in
+	 * Settings. The same action lives there too, beside the importer, because
+	 * that is where somebody managing storage looks -- but nobody looking at a
+	 * list of files they want gone thinks to leave the list first. */
+	const head = el('div', 'local-head');
+	const [count, bytes] = await Promise.all([localTrackCount(), localBytes()]);
+	if (!libraryOwns(token)) return;
+	head.append(el('span', 'local-head-count',
+		`${count} file${count === 1 ? '' : 's'} · ${formatBytes(bytes)}`));
+
+	const wipe = el('button', 'local-head-clear', 'Remove all');
+	wipe.type = 'button';
+	wipe.addEventListener('click', async () => {
+		const sure = await confirmSheet({
+			title: 'Remove everything on this phone?',
+			message: `${count} file${count === 1 ? '' : 's'} go, downloads and imports alike. Your playlists and the songs themselves are untouched — anything downloaded can be downloaded again.`,
+			confirmLabel: 'Remove all',
+			danger: true,
+		});
+		if (!sure) return;
+		await clearLocalTracks();
+		await refreshDownloaded();
+		toast('Everything removed from this phone', { icon: 'trash' });
+		renderLocalLibrary().catch(() => {});
+	});
+	head.append(wipe);
+	target.prepend(head);
 }
 
 async function renderLibraryPanel() {
@@ -1365,7 +1396,17 @@ refreshDownloaded().catch(() => {});
 		const mine = names.filter(name => name.startsWith('rainette-pwa-'));
 		const running = mine.length ? mine.join(', ') : 'no offline copy yet';
 		const worker = navigator.serviceWorker?.controller ? 'active' : 'not in control';
-		line.textContent = `Client build ${running} · service worker ${worker}`;
+		/* Whether an audio graph is live is the single fact that decides if this
+		 * phone keeps playing with the screen off, and nothing on screen said
+		 * so. "built" means WebKit will silence playback the moment the app is
+		 * hidden -- which is a complaint nobody would connect to the equalizer
+		 * switch that caused it. */
+		const graph = graphState() === 'ready' ? 'built' : 'none';
+		const background = graph === 'built' && graphCostsBackgroundPlayback()
+			? 'stops when hidden'
+			: 'keeps playing';
+		line.textContent =
+			`Client build ${running} · service worker ${worker} · audio graph ${graph} · background ${background}`;
 	} catch {
 		line.textContent = 'Client build unknown on this browser.';
 	}

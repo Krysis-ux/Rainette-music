@@ -79,17 +79,27 @@ export function trackDownloadItems(track, { onChanged } = {}) {
 		run: () => runSaveCopy(track).then(onChanged),
 	});
 
-	if (here && !isLocalTrack(track)) {
+	/* Offered for anything actually on the phone, which very much includes a
+	 * track opened from Local files.
+	 *
+	 * This used to carry a `!isLocalTrack` guard, and that guard was exactly
+	 * wrong: a downloaded track *is* a local track once it has landed, so the
+	 * one place somebody goes looking for "delete this" -- the menu on the row
+	 * in Local files -- was the one place that never offered it. */
+	if (here) {
+		const stored = isLocalTrack(track);
 		items.push({
 			id: 'remove-download',
-			label: 'Remove download',
-			hint: 'Keeps the song, drops the file',
+			label: stored ? 'Remove from this phone' : 'Remove download',
+			// True either way: the catalog row is untouched. What goes is the
+			// copy, and for an imported file the copy is all there ever was.
+			hint: stored ? 'Deletes the file kept here' : 'Keeps the song, drops the file',
 			icon: 'trash',
 			danger: true,
 			run: async () => {
 				try {
 					await removeDownload(track);
-					toast('Download removed', { icon: 'trash' });
+					toast(stored ? 'Removed from this phone' : 'Download removed', { icon: 'trash' });
 				} catch (error) {
 					toast(String(error?.message || 'Could not remove that download.'), { icon: 'trash' });
 				}
