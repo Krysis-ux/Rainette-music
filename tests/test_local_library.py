@@ -921,6 +921,30 @@ class LocalBridgeCommandTests(unittest.TestCase):
         self.assertEqual(result["track_id"], track["id"])
         self.assertEqual(result["content_type"], "audio/mpeg")
         self.assertNotIn("expires_hint_s", result)
+        # The desktop has no gateway in front of it to mint a grant, so the url
+        # has to be something it can actually load. It used to be the empty
+        # string, which the desktop player treats as a failed resolve -- so
+        # every local and downloaded track showed an error there while playing
+        # perfectly on the phone.
+        self.assertEqual(result["url"], f"/local/{track['id']}")
+
+    def test_only_the_desktop_app_can_reach_a_local_file_by_id(self):
+        """The desktop route is not a way around the grant a phone must hold.
+
+        `/local/{track_id}` names a track with no capability attached, which is
+        safe on the loopback app the local window talks to and would not be on
+        the companion app. This asserts the two route tables stay that way.
+        """
+        import server
+
+        desktop = {str(route.resource.canonical) for route in server.build_app().router.routes()}
+        companion = {str(route.resource.canonical)
+                     for route in server.build_companion_app().router.routes()}
+
+        self.assertIn("/local/{track_id}", desktop)
+        self.assertNotIn("/local/{track_id}", companion)
+        # The phone's way in stays what it was: an opaque, device-bound grant.
+        self.assertIn("/audio/{grant}", companion)
 
     def test_a_scan_command_reports_progress_and_a_result(self):
         write_track(self.music, "Nils - Says.mp3")

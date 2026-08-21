@@ -1103,17 +1103,19 @@ async def _reresolve_upstream(registry, grant_token: str, grant) -> str | None:
     return fresh
 
 
-async def _serve_local_grant(request: web.Request, grant) -> web.StreamResponse:
-    """Serve one of this computer's own files against a local grant.
+async def _serve_local_track(request: web.Request, track_id: str) -> web.StreamResponse:
+    """Serve one of this computer's own files, named by library row.
 
     ``web.FileResponse`` already implements Range, If-Range, 206 and 416
     correctly, so none of that is re-derived here — hand-rolled Range parsing is
     exactly where the bugs would live.
 
-    The path is read from the row rather than carried in the grant, so the
-    capability the phone holds names a track and can never name a file.
+    The path is read from the row rather than taken from the caller, so what
+    either caller holds names a *track* and can never name a file. Both the
+    phone's grant and the desktop's own route land here for that reason: one
+    place decides which bytes a track id is allowed to reach.
     """
-    row = await asyncio.to_thread(shared.STATE.get_local_track, track_id=grant.track_id)
+    row = await asyncio.to_thread(shared.STATE.get_local_track, track_id=track_id)
     stored = str((row or {}).get("file_path") or "")
     # Guarded explicitly: Path("") is Path("."), which is a real directory, so
     # letting an empty column reach is_file() would be asking the wrong question.
@@ -1129,7 +1131,7 @@ async def _serve_local_grant(request: web.Request, grant) -> web.StreamResponse:
         # Record the absence so the library stops claiming the track is here,
         # rather than waiting for the next scan to notice.
         if row:
-            await asyncio.to_thread(shared.STATE.mark_track_missing, grant.track_id)
+            await asyncio.to_thread(shared.STATE.mark_track_missing, track_id)
         return _json_error(404, "that file is no longer on this computer")
     headers = {
         "Content-Type": str(row.get("content_type") or "application/octet-stream"),
@@ -1140,6 +1142,28 @@ async def _serve_local_grant(request: web.Request, grant) -> web.StreamResponse:
         **_cors_headers(request),
     }
     return web.FileResponse(path, chunk_size=65536, headers=headers)
+
+
+async def _serve_local_grant(request: web.Request, grant) -> web.StreamResponse:
+    """The phone's route in: a grant names a track, and nothing more."""
+    return await _serve_local_track(request, grant.track_id)
+
+
+async def desktop_local_audio(request: web.Request) -> web.StreamResponse:
+    """The desktop UI's route to a file in its own library.
+
+    Registered only on ``build_app`` — the loopback app the local window talks
+    to — and never on the companion app, so this is not a way around the grant
+    a phone must hold. Same reasoning as the ``/audio`` proxy beside it, which
+    carries no allow-list for exactly this reason.
+
+    It exists because ``cmd_music_stream_url`` answers a local track with an
+    empty URL: the companion gateway swaps that for a minted grant, and the
+    desktop, which is not behind that gateway, was left with nothing to play.
+    Every downloaded track failed on this computer while playing perfectly on
+    the phone.
+    """
+    return await _serve_local_track(request, request.match_info.get("track_id", ""))
 
 
 async def companion_audio_relay(request: web.Request) -> web.StreamResponse:
@@ -1252,6 +1276,7 @@ def build_app() -> web.Application:
     app.on_cleanup.append(_on_cleanup)
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/audio", audio_proxy)
+    app.router.add_get("/local/{track_id}", desktop_local_audio)
     app.router.add_post("/playlist-artwork/{playlist_id}", playlist_artwork_upload)
     app.router.add_delete("/playlist-artwork/{playlist_id}", playlist_artwork_delete)
     app.router.add_get("/playlist-artwork/{artwork_key}", playlist_artwork_get)

@@ -377,8 +377,15 @@ def cmd_music_stream_url(msg):
             "source_id": str(local_row.get("source_id") or ""),
             # No `expires_hint_s`: there is nothing to expire, and inventing a
             # number here is what used to collapse the relay grant behind it.
-            # The gateway swaps this empty url for a grant it mints itself.
-            "local": True, "url": "", "cached": False,
+            #
+            # The url is the desktop's own route to the file. A phone never sees
+            # it: the companion gateway keys off `local` and overwrites this with
+            # a grant it mints itself, whatever is here. It used to be the empty
+            # string, which was correct for the phone and left the desktop with
+            # nothing to play -- every local and downloaded track failed there
+            # while working perfectly over the relay.
+            "local": True, "cached": False,
+            "url": ("/local/" + str(local_row.get("id") or "")) if local_row.get("id") else "",
             "content_type": str(local_row.get("content_type") or ""),
             "missing": bool(str(local_row.get("missing_since") or "")),
             "title": str(local_row.get("title") or ""),
