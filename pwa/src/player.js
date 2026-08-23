@@ -391,6 +391,66 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 	}
 }
 
+/* `play` and `pause` state an *intent*; `toggle` states a flip, and a flip is
+ * only correct if the sender's idea of what is playing is current.
+ *
+ * CarPlay's is not. It sends the absolute verb, and it re-sends it whenever its
+ * own view and the phone's disagree -- on connect, on route changes, and after
+ * any state it did not expect. Answering an absolute verb with a flip turns
+ * that into an oscillator: `play` arrives while playing, we pause; the car sees
+ * paused, sends `play` again, we play. A second of music, a second of silence,
+ * for the whole song, on CarPlay only -- Bluetooth never drives the session
+ * this way, it just carries the audio.
+ *
+ * So the transport has three entry points now: two that assert a state and are
+ * safe to repeat, and one flip for the in-app button, where a tap genuinely
+ * does mean "the other one". The desktop learned this already (see the `play`
+ * and `pause` arms in web/miniplayer.js); this client had not.
+ */
+
+/** Start playing. Repeating it while already playing does nothing. */
+export async function play() {
+	if (isLinked()) {
+		// Optimistic in the direction asked for, never a flip: the next
+		// broadcast corrects it if the command did not land. The desktop makes
+		// its own idempotence decision -- it knows whether it is mid-resolve.
+		state.remote = { ...state.remote, playing: true };
+		emit();
+		remoteControl('play');
+		return;
+	}
+	if (!state.currentTrack) return;
+	// Mid-resolve there is no stream to start yet. Calling play() here rejects
+	// and surfaces a failure for a track that is loading perfectly well.
+	if (state.loading) return;
+	if (!audio.paused) return;
+	try {
+		await audio.play();
+	} catch (error) {
+		// Same rule as playTrack: a play superseded by a newer one is not
+		// something to shout about.
+		if (!isSupersededPlay(error)) reportError(error);
+	}
+}
+
+/** Pause. Repeating it while already paused does nothing. */
+export function pause() {
+	if (isLinked()) {
+		state.remote = { ...state.remote, playing: false };
+		emit();
+		remoteControl('pause');
+		return;
+	}
+	if (!state.currentTrack) return;
+	// A track still resolving is not paused, but "stop" during a load means
+	// cancel it, and the element is the wrong thing to ask -- matching the
+	// desktop's reasoning for the same arm.
+	if (state.loading) return;
+	if (audio.paused) return;
+	audio.pause();
+}
+
+/** Flip. For the in-app button, where a tap does mean "the other one". */
 export async function toggle() {
 	if (isLinked()) {
 		// The desktop's answer comes back over the event loop, which is a round
@@ -402,17 +462,9 @@ export async function toggle() {
 		return;
 	}
 	if (!state.currentTrack) return;
-	// Mid-resolve there is no stream to start yet. Calling play() here rejects
-	// and surfaces a failure for a track that is loading perfectly well.
 	if (state.loading) return;
-	try {
-		if (audio.paused) await audio.play();
-		else audio.pause();
-	} catch (error) {
-		// Same rule as playTrack: a play superseded by a newer one is not
-		// something to shout about.
-		if (!isSupersededPlay(error)) reportError(error);
-	}
+	if (audio.paused) await play();
+	else pause();
 }
 
 export async function skip(offset) {
@@ -632,8 +684,10 @@ function publishPosition(force = false) {
 function wireMediaSession() {
 	if (!('mediaSession' in navigator)) return;
 	const handlers = {
-		play: () => toggle(),
-		pause: () => toggle(),
+		// Absolute verbs, not toggles -- see play()/pause() above. This is the
+		// CarPlay stutter.
+		play: () => play().catch(reportError),
+		pause: () => pause(),
 		previoustrack: () => skip(-1).catch(reportError),
 		nexttrack: () => skip(1).catch(reportError),
 		seekto: details => { if (Number.isFinite(details.seekTime)) seekTo(details.seekTime); },

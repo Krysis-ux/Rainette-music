@@ -153,6 +153,19 @@ FAKE_AUDIO_SCRIPT = """
         writable: true,
         value: { type: 'auto' },
     });
+    /* Capture the Media Session action handlers so a test can invoke them the
+     * way CarPlay does. There is no way to fire a real media action from page
+     * script, and CarPlay's behaviour -- sending the absolute verb, and
+     * re-sending it whenever its view disagrees with the phone's -- is exactly
+     * what this needs to reproduce. */
+    window.__mediaHandlers = {};
+    if (navigator.mediaSession) {
+        const real = navigator.mediaSession.setActionHandler.bind(navigator.mediaSession);
+        navigator.mediaSession.setActionHandler = (action, handler) => {
+            window.__mediaHandlers[action] = handler;
+            try { real(action, handler); } catch { /* unsupported action */ }
+        };
+    }
 })();
 """
 
@@ -525,6 +538,99 @@ class TestAudioSessionCategory:
         page.wait_for_function("() => navigator.mediaSession?.metadata?.title")
 
         assert page.evaluate("() => 'audioSession' in navigator") is False
+        assert not errors, errors
+        page.close()
+
+
+class TestCarTransportCommands:
+    """A car states an intent; answering it with a flip is an oscillator.
+
+    CarPlay sends the absolute verb -- `play`, `pause` -- and re-sends it
+    whenever its own view of the phone disagrees, which is often. Both action
+    handlers used to call `toggle()`. So `play` arriving while playing paused
+    the music, the car saw paused and sent `play` again, and the result was a
+    second of music and a second of silence for the whole song, on CarPlay
+    only. Bluetooth never drives the session this way; it just carries audio,
+    which is why it was fine.
+    """
+
+    def _play_first_track(self, page):
+        page.locator("#appView").wait_for(state="visible")
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+        page.wait_for_function("() => window.__rainetteAudio?.paused === false")
+
+    def test_a_play_command_while_playing_does_not_pause(self, browser, static_server):
+        """The stutter, reproduced: this used to leave the track paused."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        self._play_first_track(page)
+
+        page.evaluate("() => window.__mediaHandlers.play()")
+        page.wait_for_timeout(150)
+
+        assert page.evaluate("() => window.__rainetteAudio.paused") is False, (
+            "a `play` command while already playing paused the track -- the car "
+            "then re-sends `play`, and that oscillation is the CarPlay stutter"
+        )
+        assert not errors, errors
+        page.close()
+
+    def test_repeated_play_commands_never_flip_the_state(self, browser, static_server):
+        """The car may send it many times; every one must mean the same thing."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        self._play_first_track(page)
+
+        for _ in range(6):
+            page.evaluate("() => window.__mediaHandlers.play()")
+            page.wait_for_timeout(40)
+
+        assert page.evaluate("() => window.__rainetteAudio.paused") is False
+        assert not errors, errors
+        page.close()
+
+    def test_a_pause_command_while_paused_does_not_resume(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        self._play_first_track(page)
+
+        page.evaluate("() => window.__mediaHandlers.pause()")
+        page.wait_for_function("() => window.__rainetteAudio.paused === true")
+        page.evaluate("() => window.__mediaHandlers.pause()")
+        page.wait_for_timeout(150)
+
+        assert page.evaluate("() => window.__rainetteAudio.paused") is True, (
+            "a second `pause` resumed playback"
+        )
+        assert not errors, errors
+        page.close()
+
+    def test_the_absolute_verbs_still_start_and_stop(self, browser, static_server):
+        """Idempotence must not cost the commands their actual job."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        self._play_first_track(page)
+
+        page.evaluate("() => window.__mediaHandlers.pause()")
+        page.wait_for_function("() => window.__rainetteAudio.paused === true")
+        page.evaluate("() => window.__mediaHandlers.play()")
+        page.wait_for_function("() => window.__rainetteAudio.paused === false")
+
+        assert not errors, errors
+        page.close()
+
+    def test_the_in_app_button_still_flips(self, browser, static_server):
+        """A tap does mean "the other one" -- toggle keeps that meaning."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        self._play_first_track(page)
+
+        page.locator("#playPauseButton").click()
+        page.wait_for_function("() => window.__rainetteAudio.paused === true")
+        page.locator("#playPauseButton").click()
+        page.wait_for_function("() => window.__rainetteAudio.paused === false")
+
         assert not errors, errors
         page.close()
 
