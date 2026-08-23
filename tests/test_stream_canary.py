@@ -34,6 +34,31 @@ import music_bridge
 
 LIVE = os.environ.get("RAINETTE_LIVE_CANARY") == "1"
 
+# Failures that mean "we never got an answer", as opposed to "the answer was
+# wrong". The distinction is the whole value of this file: a canary that cannot
+# tell being blocked from being broken cries wolf, and a check that is always
+# red is worse than no check, because people stop reading it.
+#
+# YouTube refuses datacenter IPs with a bot challenge, so this is the normal
+# outcome on a cloud CI runner and says nothing at all about our code.
+_INCONCLUSIVE = (
+    "sign in to confirm",          # bot challenge -- datacenter IP
+    "not a bot",
+    "http error 429",              # rate limited
+    "too many requests",
+    "certificate_verify_failed",   # a network intercepting TLS
+    "certificate verify failed",
+    "unable to download",          # transient network
+    "the page needs to be reloaded",
+    "video unavailable",           # the sample went away, not a format change
+    "private video",
+)
+
+
+def _is_inconclusive(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _INCONCLUSIVE)
+
 # Long-lived, widely-mirrored, unlikely to be taken down. Two of them so a
 # single odd video cannot decide the verdict either way.
 CANARY_SOURCES = ("dQw4w9WgXcQ", "9bZkp7q19f0")
@@ -54,13 +79,30 @@ class StreamCanaryTests(unittest.TestCase):
     def setUp(self):
         music_bridge._last_muxed_fallback = None
 
+    def _resolve_or_skip(self, source_id):
+        """Resolve, or declare the run inconclusive -- never a false alarm."""
+        music_bridge._stream_cache_invalidate(source_id)
+        try:
+            return music_bridge._extract_stream(source_id)
+        except Exception as exc:
+            if _is_inconclusive(exc):
+                self.skipTest(
+                    f"YouTube would not answer this host, so nothing was "
+                    f"measured: {str(exc)[:160]}"
+                )
+            raise
+
     def test_a_resolved_track_is_audio_and_opens_on_an_unbounded_range(self):
         for source_id in CANARY_SOURCES:
             with self.subTest(source=source_id):
-                music_bridge._stream_cache_invalidate(source_id)
-                resolved = music_bridge._extract_stream(source_id)
+                resolved = self._resolve_or_skip(source_id)
                 status, content_type = _open_like_a_media_element(
                     resolved["url"], resolved["http_headers"])
+                if status in (403, 429):
+                    self.skipTest(
+                        f"upstream returned {status} to this host before any "
+                        f"format could be judged"
+                    )
 
                 self.assertIn(
                     status, (200, 206),
@@ -80,8 +122,7 @@ class StreamCanaryTests(unittest.TestCase):
     def test_no_muxed_fallback_was_needed(self):
         """A fallback still plays, so only this names it before users do."""
         for source_id in CANARY_SOURCES:
-            music_bridge._stream_cache_invalidate(source_id)
-            music_bridge._extract_stream(source_id)
+            self._resolve_or_skip(source_id)
         fallback = music_bridge.last_muxed_fallback()
         self.assertIsNone(
             fallback,
