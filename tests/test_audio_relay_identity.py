@@ -62,18 +62,115 @@ async def _install(app, session):
     app[server.CLIENT_KEY] = session
 
 
-class PlayerClientTests(unittest.TestCase):
-    """The pin that keeps playable URLs coming back."""
+class _StubYDL:
+    """Stands in for yt_dlp.YoutubeDL, answering per player client.
 
-    def test_stream_resolution_pins_a_progressive_player_client(self):
-        client = (music_bridge._STREAM_OPTS["extractor_args"]["youtube"]["player_client"])
+    `_extract_stream` picks a client by putting it in `extractor_args`, so the
+    stub reads the options back out to decide which canned answer to give --
+    the same way the real extractor's behaviour varies by client.
+    """
+
+    calls: list[str | None] = []
+
+    def __init__(self, opts):
+        client = (opts.get("extractor_args", {})
+                      .get("youtube", {})
+                      .get("player_client", [None]))[0]
+        self._client = client
+        type(self).calls.append(client)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, url, download=False):
+        answer = self.answers.get(self._client)
+        if isinstance(answer, Exception):
+            raise answer
+        if answer is None:
+            raise RuntimeError(f"no canned answer for client {self._client!r}")
+        return dict(answer)
+
+
+def _audio_only(url="https://rr1---sn-x.googlevideo.com/videoplayback?a=1"):
+    """What a healthy resolve looks like: format 140, no video track."""
+    return {"url": url, "vcodec": "none", "acodec": "mp4a.40.2", "ext": "m4a",
+            "format_id": "140", "title": "T", "uploader": "U", "duration": 1,
+            "http_headers": dict(RESOLVED_HEADERS)}
+
+
+def _muxed(url="https://rr1---sn-x.googlevideo.com/videoplayback?a=18"):
+    """Format 18: plays, but it is a 360p video wearing `video/mp4`."""
+    return {"url": url, "vcodec": "avc1.42001E", "acodec": "mp4a.40.2", "ext": "mp4",
+            "format_id": "18", "title": "T", "uploader": "U", "duration": 1,
+            "http_headers": dict(RESOLVED_HEADERS)}
+
+
+class PlayerClientTests(unittest.TestCase):
+    """What a resolve must *produce*, rather than which client it must ask.
+
+    The previous version of this class asserted that ANDROID was pinned. That
+    assertion passed on the day every phone stopped playing: YouTube had cut
+    ANDROID back to format 18 alone, so the pin was still in place and still
+    green while it served a muxed video to every <audio> element. Pinning a
+    client is a bet on a third party; the property worth protecting is that
+    whatever comes back is audio.
+    """
+
+    def setUp(self):
+        self._real = music_bridge.yt_dlp.YoutubeDL
+        _StubYDL.calls = []
+
+    def tearDown(self):
+        music_bridge.yt_dlp.YoutubeDL = self._real
+        music_bridge._last_muxed_fallback = None
+
+    def _use(self, answers):
+        _StubYDL.answers = answers
+        music_bridge.yt_dlp.YoutubeDL = _StubYDL
+
+    def test_yt_dlps_own_default_is_among_the_candidates(self):
+        """Never asking the default is how a stale pin survives a yt-dlp fix."""
         self.assertIn(
-            "android", client,
-            "the ANDROID client is what returns a progressive URL; without it "
-            "yt-dlp falls back to a chunk-served one that a browser's <audio> "
-            "cannot open, and every track fails as a format error",
+            None, music_bridge._PLAYER_CLIENT_CANDIDATES,
+            "letting yt-dlp choose has to stay an option: it is the only "
+            "candidate that improves when yt-dlp ships an extractor fix",
         )
-        self.assertNotIn("android_vr", [c.lower() for c in client])
+
+    def test_an_audio_only_stream_is_preferred_over_a_muxed_one(self):
+        """The regression: a video format must never win while audio exists."""
+        self._use({None: _muxed(), "android": _audio_only()})
+        got = music_bridge._extract_stream("abc123")
+        self.assertEqual(got["url"], _audio_only()["url"])
+        self.assertIsNone(music_bridge.last_muxed_fallback())
+
+    def test_the_first_healthy_client_wins_without_asking_the_rest(self):
+        self._use({None: _audio_only(), "android": _muxed()})
+        got = music_bridge._extract_stream("abc123")
+        self.assertEqual(got["url"], _audio_only()["url"])
+        self.assertEqual(_StubYDL.calls, [None])
+
+    def test_video_only_still_plays_but_is_recorded(self):
+        """Silence is worse than video -- but an invisible fallback is worst."""
+        self._use({client: _muxed() for client in music_bridge._PLAYER_CLIENT_CANDIDATES})
+        got = music_bridge._extract_stream("abc123")
+        self.assertEqual(got["url"], _muxed()["url"])
+        noted = music_bridge.last_muxed_fallback()
+        self.assertIsNotNone(noted, "a muxed fallback that nobody can see is the bug itself")
+        self.assertEqual(noted["format_id"], "18")
+
+    def test_a_client_youtube_has_stopped_serving_is_skipped(self):
+        self._use({None: RuntimeError("The page needs to be reloaded"),
+                   "android": _audio_only()})
+        got = music_bridge._extract_stream("abc123")
+        self.assertEqual(got["url"], _audio_only()["url"])
+
+    def test_every_candidate_failing_raises_rather_than_returning_nothing(self):
+        self._use({c: RuntimeError("nope") for c in music_bridge._PLAYER_CLIENT_CANDIDATES})
+        with self.assertRaises(RuntimeError):
+            music_bridge._extract_stream("abc123")
 
 
 class AudioRelayTests(unittest.IsolatedAsyncioTestCase):
@@ -155,6 +252,78 @@ class AudioRelayTests(unittest.IsolatedAsyncioTestCase):
             await client.close()
 
 
+class _StatusSequenceSession:
+    """Answers per URL, so a retry against a fresh URL can differ from the first."""
+
+    def __init__(self, by_url):
+        self._by_url = by_url
+        self.seen = []
+
+    async def get(self, url, headers=None):
+        self.seen.append({"url": url, "headers": dict(headers or {})})
+        return self._by_url[url]
+
+    async def close(self):
+        return None
+
+
+class RelayRetryIdentityTests(unittest.IsolatedAsyncioTestCase):
+    """A retry has to carry the identity of the URL it is retrying."""
+
+    FRESH = "https://rr1---sn-x.googlevideo.com/videoplayback?x=2"
+    FRESH_HEADERS = {"User-Agent": "com.google.android.youtube/2.0 (Linux; Android 14)"}
+
+    def tearDown(self):
+        music_bridge._stream_cache_invalidate(SOURCE_ID)
+
+    async def test_headers_are_refreshed_alongside_the_reresolved_url(self):
+        # The grant's current URL is stale and its identity is refused.
+        music_bridge._stream_cache_set(SOURCE_ID, url=UPSTREAM, http_headers=RESOLVED_HEADERS)
+        session = _StatusSequenceSession({
+            UPSTREAM: _FakeUpstream(status=403, payload=b"denied",
+                                    headers={"Content-Type": "text/html"}),
+            self.FRESH: _FakeUpstream(status=206, headers={"Content-Type": "audio/mp4"}),
+        })
+
+        def _reresolved(source_id, force_refresh=False):
+            # A real re-resolve rewrites both halves of the pair.
+            music_bridge._stream_cache_set(
+                SOURCE_ID, url=self.FRESH, http_headers=self.FRESH_HEADERS)
+            return self.FRESH
+
+        registry = CompanionRegistry(now=lambda: 1_000)
+        invitation = registry.create_invitation(ttl_s=60)
+        request = registry.request_pairing(invitation["token"], "Pixel")
+        approved = registry.approve(request["request_id"])
+        grant = registry.create_relay_grant(
+            approved["device_id"], UPSTREAM, ttl_s=600, source_id=SOURCE_ID)
+        app = server.build_companion_app(registry, allowed_origins={ORIGIN})
+        app.on_startup.append(lambda instance: _install(instance, session))
+        client = TestClient(TestServer(app))
+        await client.start_server()
+
+        real = music_bridge.resolve_stream_url_sync
+        music_bridge.resolve_stream_url_sync = _reresolved
+        try:
+            response = await client.get(
+                "/audio/" + grant["token"],
+                headers={"Origin": ORIGIN, "Range": "bytes=0-"},
+            )
+            self.assertEqual(response.status, 206)
+            self.assertEqual(len(session.seen), 2, "the 403 should have been retried once")
+            self.assertEqual(session.seen[1]["url"], self.FRESH)
+            self.assertEqual(
+                session.seen[1]["headers"].get("User-Agent"),
+                self.FRESH_HEADERS["User-Agent"],
+                "the retry re-sent the identity upstream had just refused, so it "
+                "could only fail the same way -- and the fault looked like the phone's",
+            )
+            self.assertEqual(session.seen[1]["headers"].get("Range"), "bytes=0-")
+        finally:
+            music_bridge.resolve_stream_url_sync = real
+            await client.close()
+
+
 class ResolvedHeaderPlumbingTests(unittest.TestCase):
     def tearDown(self):
         music_bridge._stream_cache_invalidate(SOURCE_ID)
@@ -207,3 +376,59 @@ class ResolveFailureMessageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PhoneDiagnosticContractTests(unittest.TestCase):
+    """What the phone asks when it is trying to explain a failure.
+
+    This is a source-level contract because the thing worth pinning is a single
+    header value, and the cost of getting it wrong is not a broken feature but a
+    *misleading* one -- which is far more expensive to find.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        root = __import__("pathlib").Path(__file__).resolve().parents[1]
+        cls.player = (root / "pwa" / "src" / "player.js").read_text(encoding="utf-8")
+        cls.mirror_root = root
+
+    def _diagnose_body(self, source):
+        start = source.index("async function diagnoseStreamFailure")
+        return source[start:source.index("\naudio.addEventListener('error'", start)]
+
+    def _diagnose_code(self, source):
+        """The body with comments stripped -- prose may discuss the old value."""
+        lines = [line for line in self._diagnose_body(source).splitlines()
+                 if not line.lstrip().startswith(("//", "*", "/*"))]
+        return "\n".join(lines)
+
+    def test_the_diagnostic_opens_the_same_range_a_media_element_does(self):
+        body = self._diagnose_code(self.player)
+        self.assertIn(
+            "Range: 'bytes=0-'", body,
+            "the diagnostic has to reproduce what <audio> actually sends. A "
+            "bounded 'bytes=0-0' is answered 206 by upstreams that refuse the "
+            "open-ended range, so the one failure this function exists to "
+            "explain was reported as 'your phone could not play this format'",
+        )
+        self.assertNotIn("bytes=0-0", body)
+
+    def test_the_mirrored_client_carries_the_same_fix(self):
+        """pwa/ and the deployed mirror must not diverge on this of all things."""
+        mirror = self.mirror_root.parent / "music-pwa-web" / "src" / "player.js"
+        if not mirror.is_file():
+            self.skipTest("the Vercel mirror is not checked out beside this repo")
+        self.assertEqual(
+            self._diagnose_code(mirror.read_text(encoding="utf-8")),
+            self._diagnose_code(self.player),
+            "the phone runs the mirror, so a fix that lands only in pwa/ never "
+            "reaches a single user",
+        )
+
+    def test_the_diagnostic_does_not_download_the_track_it_is_diagnosing(self):
+        body = self._diagnose_code(self.player)
+        self.assertIn(
+            "body?.cancel()", body,
+            "an open-ended range with no cancel would pull the whole track "
+            "down just to read a status code",
+        )

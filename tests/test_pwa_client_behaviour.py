@@ -141,6 +141,31 @@ FAKE_AUDIO_SCRIPT = """
         }
     }
     window.Audio = FakeAudio;
+    /* WebKit's Audio Session API, which Chromium does not implement. Stubbed
+     * because the property it exposes is the difference between a Home Screen
+     * app that keeps playing when you switch away and one that goes silent,
+     * and there is otherwise nowhere to observe it outside a real iPhone.
+     *
+     * It starts at 'auto' because that is what Safari starts at -- and 'auto'
+     * resolves to *ambient*, the category iOS silences on backgrounding. */
+    Object.defineProperty(navigator, 'audioSession', {
+        configurable: true,
+        writable: true,
+        value: { type: 'auto' },
+    });
+    /* Capture the Media Session action handlers so a test can invoke them the
+     * way CarPlay does. There is no way to fire a real media action from page
+     * script, and CarPlay's behaviour -- sending the absolute verb, and
+     * re-sending it whenever its view disagrees with the phone's -- is exactly
+     * what this needs to reproduce. */
+    window.__mediaHandlers = {};
+    if (navigator.mediaSession) {
+        const real = navigator.mediaSession.setActionHandler.bind(navigator.mediaSession);
+        navigator.mediaSession.setActionHandler = (action, handler) => {
+            window.__mediaHandlers[action] = handler;
+            try { real(action, handler); } catch { /* unsupported action */ }
+        };
+    }
 })();
 """
 
@@ -165,12 +190,28 @@ def browser():
         instance.close()
 
 
-def open_phone(browser, base_url, computer):
+# Launched from the Home Screen rather than in a tab. iOS reports this two
+# ways and the client checks both, so the stub sets both.
+STANDALONE_SCRIPT = """
+(() => {
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
+    const real = window.matchMedia.bind(window);
+    window.matchMedia = query =>
+        query.includes('display-mode: standalone')
+            ? { matches: true, media: query, addEventListener() {}, removeEventListener() {} }
+            : real(query);
+})();
+"""
+
+
+def open_phone(browser, base_url, computer, *, standalone=False):
     page = browser.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8_000)
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.add_init_script(FAKE_AUDIO_SCRIPT)
+    if standalone:
+        page.add_init_script(STANDALONE_SCRIPT)
     # Start already paired: pairing has its own coverage over the real HTTP API.
     page.add_init_script(
         "localStorage.setItem('rainette.pwa.endpoint', %s);"
@@ -430,6 +471,209 @@ class TestBackgroundPlayback:
 
         assert page.evaluate("() => navigator.mediaSession.metadata.title") == "Track 1"
         assert page.evaluate("() => navigator.mediaSession.playbackState") == "playing"
+        assert not errors, errors
+        page.close()
+
+
+class TestAudioSessionCategory:
+    """The Home Screen app has to declare itself a music player, not a page.
+
+    Installed to the Home Screen, the same client that plays perfectly in a
+    Safari tab stopped the instant the phone was locked or switched away from.
+    The cause is not the code that plays -- it is what the app declared its
+    audio to *be*: `navigator.audioSession.type` defaults to `auto`, `auto`
+    resolves to ambient, and iOS silences ambient audio the moment the app is
+    no longer frontmost. A Safari tab is exempt only because Safari itself owns
+    a real playback session the page borrows.
+    """
+
+    def test_the_audio_session_is_declared_for_playback(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer, standalone=True)
+        page.locator("#appView").wait_for(state="visible")
+
+        # Declared at startup, before anything is played.
+        assert page.evaluate("() => navigator.audioSession.type") == "playback", (
+            "the client left the audio session at 'auto', which resolves to "
+            "ambient -- iOS stops ambient audio when a Home Screen app is "
+            "backgrounded or the screen locks"
+        )
+        assert not errors, errors
+        page.close()
+
+    def test_playing_a_track_does_not_touch_the_session(self, browser, static_server):
+        """Declared once at startup, then left alone.
+
+        An earlier version of this fix re-asserted the category immediately
+        before every `audio.play()`. That was a guess dressed as caution:
+        mutating an audio session at the exact moment playback starts is a way
+        to interrupt it, not a way to be safe. The contract is that the
+        declaration happens once, before anything plays, and playback never
+        writes to it again -- which is what this checks, using a sentinel that
+        would be overwritten if it did.
+        """
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer, standalone=True)
+        page.locator("#appView").wait_for(state="visible")
+        page.evaluate("() => { navigator.audioSession.type = 'sentinel'; }")
+
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+        page.wait_for_function("() => navigator.mediaSession?.metadata?.title")
+
+        assert page.evaluate("() => navigator.audioSession.type") == "sentinel", (
+            "playback wrote to the audio session; it must be declared once at "
+            "startup and left alone"
+        )
+        assert not errors, errors
+        page.close()
+
+    def test_a_tab_is_left_alone(self, browser, static_server):
+        """A Safari tab already plays through backgrounding; do not touch it.
+
+        Keeping the change to the one context that needs it means a tab behaves
+        exactly as it did before this fix -- and if a tab plays while the Home
+        Screen app does not, this is the only line that differs.
+        """
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        assert page.evaluate("() => navigator.audioSession.type") == "auto"
+        assert not errors, errors
+        page.close()
+
+    def test_a_browser_without_the_api_still_plays(self, browser, static_server):
+        """The API is WebKit-only; asking for it must never break anyone else."""
+        computer = FakeComputer()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.set_default_timeout(8_000)
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.add_init_script(FAKE_AUDIO_SCRIPT)
+        page.add_init_script("delete navigator.audioSession;")
+        page.add_init_script(
+            "localStorage.setItem('rainette.pwa.endpoint', %s);"
+            "localStorage.setItem('rainette.pwa.token', 'test-token');"
+            "localStorage.setItem('rainette.pwa.device_id', 'phone-1');"
+            % json.dumps(ENDPOINT)
+        )
+
+        def companion(route):
+            parsed = urlparse(route.request.url)
+            if parsed.path == "/status":
+                body = {"ok": True, "name": "Studio Mac", "device_id": "phone-1"}
+            elif parsed.path == "/command":
+                body = computer.handle_command(json.loads(route.request.post_data or "{}"))
+            elif parsed.path == "/events":
+                after = int(parse_qs(parsed.query).get("after", ["0"])[0])
+                body = computer.read_events(after)
+            else:
+                body = {"ok": True}
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+        page.route(f"{ENDPOINT}/**", companion)
+        page.goto(static_server + "index.html", wait_until="domcontentloaded")
+        page.locator("#appView").wait_for(state="visible")
+
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+        page.wait_for_function("() => navigator.mediaSession?.metadata?.title")
+
+        assert page.evaluate("() => 'audioSession' in navigator") is False
+        assert not errors, errors
+        page.close()
+
+
+class TestCarTransportCommands:
+    """A car states an intent; answering it with a flip is an oscillator.
+
+    CarPlay sends the absolute verb -- `play`, `pause` -- and re-sends it
+    whenever its own view of the phone disagrees, which is often. Both action
+    handlers used to call `toggle()`. So `play` arriving while playing paused
+    the music, the car saw paused and sent `play` again, and the result was a
+    second of music and a second of silence for the whole song, on CarPlay
+    only. Bluetooth never drives the session this way; it just carries audio,
+    which is why it was fine.
+    """
+
+    def _play_first_track(self, page):
+        page.locator("#appView").wait_for(state="visible")
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+        page.wait_for_function("() => window.__rainetteAudio?.paused === false")
+
+    def test_a_play_command_while_playing_does_not_pause(self, browser, static_server):
+        """The stutter, reproduced: this used to leave the track paused."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        self._play_first_track(page)
+
+        page.evaluate("() => window.__mediaHandlers.play()")
+        page.wait_for_timeout(150)
+
+        assert page.evaluate("() => window.__rainetteAudio.paused") is False, (
+            "a `play` command while already playing paused the track -- the car "
+            "then re-sends `play`, and that oscillation is the CarPlay stutter"
+        )
+        assert not errors, errors
+        page.close()
+
+    def test_repeated_play_commands_never_flip_the_state(self, browser, static_server):
+        """The car may send it many times; every one must mean the same thing."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        self._play_first_track(page)
+
+        for _ in range(6):
+            page.evaluate("() => window.__mediaHandlers.play()")
+            page.wait_for_timeout(40)
+
+        assert page.evaluate("() => window.__rainetteAudio.paused") is False
+        assert not errors, errors
+        page.close()
+
+    def test_a_pause_command_while_paused_does_not_resume(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        self._play_first_track(page)
+
+        page.evaluate("() => window.__mediaHandlers.pause()")
+        page.wait_for_function("() => window.__rainetteAudio.paused === true")
+        page.evaluate("() => window.__mediaHandlers.pause()")
+        page.wait_for_timeout(150)
+
+        assert page.evaluate("() => window.__rainetteAudio.paused") is True, (
+            "a second `pause` resumed playback"
+        )
+        assert not errors, errors
+        page.close()
+
+    def test_the_absolute_verbs_still_start_and_stop(self, browser, static_server):
+        """Idempotence must not cost the commands their actual job."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        self._play_first_track(page)
+
+        page.evaluate("() => window.__mediaHandlers.pause()")
+        page.wait_for_function("() => window.__rainetteAudio.paused === true")
+        page.evaluate("() => window.__mediaHandlers.play()")
+        page.wait_for_function("() => window.__rainetteAudio.paused === false")
+
+        assert not errors, errors
+        page.close()
+
+    def test_the_in_app_button_still_flips(self, browser, static_server):
+        """A tap does mean "the other one" -- toggle keeps that meaning."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        self._play_first_track(page)
+
+        page.locator("#playPauseButton").click()
+        page.wait_for_function("() => window.__rainetteAudio.paused === true")
+        page.locator("#playPauseButton").click()
+        page.wait_for_function("() => window.__rainetteAudio.paused === false")
+
         assert not errors, errors
         page.close()
 

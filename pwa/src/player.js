@@ -36,8 +36,51 @@ function attachAudio() {
 	} catch { /* detached is how it worked before; it still plays */ }
 }
 
+/* Tell iOS this is music, not a sound effect.
+ *
+ * This is the other half of the same complaint, and the half the DOM-attach
+ * above could not fix: audio that plays fine in a Safari tab -- through tab
+ * switches, through the screen locking -- stops the moment a Home Screen app
+ * is backgrounded.
+ *
+ * The cause is the audio session category. `navigator.audioSession.type`
+ * defaults to `auto`, and `auto` resolves to **ambient** whenever nothing
+ * higher-priority is active; WebKit starts there. Ambient is the iOS category
+ * for mixable, incidental sound, and iOS silences it as soon as the app stops
+ * being frontmost. A Safari *tab* escapes this because Safari itself owns a
+ * real playback session that the page borrows -- which is exactly why the same
+ * code behaves differently once it is launched from the Home Screen, and why
+ * this looked like a bug in the app rather than in what the app had declared
+ * itself to be.
+ *
+ * `playback` is the category for music and podcasts: it survives backgrounding
+ * and ignores the Ring/Silent switch, which is what a music player should do.
+ * It is also exclusive -- starting playback pauses other apps' audio -- and
+ * that is the correct trade for this app.
+ *
+ * Declared once, at startup. It was briefly re-asserted before every play too,
+ * which was a guess dressed as caution: mutating an audio session at the exact
+ * moment playback starts is a way to interrupt it, not a way to be safe.
+ */
+function declarePlaybackSession() {
+	try {
+		if (!('audioSession' in navigator)) return;
+		// Only where it is actually needed. A Safari tab already borrows a real
+		// playback session and plays through backgrounding perfectly well, so
+		// declaring one there changes behaviour that was never broken -- and
+		// the smallest change that can fix the bug is the one worth shipping.
+		// It also leaves an easy comparison: if a tab plays and the Home Screen
+		// app does not, this is the only line that differs between them.
+		const standalone = window.navigator.standalone === true
+			|| window.matchMedia?.('(display-mode: standalone)')?.matches === true;
+		if (!standalone) return;
+		navigator.audioSession.type = 'playback';
+	} catch { /* not supported here; a tab plays regardless */ }
+}
+
 if (document.body) attachAudio();
 else document.addEventListener('DOMContentLoaded', attachAudio, { once: true });
+declarePlaybackSession();
 
 let reportError = () => {};
 /* Fired once a track's media has been handed to the element. The equaliser
@@ -356,6 +399,69 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 	}
 }
 
+/* `play` and `pause` state an *intent*; `toggle` states a flip, and a flip is
+ * only correct if the sender's idea of what is playing is current.
+ *
+ * CarPlay's is not. It sends the absolute verb, and it re-sends it whenever its
+ * own view and the phone's disagree -- on connect, on route changes, and after
+ * any state it did not expect. Answering an absolute verb with a flip turns
+ * that into an oscillator: `play` arrives while playing, we pause; the car sees
+ * paused, sends `play` again, we play. A second of music, a second of silence,
+ * for the whole song, on CarPlay only -- Bluetooth never drives the session
+ * this way, it just carries the audio.
+ *
+ * So the transport has three entry points now: two that assert a state and are
+ * safe to repeat, and one flip for the in-app button, where a tap genuinely
+ * does mean "the other one". The desktop learned this already (see the `play`
+ * and `pause` arms in web/miniplayer.js); this client had not.
+ */
+
+/** Start playing. Repeating it while already playing does nothing. */
+export async function play() {
+	if (isLinked()) {
+		// Optimistic in the direction asked for, never a flip: the next
+		// broadcast corrects it if the command did not land. The desktop makes
+		// its own idempotence decision -- it knows whether it is mid-resolve.
+		state.remote = { ...state.remote, playing: true };
+		emit();
+		remoteControl('play');
+		return;
+	}
+	if (!state.currentTrack) return;
+	// Mid-resolve there is no stream to start yet. Calling play() here rejects
+	// and surfaces a failure for a track that is loading perfectly well.
+	if (state.loading) return;
+	// No `if (!audio.paused) return` guard: `play()` on a playing element is
+	// already a no-op per spec, so the guard bought nothing -- and it could
+	// strand playback outright. After an iOS interruption an element can read
+	// `paused === false` while producing no sound, and a guard would turn the
+	// one command that recovers it into a no-op.
+	try {
+		await audio.play();
+	} catch (error) {
+		// Same rule as playTrack: a play superseded by a newer one is not
+		// something to shout about.
+		if (!isSupersededPlay(error)) reportError(error);
+	}
+}
+
+/** Pause. Repeating it while already paused does nothing. */
+export function pause() {
+	if (isLinked()) {
+		state.remote = { ...state.remote, playing: false };
+		emit();
+		remoteControl('pause');
+		return;
+	}
+	if (!state.currentTrack) return;
+	// Unconditional for the same reason as `play()`: `pause()` on a paused
+	// element is a no-op. Notably this is *not* guarded on `state.loading` --
+	// a track still resolving is not paused, and "stop" during a load has to
+	// mean cancel it, which is the desktop's reasoning for the same arm.
+	audio.pause();
+}
+
+/** Flip. For the in-app button, where a tap does mean "the other one". */
 export async function toggle() {
 	if (isLinked()) {
 		// The desktop's answer comes back over the event loop, which is a round
@@ -367,17 +473,9 @@ export async function toggle() {
 		return;
 	}
 	if (!state.currentTrack) return;
-	// Mid-resolve there is no stream to start yet. Calling play() here rejects
-	// and surfaces a failure for a track that is loading perfectly well.
 	if (state.loading) return;
-	try {
-		if (audio.paused) await audio.play();
-		else audio.pause();
-	} catch (error) {
-		// Same rule as playTrack: a play superseded by a newer one is not
-		// something to shout about.
-		if (!isSupersededPlay(error)) reportError(error);
-	}
+	if (audio.paused) await play();
+	else pause();
 }
 
 export async function skip(offset) {
@@ -597,8 +695,10 @@ function publishPosition(force = false) {
 function wireMediaSession() {
 	if (!('mediaSession' in navigator)) return;
 	const handlers = {
-		play: () => toggle(),
-		pause: () => toggle(),
+		// Absolute verbs, not toggles -- see play()/pause() above. This is the
+		// CarPlay stutter.
+		play: () => play().catch(reportError),
+		pause: () => pause(),
 		previoustrack: () => skip(-1).catch(reportError),
 		nexttrack: () => skip(1).catch(reportError),
 		seekto: details => { if (Number.isFinite(details.seekTime)) seekTo(details.seekTime); },
@@ -671,9 +771,19 @@ audio.addEventListener('ended', finishTrack);
 async function diagnoseStreamFailure(url) {
 	if (!url || url.startsWith('blob:')) return 'This file could not be played on this phone.';
 	try {
-		const response = await fetch(url, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
+		// `bytes=0-` and not `bytes=0-0`: the open-ended range is the one a media
+		// element actually opens with, and it is the *only* one some upstreams
+		// refuse. Asking a bounded range here made this function answer 206 to
+		// the exact failure it exists to catch, so every unplayable track was
+		// reported as "your phone could not play this format" -- which sent
+		// four days of debugging at codecs instead of at the stream.
+		// The body is cancelled the moment the status is known, so this costs
+		// headers rather than a whole track.
+		const response = await fetch(url, { headers: { Range: 'bytes=0-' }, cache: 'no-store' });
+		try { await response.body?.cancel(); } catch { /* already drained */ }
 		if (response.status === 404) return 'That audio link expired. Reconnecting to your computer…';
 		if (response.status === 502) return 'Your computer could not reach the audio source.';
+		if (response.status === 403) return 'The audio source refused your computer. Skipping to the next track may help.';
 		if (response.ok || response.status === 206) return 'Your phone could not play this format.';
 		return `Your computer answered ${response.status}.`;
 	} catch {

@@ -1,0 +1,61 @@
+# Watches the one dependency no unit test can hold still: what YouTube actually
+# serves. Both outages that stopped playback (chunk-only URLs in July 2026, a
+# muxed-video-only player client in August 2026) happened entirely outside this
+# repository and left the whole suite green, so they were found by users rather
+# than by CI.
+#
+# ── Read this before trusting a green run here ──────────────────────────────
+#
+# YouTube answers datacenter IPs with a bot challenge ("Sign in to confirm
+# you're not a bot"), and GitHub's hosted runners are datacenter IPs. So this
+# job almost always reports SKIPPED rather than passing: it could not ask the
+# question, which is not the same as liking the answer.
+#
+# That is why there is no schedule. A six-hourly job that can never measure
+# anything is not a guardrail, it is a green tick that means nothing -- and the
+# first version of this file had exactly that, failing on its first run for a
+# reason that had nothing to do with the code under test.
+#
+# The canary's real home is a machine with an ordinary residential connection,
+# where it works. Run it there:
+#
+#     RAINETTE_LIVE_CANARY=1 python -m pytest tests/test_stream_canary.py -v
+#
+# Kept here as a manual trigger so it can be run deliberately from a runner that
+# does have working access, and on PRs that touch the resolver, where a skip
+# still costs nothing and a genuine failure would still be caught.
+name: Stream canary
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "music_bridge.py"
+      - "tests/test_stream_canary.py"
+      - ".github/workflows/stream-canary.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Deliberately unpinned, matching requirements.txt: the point is to find
+      # out what today's yt-dlp and today's YouTube do together.
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest
+
+      # A skip here means "blocked, nothing measured" -- see the note above.
+      - name: Resolve a real track and open it the way <audio> does
+        env:
+          RAINETTE_LIVE_CANARY: "1"
+        run: python -m pytest -q tests/test_stream_canary.py -v -rs
