@@ -58,12 +58,23 @@ function attachAudio() {
  * It is also exclusive -- starting playback pauses other apps' audio -- and
  * that is the correct trade for this app.
  *
- * Declared once at startup and re-asserted at each play, because it costs a
- * property write and the failure it prevents is silent.
+ * Declared once, at startup. It was briefly re-asserted before every play too,
+ * which was a guess dressed as caution: mutating an audio session at the exact
+ * moment playback starts is a way to interrupt it, not a way to be safe.
  */
 function declarePlaybackSession() {
 	try {
-		if ('audioSession' in navigator) navigator.audioSession.type = 'playback';
+		if (!('audioSession' in navigator)) return;
+		// Only where it is actually needed. A Safari tab already borrows a real
+		// playback session and plays through backgrounding perfectly well, so
+		// declaring one there changes behaviour that was never broken -- and
+		// the smallest change that can fix the bug is the one worth shipping.
+		// It also leaves an easy comparison: if a tab plays and the Home Screen
+		// app does not, this is the only line that differs between them.
+		const standalone = window.navigator.standalone === true
+			|| window.matchMedia?.('(display-mode: standalone)')?.matches === true;
+		if (!standalone) return;
+		navigator.audioSession.type = 'playback';
 	} catch { /* not supported here; a tab plays regardless */ }
 }
 
@@ -359,9 +370,6 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 			publishNowPlaying('paused');
 			return;
 		}
-		// Re-asserted here rather than only at startup: this is the moment the
-		// category has to be right, and a write costs nothing.
-		declarePlaybackSession();
 		const started = audio.play();
 		prefetchUpcoming();
 		try {
@@ -423,7 +431,11 @@ export async function play() {
 	// Mid-resolve there is no stream to start yet. Calling play() here rejects
 	// and surfaces a failure for a track that is loading perfectly well.
 	if (state.loading) return;
-	if (!audio.paused) return;
+	// No `if (!audio.paused) return` guard: `play()` on a playing element is
+	// already a no-op per spec, so the guard bought nothing -- and it could
+	// strand playback outright. After an iOS interruption an element can read
+	// `paused === false` while producing no sound, and a guard would turn the
+	// one command that recovers it into a no-op.
 	try {
 		await audio.play();
 	} catch (error) {
@@ -442,11 +454,10 @@ export function pause() {
 		return;
 	}
 	if (!state.currentTrack) return;
-	// A track still resolving is not paused, but "stop" during a load means
-	// cancel it, and the element is the wrong thing to ask -- matching the
-	// desktop's reasoning for the same arm.
-	if (state.loading) return;
-	if (audio.paused) return;
+	// Unconditional for the same reason as `play()`: `pause()` on a paused
+	// element is a no-op. Notably this is *not* guarded on `state.loading` --
+	// a track still resolving is not paused, and "stop" during a load has to
+	// mean cancel it, which is the desktop's reasoning for the same arm.
 	audio.pause();
 }
 

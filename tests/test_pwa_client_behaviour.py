@@ -190,12 +190,28 @@ def browser():
         instance.close()
 
 
-def open_phone(browser, base_url, computer):
+# Launched from the Home Screen rather than in a tab. iOS reports this two
+# ways and the client checks both, so the stub sets both.
+STANDALONE_SCRIPT = """
+(() => {
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
+    const real = window.matchMedia.bind(window);
+    window.matchMedia = query =>
+        query.includes('display-mode: standalone')
+            ? { matches: true, media: query, addEventListener() {}, removeEventListener() {} }
+            : real(query);
+})();
+"""
+
+
+def open_phone(browser, base_url, computer, *, standalone=False):
     page = browser.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8_000)
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.add_init_script(FAKE_AUDIO_SCRIPT)
+    if standalone:
+        page.add_init_script(STANDALONE_SCRIPT)
     # Start already paired: pairing has its own coverage over the real HTTP API.
     page.add_init_script(
         "localStorage.setItem('rainette.pwa.endpoint', %s);"
@@ -473,7 +489,7 @@ class TestAudioSessionCategory:
 
     def test_the_audio_session_is_declared_for_playback(self, browser, static_server):
         computer = FakeComputer()
-        page, errors = open_phone(browser, static_server, computer)
+        page, errors = open_phone(browser, static_server, computer, standalone=True)
         page.locator("#appView").wait_for(state="visible")
 
         # Declared at startup, before anything is played.
@@ -485,18 +501,45 @@ class TestAudioSessionCategory:
         assert not errors, errors
         page.close()
 
-    def test_it_is_still_playback_once_a_track_is_playing(self, browser, static_server):
-        """Re-asserted at play, so nothing that ran in between can undo it."""
+    def test_playing_a_track_does_not_touch_the_session(self, browser, static_server):
+        """Declared once at startup, then left alone.
+
+        An earlier version of this fix re-asserted the category immediately
+        before every `audio.play()`. That was a guess dressed as caution:
+        mutating an audio session at the exact moment playback starts is a way
+        to interrupt it, not a way to be safe. The contract is that the
+        declaration happens once, before anything plays, and playback never
+        writes to it again -- which is what this checks, using a sentinel that
+        would be overwritten if it did.
+        """
         computer = FakeComputer()
-        page, errors = open_phone(browser, static_server, computer)
+        page, errors = open_phone(browser, static_server, computer, standalone=True)
         page.locator("#appView").wait_for(state="visible")
-        page.evaluate("() => { navigator.audioSession.type = 'auto'; }")
+        page.evaluate("() => { navigator.audioSession.type = 'sentinel'; }")
 
         page.locator("#recentList .track").first.click()
         page.locator("#player").wait_for(state="visible")
         page.wait_for_function("() => navigator.mediaSession?.metadata?.title")
 
-        assert page.evaluate("() => navigator.audioSession.type") == "playback"
+        assert page.evaluate("() => navigator.audioSession.type") == "sentinel", (
+            "playback wrote to the audio session; it must be declared once at "
+            "startup and left alone"
+        )
+        assert not errors, errors
+        page.close()
+
+    def test_a_tab_is_left_alone(self, browser, static_server):
+        """A Safari tab already plays through backgrounding; do not touch it.
+
+        Keeping the change to the one context that needs it means a tab behaves
+        exactly as it did before this fix -- and if a tab plays while the Home
+        Screen app does not, this is the only line that differs.
+        """
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        assert page.evaluate("() => navigator.audioSession.type") == "auto"
         assert not errors, errors
         page.close()
 
