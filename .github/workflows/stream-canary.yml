@@ -1,0 +1,47 @@
+# Watches the one dependency no unit test can hold still: what YouTube actually
+# serves. Both outages that stopped playback (chunk-only URLs in July 2026, a
+# muxed-video-only player client in August 2026) happened entirely outside this
+# repository and left the whole suite green, so they were found by users rather
+# than by CI. This job is the sensor for that class of failure.
+#
+# It is expected to be flaky in the way a smoke alarm is flaky. A red run means
+# playback is *already* broken in the field; read the assertion message, which
+# names which of the two failures it is.
+name: Stream canary
+
+on:
+  schedule:
+    # Every six hours. Faster than a user can file a report, cheap enough to
+    # ignore. Four days passed between the August break and it being noticed.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "music_bridge.py"
+      - "tests/test_stream_canary.py"
+      - ".github/workflows/stream-canary.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Deliberately unpinned, matching requirements.txt: the point is to find
+      # out what today's yt-dlp and today's YouTube do together.
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest
+
+      - name: Resolve a real track and open it the way <audio> does
+        env:
+          RAINETTE_LIVE_CANARY: "1"
+        run: python -m pytest -q tests/test_stream_canary.py -v

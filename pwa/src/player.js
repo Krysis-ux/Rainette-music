@@ -671,9 +671,19 @@ audio.addEventListener('ended', finishTrack);
 async function diagnoseStreamFailure(url) {
 	if (!url || url.startsWith('blob:')) return 'This file could not be played on this phone.';
 	try {
-		const response = await fetch(url, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
+		// `bytes=0-` and not `bytes=0-0`: the open-ended range is the one a media
+		// element actually opens with, and it is the *only* one some upstreams
+		// refuse. Asking a bounded range here made this function answer 206 to
+		// the exact failure it exists to catch, so every unplayable track was
+		// reported as "your phone could not play this format" -- which sent
+		// four days of debugging at codecs instead of at the stream.
+		// The body is cancelled the moment the status is known, so this costs
+		// headers rather than a whole track.
+		const response = await fetch(url, { headers: { Range: 'bytes=0-' }, cache: 'no-store' });
+		try { await response.body?.cancel(); } catch { /* already drained */ }
 		if (response.status === 404) return 'That audio link expired. Reconnecting to your computer…';
 		if (response.status === 502) return 'Your computer could not reach the audio source.';
+		if (response.status === 403) return 'The audio source refused your computer. Skipping to the next track may help.';
 		if (response.ok || response.status === 206) return 'Your phone could not play this format.';
 		return `Your computer answered ${response.status}.`;
 	} catch {

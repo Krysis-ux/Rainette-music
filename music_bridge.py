@@ -85,11 +85,24 @@ _SEARCH_OPTS = {
     "compat_opts": _SYSTEM_TRUST_COMPAT,
 }
 
-# The player client decides what kind of URL comes back. yt-dlp's default
-# (ANDROID_VR) serves chunked URLs that refuse the open-ended `Range: bytes=0-`
-# a media element opens with, which surfaces only as "Format error". ANDROID
-# returns an ordinary progressive URL. Check this first if every track fails.
-_PLAYER_CLIENT_ARGS = {"youtube": {"player_client": ["android"]}}
+# The player client decides both what formats YouTube offers and what kind of
+# URL comes back, and pinning one is a bet that ages badly. That bet has now
+# gone wrong in both directions:
+#
+#   * ANDROID_VR (yt-dlp's default in July 2026) served chunk-only URLs that
+#     answered the open-ended `Range: bytes=0-` a media element opens with as
+#     403, so ANDROID was pinned to get an ordinary progressive URL.
+#   * ANDROID has since been cut back by YouTube to format 18 alone -- a muxed
+#     360p *video* -- so the pin quietly started handing every phone a
+#     `video/mp4` to play in an <audio> element.
+#
+# Neither failure announced itself; both surface only as "the format is not
+# supported". So the client is no longer *asserted*, it is *checked*: the
+# candidates are tried in order and the first one that actually yields an
+# audio-only stream wins. `None` means "let yt-dlp choose", which is correct
+# whenever yt-dlp's own default is healthy and is the only option that keeps
+# improving as yt-dlp does.
+_PLAYER_CLIENT_CANDIDATES: tuple[str | None, ...] = (None, "android")
 
 _STREAM_OPTS = {
     "quiet": True,
@@ -104,9 +117,27 @@ _STREAM_OPTS = {
         "/bestaudio[ext=mp4]"
         "/bestaudio/best"
     ),
-    "extractor_args": _PLAYER_CLIENT_ARGS,
     "compat_opts": _SYSTEM_TRUST_COMPAT,
 }
+
+
+def _stream_opts_for(player_client: str | None) -> dict[str, Any]:
+    """``_STREAM_OPTS`` aimed at one player client (or yt-dlp's own default)."""
+    opts = dict(_STREAM_OPTS)
+    if player_client:
+        opts["extractor_args"] = {"youtube": {"player_client": [player_client]}}
+    return opts
+
+
+def _is_audio_only(info: dict[str, Any]) -> bool:
+    """True when the selected format carries no video track.
+
+    A muxed format plays, so nothing downstream *errors* -- it just ships video
+    bytes to an <audio> element and reports `video/mp4` to a phone that measured
+    its decoders against `audio/mp4`. That is why this is checked rather than
+    assumed: the failure is silent everywhere else.
+    """
+    return str(info.get("vcodec") or "none") == "none"
 
 
 def _run_bg(target, *args):
@@ -430,6 +461,50 @@ def cmd_music_stream_url(msg):
     _run_bg(_stream_worker, req_id, source_id, track_id, not prefetch)
 
 
+# Set whenever a resolve had to settle for a format carrying video. Exposed
+# through `last_muxed_fallback()` so "every phone is being served video" is
+# something the app can be *asked* about -- by the live canary test, or by
+# anyone debugging a playback report -- instead of something only a user can
+# describe, badly, after the fact.
+_last_muxed_fallback: dict[str, Any] | None = None
+_muxed_fallback_lock = threading.Lock()
+
+
+def _note_muxed_fallback(source_id: str, info: dict[str, Any]) -> None:
+    global _last_muxed_fallback
+    with _muxed_fallback_lock:
+        _last_muxed_fallback = {
+            "source_id": source_id,
+            "format_id": str(info.get("format_id") or ""),
+            "ext": str(info.get("ext") or ""),
+            "vcodec": str(info.get("vcodec") or ""),
+            "at": time.time(),
+        }
+
+
+def last_muxed_fallback() -> dict[str, Any] | None:
+    """The most recent resolve that could only find video, if any."""
+    with _muxed_fallback_lock:
+        return dict(_last_muxed_fallback) if _last_muxed_fallback else None
+
+
+def _url_and_headers(info: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    """The playable URL out of a yt-dlp result, with the headers it was signed for.
+
+    Some extractors nest the URL under requested formats. The headers travel
+    with the format, not with the video, so they are taken from whichever entry
+    actually supplied the URL.
+    """
+    stream_url = info.get("url") or ""
+    headers = dict(info.get("http_headers") or {})
+    if stream_url:
+        return str(stream_url), headers
+    for fmt in reversed(info.get("requested_formats") or info.get("formats") or []):
+        if fmt.get("url"):
+            return str(fmt["url"]), dict(fmt.get("http_headers") or headers)
+    return "", headers
+
+
 def _extract_stream(source_id: str) -> dict[str, Any]:
     """Run yt-dlp for one source and normalise what comes back.
 
@@ -438,20 +513,42 @@ def _extract_stream(source_id: str) -> dict[str, Any]:
     implementation drifting away from this one.
     """
     url = source_id if source_id.startswith("http") else f"https://www.youtube.com/watch?v={source_id}"
-    with yt_dlp.YoutubeDL(_STREAM_OPTS) as ydl:
-        info = ydl.extract_info(url, download=False)
-    stream_url = info.get("url")
-    headers = dict(info.get("http_headers") or {})
-    if not stream_url:
-        # Some extractors nest the playable URL under requested formats.  The
-        # headers travel with the format, not with the video, so they are taken
-        # from whichever entry actually supplied the URL.
-        for fmt in reversed(info.get("requested_formats") or info.get("formats") or []):
-            if fmt.get("url"):
-                stream_url = fmt["url"]
-                headers = dict(fmt.get("http_headers") or headers)
-                break
-    if not stream_url:
+
+    # Try each candidate client and keep the first audio-only answer. A muxed
+    # result is remembered but not accepted yet: it plays, so it is better than
+    # failing, but it is only right if nothing else can do better.
+    info: dict[str, Any] | None = None
+    stream_url = ""
+    headers: dict[str, str] = {}
+    muxed_fallback: tuple[dict[str, Any], str, dict[str, str]] | None = None
+    last_error: Exception | None = None
+
+    for client in _PLAYER_CLIENT_CANDIDATES:
+        try:
+            with yt_dlp.YoutubeDL(_stream_opts_for(client)) as ydl:
+                candidate = ydl.extract_info(url, download=False)
+        except Exception as exc:  # a client YouTube has stopped serving
+            last_error = exc
+            continue
+        found_url, found_headers = _url_and_headers(candidate)
+        if not found_url:
+            continue
+        if _is_audio_only(candidate):
+            info, stream_url, headers = candidate, found_url, found_headers
+            break
+        if muxed_fallback is None:
+            muxed_fallback = (candidate, found_url, found_headers)
+
+    if info is None and muxed_fallback is not None:
+        # Every client offered video. Playing it beats silence, but it is
+        # recorded rather than shrugged off: an unnoticed muxed fallback is
+        # exactly the state that shipped `video/mp4` to phones for four days.
+        info, stream_url, headers = muxed_fallback
+        _note_muxed_fallback(source_id, info)
+
+    if info is None or not stream_url:
+        if last_error is not None:
+            raise last_error
         raise RuntimeError("no playable stream url returned")
     return {
         "url": stream_url,

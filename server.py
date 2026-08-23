@@ -1203,6 +1203,12 @@ async def companion_audio_relay(request: web.Request) -> web.StreamResponse:
                 return _json_error(502, str(exc))
             break
         upstream_url = fresh
+        # A re-resolve mints a new URL *and* the headers it was signed for, and
+        # those two travel together. Reusing the old headers here re-sent the
+        # identity the upstream had just refused, so the retry could only ever
+        # fail the same way -- which made the retry look useless and the fault
+        # look like the phone's.
+        forward = _upstream_audio_headers(grant.source_id, request)
 
     # A media element cannot report a status, so an upstream error page streamed
     # onward becomes a bare "not supported". A clean status lets the phone say
