@@ -125,7 +125,13 @@ FAKE_AUDIO_SCRIPT = """
         get readyState() { return this._src ? 4 : 0; }
         play() {
             this.paused = false;
-            queueMicrotask(() => this.dispatchEvent(new Event('play')));
+            queueMicrotask(() => {
+                this.dispatchEvent(new Event('play'));
+                // A real element fires both: `play` when play() is called, and
+                // `playing` once audio is actually flowing. Code that waits for
+                // audio to genuinely start listens for the second one.
+                this.dispatchEvent(new Event('playing'));
+            });
             return Promise.resolve();
         }
         pause() {
@@ -487,43 +493,65 @@ class TestAudioSessionCategory:
     a real playback session the page borrows.
     """
 
-    def test_the_audio_session_is_declared_for_playback(self, browser, static_server):
-        computer = FakeComputer()
-        page, errors = open_phone(browser, static_server, computer, standalone=True)
-        page.locator("#appView").wait_for(state="visible")
+    def test_nothing_is_declared_before_any_audio_plays(self, browser, static_server):
+        """Playback must never be gated on an iOS call we cannot test.
 
-        # Declared at startup, before anything is played.
-        assert page.evaluate("() => navigator.audioSession.type") == "playback", (
-            "the client left the audio session at 'auto', which resolves to "
-            "ambient -- iOS stops ambient audio when a Home Screen app is "
-            "backgrounded or the screen locks"
-        )
-        assert not errors, errors
-        page.close()
-
-    def test_playing_a_track_does_not_touch_the_session(self, browser, static_server):
-        """Declared once at startup, then left alone.
-
-        An earlier version of this fix re-asserted the category immediately
-        before every `audio.play()`. That was a guess dressed as caution:
-        mutating an audio session at the exact moment playback starts is a way
-        to interrupt it, not a way to be safe. The contract is that the
-        declaration happens once, before anything plays, and playback never
-        writes to it again -- which is what this checks, using a sentinel that
-        would be overwritten if it did.
+        Declaring the session up front would mean a session iOS refuses takes
+        the music with it. Declared after `playing`, the worst case is that
+        background playback is no better than before -- a bug, not a silence.
         """
         computer = FakeComputer()
         page, errors = open_phone(browser, static_server, computer, standalone=True)
         page.locator("#appView").wait_for(state="visible")
-        page.evaluate("() => { navigator.audioSession.type = 'sentinel'; }")
+
+        assert page.evaluate("() => navigator.audioSession.type") == "auto", (
+            "the session was declared before anything played, which puts the "
+            "one thing that must always work behind an untestable iOS call"
+        )
+        assert not errors, errors
+        page.close()
+
+    def test_the_session_becomes_playback_once_audio_starts(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer, standalone=True)
+        page.locator("#appView").wait_for(state="visible")
 
         page.locator("#recentList .track").first.click()
-        page.locator("#player").wait_for(state="visible")
-        page.wait_for_function("() => navigator.mediaSession?.metadata?.title")
+        page.wait_for_function("() => navigator.audioSession.type === 'playback'")
+
+        assert page.evaluate("() => navigator.audioSession.type") == "playback", (
+            "the session stayed at 'auto', which resolves to ambient -- iOS "
+            "stops ambient audio when a Home Screen app is backgrounded"
+        )
+        assert not errors, errors
+        page.close()
+
+    def test_the_session_is_written_once_and_not_per_track(self, browser, static_server):
+        """Once, not before every play.
+
+        An earlier version re-asserted the category immediately before every
+        `audio.play()`. Mutating an audio session at the exact moment playback
+        starts is a way to interrupt it, not a way to be safe. A sentinel set
+        after the first track proves the second does not write again.
+        """
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer, standalone=True)
+        page.locator("#appView").wait_for(state="visible")
+
+        page.locator("#recentList .track").first.click()
+        page.wait_for_function("() => navigator.audioSession.type === 'playback'")
+        page.evaluate("() => { navigator.audioSession.type = 'sentinel'; }")
+
+        # Every later track raises `playing` again. The listener is registered
+        # `{ once: true }`, so none of them may write to the session.
+        page.evaluate(
+            "() => { for (let i = 0; i < 3; i += 1) "
+            "window.__rainetteAudio.dispatchEvent(new Event('playing')); }"
+        )
+        page.wait_for_timeout(300)
 
         assert page.evaluate("() => navigator.audioSession.type") == "sentinel", (
-            "playback wrote to the audio session; it must be declared once at "
-            "startup and left alone"
+            "the session was written again on a later `playing` event"
         )
         assert not errors, errors
         page.close()

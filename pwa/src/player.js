@@ -58,9 +58,16 @@ function attachAudio() {
  * It is also exclusive -- starting playback pauses other apps' audio -- and
  * that is the correct trade for this app.
  *
- * Declared once, at startup. It was briefly re-asserted before every play too,
- * which was a guess dressed as caution: mutating an audio session at the exact
- * moment playback starts is a way to interrupt it, not a way to be safe.
+ * Declared once, and deliberately *after* audio is already playing rather than
+ * at startup. This is an iOS behaviour that cannot be tested anywhere outside
+ * an iPhone, and the standing rule for those (see CLAUDE.md) is that they must
+ * not be able to stop playback from starting. Declared up front, a session that
+ * iOS refuses would take the music with it; declared on the first `playing`
+ * event, the worst case is that background playback is no better than it was,
+ * which is a bug rather than a silence.
+ *
+ * The timing costs nothing: `playing` fires milliseconds in, long before anyone
+ * can lock the phone or switch away.
  */
 function declarePlaybackSession() {
 	try {
@@ -80,7 +87,7 @@ function declarePlaybackSession() {
 
 if (document.body) attachAudio();
 else document.addEventListener('DOMContentLoaded', attachAudio, { once: true });
-declarePlaybackSession();
+audio.addEventListener('playing', declarePlaybackSession, { once: true });
 
 let reportError = () => {};
 /* Fired once a track's media has been handed to the element. The equaliser
