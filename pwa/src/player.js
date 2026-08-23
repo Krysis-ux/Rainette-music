@@ -36,8 +36,40 @@ function attachAudio() {
 	} catch { /* detached is how it worked before; it still plays */ }
 }
 
+/* Tell iOS this is music, not a sound effect.
+ *
+ * This is the other half of the same complaint, and the half the DOM-attach
+ * above could not fix: audio that plays fine in a Safari tab -- through tab
+ * switches, through the screen locking -- stops the moment a Home Screen app
+ * is backgrounded.
+ *
+ * The cause is the audio session category. `navigator.audioSession.type`
+ * defaults to `auto`, and `auto` resolves to **ambient** whenever nothing
+ * higher-priority is active; WebKit starts there. Ambient is the iOS category
+ * for mixable, incidental sound, and iOS silences it as soon as the app stops
+ * being frontmost. A Safari *tab* escapes this because Safari itself owns a
+ * real playback session that the page borrows -- which is exactly why the same
+ * code behaves differently once it is launched from the Home Screen, and why
+ * this looked like a bug in the app rather than in what the app had declared
+ * itself to be.
+ *
+ * `playback` is the category for music and podcasts: it survives backgrounding
+ * and ignores the Ring/Silent switch, which is what a music player should do.
+ * It is also exclusive -- starting playback pauses other apps' audio -- and
+ * that is the correct trade for this app.
+ *
+ * Declared once at startup and re-asserted at each play, because it costs a
+ * property write and the failure it prevents is silent.
+ */
+function declarePlaybackSession() {
+	try {
+		if ('audioSession' in navigator) navigator.audioSession.type = 'playback';
+	} catch { /* not supported here; a tab plays regardless */ }
+}
+
 if (document.body) attachAudio();
 else document.addEventListener('DOMContentLoaded', attachAudio, { once: true });
+declarePlaybackSession();
 
 let reportError = () => {};
 /* Fired once a track's media has been handed to the element. The equaliser
@@ -327,6 +359,9 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 			publishNowPlaying('paused');
 			return;
 		}
+		// Re-asserted here rather than only at startup: this is the moment the
+		// category has to be right, and a write costs nothing.
+		declarePlaybackSession();
 		const started = audio.play();
 		prefetchUpcoming();
 		try {

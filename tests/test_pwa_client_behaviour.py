@@ -141,6 +141,18 @@ FAKE_AUDIO_SCRIPT = """
         }
     }
     window.Audio = FakeAudio;
+    /* WebKit's Audio Session API, which Chromium does not implement. Stubbed
+     * because the property it exposes is the difference between a Home Screen
+     * app that keeps playing when you switch away and one that goes silent,
+     * and there is otherwise nowhere to observe it outside a real iPhone.
+     *
+     * It starts at 'auto' because that is what Safari starts at -- and 'auto'
+     * resolves to *ambient*, the category iOS silences on backgrounding. */
+    Object.defineProperty(navigator, 'audioSession', {
+        configurable: true,
+        writable: true,
+        value: { type: 'auto' },
+    });
 })();
 """
 
@@ -430,6 +442,89 @@ class TestBackgroundPlayback:
 
         assert page.evaluate("() => navigator.mediaSession.metadata.title") == "Track 1"
         assert page.evaluate("() => navigator.mediaSession.playbackState") == "playing"
+        assert not errors, errors
+        page.close()
+
+
+class TestAudioSessionCategory:
+    """The Home Screen app has to declare itself a music player, not a page.
+
+    Installed to the Home Screen, the same client that plays perfectly in a
+    Safari tab stopped the instant the phone was locked or switched away from.
+    The cause is not the code that plays -- it is what the app declared its
+    audio to *be*: `navigator.audioSession.type` defaults to `auto`, `auto`
+    resolves to ambient, and iOS silences ambient audio the moment the app is
+    no longer frontmost. A Safari tab is exempt only because Safari itself owns
+    a real playback session the page borrows.
+    """
+
+    def test_the_audio_session_is_declared_for_playback(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        # Declared at startup, before anything is played.
+        assert page.evaluate("() => navigator.audioSession.type") == "playback", (
+            "the client left the audio session at 'auto', which resolves to "
+            "ambient -- iOS stops ambient audio when a Home Screen app is "
+            "backgrounded or the screen locks"
+        )
+        assert not errors, errors
+        page.close()
+
+    def test_it_is_still_playback_once_a_track_is_playing(self, browser, static_server):
+        """Re-asserted at play, so nothing that ran in between can undo it."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+        page.evaluate("() => { navigator.audioSession.type = 'auto'; }")
+
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+        page.wait_for_function("() => navigator.mediaSession?.metadata?.title")
+
+        assert page.evaluate("() => navigator.audioSession.type") == "playback"
+        assert not errors, errors
+        page.close()
+
+    def test_a_browser_without_the_api_still_plays(self, browser, static_server):
+        """The API is WebKit-only; asking for it must never break anyone else."""
+        computer = FakeComputer()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.set_default_timeout(8_000)
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.add_init_script(FAKE_AUDIO_SCRIPT)
+        page.add_init_script("delete navigator.audioSession;")
+        page.add_init_script(
+            "localStorage.setItem('rainette.pwa.endpoint', %s);"
+            "localStorage.setItem('rainette.pwa.token', 'test-token');"
+            "localStorage.setItem('rainette.pwa.device_id', 'phone-1');"
+            % json.dumps(ENDPOINT)
+        )
+
+        def companion(route):
+            parsed = urlparse(route.request.url)
+            if parsed.path == "/status":
+                body = {"ok": True, "name": "Studio Mac", "device_id": "phone-1"}
+            elif parsed.path == "/command":
+                body = computer.handle_command(json.loads(route.request.post_data or "{}"))
+            elif parsed.path == "/events":
+                after = int(parse_qs(parsed.query).get("after", ["0"])[0])
+                body = computer.read_events(after)
+            else:
+                body = {"ok": True}
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+        page.route(f"{ENDPOINT}/**", companion)
+        page.goto(static_server + "index.html", wait_until="domcontentloaded")
+        page.locator("#appView").wait_for(state="visible")
+
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+        page.wait_for_function("() => navigator.mediaSession?.metadata?.title")
+
+        assert page.evaluate("() => 'audioSession' in navigator") is False
         assert not errors, errors
         page.close()
 
