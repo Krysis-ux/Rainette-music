@@ -556,18 +556,134 @@ class TestAudioSessionCategory:
         assert not errors, errors
         page.close()
 
-    def test_a_tab_is_left_alone(self, browser, static_server):
-        """A Safari tab already plays through backgrounding; do not touch it.
+    def test_a_tab_gets_the_session_too(self, browser, static_server):
+        """Not only the Home Screen app.
 
-        Keeping the change to the one context that needs it means a tab behaves
-        exactly as it did before this fix -- and if a tab plays while the Home
-        Screen app does not, this is the only line that differs.
+        This was briefly scoped to standalone, as the smallest fix for the
+        background-playback bug. It cannot stay that way: the same session is
+        what keeps a Web Audio graph alive in the background, and that graph is
+        the phone's volume control. A tab without it would mean a slider that
+        silently costs background playback -- the exact bug this replaced.
         """
         computer = FakeComputer()
         page, errors = open_phone(browser, static_server, computer)
         page.locator("#appView").wait_for(state="visible")
 
-        assert page.evaluate("() => navigator.audioSession.type") == "auto"
+        page.locator("#recentList .track").first.click()
+        page.wait_for_function("() => navigator.audioSession.type === 'playback'")
+
+        assert not errors, errors
+        page.close()
+
+    def test_the_volume_slider_returns_where_the_session_keeps_a_graph_alive(
+            self, browser, static_server):
+        """The iPhone volume slider, and why it is a capability check.
+
+        It was removed because a Web Audio graph -- the only volume iOS honours
+        -- was suspended whenever the page was hidden, so the control that
+        carried volume also stopped the music on lock. WebKit fixed that (bug
+        261554, iOS 17.5): a graph survives backgrounding under a declared
+        playback session.
+
+        So the gate is "can this engine hold a playback session", not "is this
+        iOS". Hardcoding the platform was true when written, stopped being
+        true, and nothing would have noticed -- the same shape as pinning a
+        yt-dlp player client. This test pins the *capability*, on a page
+        pretending to be an iPhone.
+        """
+        computer = FakeComputer()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.set_default_timeout(8_000)
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.add_init_script(FAKE_AUDIO_SCRIPT)
+        page.add_init_script(
+            "Object.defineProperty(navigator, 'platform', "
+            "{ configurable: true, value: 'iPhone' });"
+        )
+        page.add_init_script(
+            "localStorage.setItem('rainette.pwa.endpoint', %s);"
+            "localStorage.setItem('rainette.pwa.token', 'test-token');"
+            "localStorage.setItem('rainette.pwa.device_id', 'phone-1');"
+            % json.dumps(ENDPOINT)
+        )
+
+        def companion(route):
+            parsed = urlparse(route.request.url)
+            if parsed.path == "/status":
+                body = {"ok": True, "name": "Studio Mac", "device_id": "phone-1"}
+            elif parsed.path == "/command":
+                body = computer.handle_command(json.loads(route.request.post_data or "{}"))
+            elif parsed.path == "/events":
+                after = int(parse_qs(parsed.query).get("after", ["0"])[0])
+                body = computer.read_events(after)
+            else:
+                body = {"ok": True}
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+        page.route(f"{ENDPOINT}/**", companion)
+        page.goto(static_server + "index.html", wait_until="domcontentloaded")
+        page.locator("#appView").wait_for(state="visible")
+
+        adjustable = page.evaluate(
+            "async () => (await import('./src/audio.js')).volumeIsAdjustable()")
+        assert adjustable is True, (
+            "an iPhone that can declare a playback session has a working "
+            "volume slider again; the gate must ask what the engine can do, "
+            "not what platform it is"
+        )
+        assert not errors, errors
+        page.close()
+
+    def test_no_slider_and_no_essay_where_a_graph_would_cost_playback(
+            self, browser, static_server):
+        """Remove it completely rather than explain it.
+
+        Where no slider can work, the row is hidden. A paragraph about audio
+        graphs in the middle of a now-playing card is worse than the space it
+        fills, and the hardware buttons need no instructions.
+        """
+        computer = FakeComputer()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.set_default_timeout(8_000)
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.add_init_script(FAKE_AUDIO_SCRIPT)
+        # An iPhone old enough to have no Audio Session API at all.
+        page.add_init_script(
+            "Object.defineProperty(navigator, 'platform', "
+            "{ configurable: true, value: 'iPhone' });"
+            "delete navigator.audioSession;"
+        )
+        page.add_init_script(
+            "localStorage.setItem('rainette.pwa.endpoint', %s);"
+            "localStorage.setItem('rainette.pwa.token', 'test-token');"
+            "localStorage.setItem('rainette.pwa.device_id', 'phone-1');"
+            % json.dumps(ENDPOINT)
+        )
+
+        def companion(route):
+            parsed = urlparse(route.request.url)
+            if parsed.path == "/status":
+                body = {"ok": True, "name": "Studio Mac", "device_id": "phone-1"}
+            elif parsed.path == "/command":
+                body = computer.handle_command(json.loads(route.request.post_data or "{}"))
+            elif parsed.path == "/events":
+                after = int(parse_qs(parsed.query).get("after", ["0"])[0])
+                body = computer.read_events(after)
+            else:
+                body = {"ok": True}
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+        page.route(f"{ENDPOINT}/**", companion)
+        page.goto(static_server + "index.html", wait_until="domcontentloaded")
+        page.locator("#appView").wait_for(state="visible")
+        page.locator("#recentList .track").first.click()
+        page.locator("#player").wait_for(state="visible")
+
+        card = page.locator("#player")
+        assert card.locator(".now-volume-note").count() == 0, "the essay is back"
+        assert "audio graph" not in card.inner_text().lower()
         assert not errors, errors
         page.close()
 

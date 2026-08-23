@@ -2795,16 +2795,6 @@ body.now-playing-open .player { display: none; }
 	user-select: text;
 }
 
-/* The volume row where there is no slider to draw: an icon and a sentence,
-   laid out like the row it replaces so the card does not shift. */
-.now-volume.is-external { align-items: flex-start; }
-
-.now-volume-note {
-	color: var(--text-muted);
-	font-size: 11.5px;
-	line-height: 1.45;
-}
-
 /* A saved computer and the control that forgets it. The row keeps the whole
    width it had; the forget button is laid beside it rather than inside it,
    because a button within a button is markup no engine makes reachable. */

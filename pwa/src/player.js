@@ -72,15 +72,12 @@ function attachAudio() {
 function declarePlaybackSession() {
 	try {
 		if (!('audioSession' in navigator)) return;
-		// Only where it is actually needed. A Safari tab already borrows a real
-		// playback session and plays through backgrounding perfectly well, so
-		// declaring one there changes behaviour that was never broken -- and
-		// the smallest change that can fix the bug is the one worth shipping.
-		// It also leaves an easy comparison: if a tab plays and the Home Screen
-		// app does not, this is the only line that differs between them.
-		const standalone = window.navigator.standalone === true
-			|| window.matchMedia?.('(display-mode: standalone)')?.matches === true;
-		if (!standalone) return;
+		// Declared everywhere, not only in a Home Screen app. It was briefly
+		// scoped to standalone as the smallest possible fix, but the session is
+		// also what keeps a Web Audio graph alive in the background (WebKit
+		// 261554), and that graph is the phone's volume control. Scoping the
+		// session would have meant a volume slider that silently costs
+		// background playback in a tab -- the exact bug this replaced.
 		navigator.audioSession.type = 'playback';
 	} catch { /* not supported here; a tab plays regardless */ }
 }

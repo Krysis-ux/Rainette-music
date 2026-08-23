@@ -184,18 +184,16 @@ export function openNowPlaying() {
 				},
 			});
 			paintVolume(volume.value);
-			/* On a platform where the only volume that works is a graph, and a
-			 * graph is what stops the music when the screen locks, there is no
-			 * honest slider to draw. Saying which buttons do work is worth more
-			 * than a control that moves and changes nothing — which is what was
-			 * there before, on every iPhone. */
+			/* Where a slider cannot do anything, there is no slider and no
+			 * explanation of why — a paragraph about audio graphs in the middle
+			 * of a now-playing card is worse than the empty space it fills, and
+			 * the hardware buttons are discoverable without being told. This is
+			 * now rare: it needs an engine that both ignores element volume and
+			 * cannot hold a playback session. */
 			if (volumeIsAdjustable()) {
 				volumeRow.append(volumeIcon, volume.root, volumeValue);
 			} else {
-				volumeRow.classList.add('is-external');
-				volumeIcon.innerHTML = icon('volume', 18);
-				volumeRow.append(volumeIcon, el('span', 'now-volume-note',
-					'Use your phone’s volume buttons. An in-app slider would need an audio graph, and that stops playback when the screen locks.'));
+				volumeRow.hidden = true;
 			}
 
 			// ── Actions ─────────────────────────────────────────────────────

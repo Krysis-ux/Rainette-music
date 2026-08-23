@@ -42,11 +42,19 @@ datacenter IPs with a bot challenge, so this cannot be delegated to CI — see
 - **Assert outcomes, not mechanisms.** A test that pinned the player *client*
   stayed green while playback died. Test that the resolved stream is audio;
   never that a particular client was asked.
-- **A feature may not be paid for with an invariant.** The iPhone volume slider
-  is gone because the only volume iOS honours is a Web Audio GainNode, and that
-  graph is what WebKit suspends when the page is hidden — which costs background
-  playback. Background playback won, and that was the correct call. Do not
-  restore the slider without a way to keep both.
+- **A feature may not be paid for with an invariant** — but check whether the
+  bill is still due. The iPhone volume slider was removed because the only
+  volume iOS honours is a Web Audio GainNode, and WebKit suspended that graph
+  whenever the page was hidden, costing background playback. Background
+  playback won, correctly. Then WebKit fixed the suspension
+  ([bug 261554](https://bugs.webkit.org/show_bug.cgi?id=261554), iOS 17.5): a
+  graph survives backgrounding under a declared `playback` audio session. The
+  slider is back, and the gate is now *"can this engine hold a playback
+  session"* rather than *"is this iOS"*. Re-examine trades like this; the
+  platform moves.
+- **Gate on capability, never on platform.** "iOS means no graph" and "pin the
+  `android` player client" are the same bug: each was true when written, each
+  quietly stopped being true, and neither would ever have announced it.
 - **Never guess at a platform you cannot test.** Anything iOS-specific
   (audio session category, background behaviour, CarPlay) can only be reasoned
   about here — Chromium has no `navigator.audioSession`. Make such changes the

@@ -49,19 +49,10 @@ export const EQ_PRESETS = {
  * the gain is what makes 200% loud rather than distorted. */
 export const VOLUME_MAX = 2;
 
-/* Does building a graph on this platform cost background playback?
- *
- * WebKit suspends an AudioContext whenever the page is hidden, and a suspended
- * context is silence with no error anywhere. On an iPhone that makes a graph
- * the difference between music that survives the screen locking and music that
- * stops the moment it does — including a Home Screen app the user has simply
- * switched away from.
- *
- * Detected by the touch-capable-Mac test rather than by user agent, because
+/* Detected by the touch-capable-Mac test rather than by user agent, because
  * iPadOS has reported itself as "MacIntel" since iPadOS 13 and a plain
- * /iPad/ test misses every modern iPad.
- */
-const SUSPENDS_GRAPH_IN_BACKGROUND = (() => {
+ * /iPad/ test misses every modern iPad. */
+const IS_IOS_LIKE = (() => {
 	try {
 		const platform = navigator.platform || '';
 		if (/iPad|iPhone|iPod/.test(platform)) return true;
@@ -73,13 +64,40 @@ const SUSPENDS_GRAPH_IN_BACKGROUND = (() => {
 	}
 })();
 
+/* Can this page hold a real playback audio session?
+ *
+ * This decides whether a graph is safe, and it used to be answered "no, never,
+ * on any iPhone". WebKit suspended an AudioContext whenever the page was
+ * hidden, so the graph that carries volume was also the thing that stopped the
+ * music on lock — which is why the iPhone volume slider was taken away.
+ *
+ * WebKit fixed that: bug 261554, landed March 2024 and shipped in iOS 17.5. A
+ * context is now allowed to keep running in the background when the page has
+ * declared a `playback` audio session, which this client does on its first
+ * `playing` event (see player.js). The Audio Session API and that fix arrived
+ * in the same era, so its presence is a fair proxy for "this WebKit keeps the
+ * graph alive".
+ *
+ * The point of writing it this way: this is a *capability* question, not a
+ * platform one. "iOS means no graph" was true when it was written, quietly
+ * stopped being true, and nothing would ever have noticed — the same shape as
+ * pinning a yt-dlp player client, and the same fix.
+ */
+const CAN_DECLARE_PLAYBACK_SESSION = (() => {
+	try { return 'audioSession' in navigator; } catch { return false; }
+})();
+
+/* Does building a graph cost background playback here? Only where the engine
+ * still suspends it and we have no way to say otherwise. */
+const SUSPENDS_GRAPH_IN_BACKGROUND = IS_IOS_LIKE && !CAN_DECLARE_PLAYBACK_SESSION;
+
 /** Can the in-app volume control actually change what comes out?
  *
  *  Only where the element's own volume is writable, or where a graph may be
- *  built to carry it. On an iPhone neither is true any more: the element
- *  ignores writes, and the graph that would honour them is the thing that
- *  stops the music on lock. The phone's own buttons still work, and a slider
- *  that silently does nothing is worse than no slider.
+ *  built to carry it. iOS ignores writes to `element.volume`, so on an iPhone
+ *  the graph is the only answer — and it is available again now that a
+ *  declared playback session keeps it alive in the background. A slider that
+ *  silently does nothing is worse than no slider, so this stays the gate.
  */
 export function volumeIsAdjustable() {
 	return !SUSPENDS_GRAPH_IN_BACKGROUND || eq.on;
