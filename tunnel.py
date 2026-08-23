@@ -685,6 +685,12 @@ class TunnelManager:
             self._generation += 1
             generation = self._generation
             self._stop_requested.clear()
+            # Whatever was up is now superseded -- a different port, or a helper
+            # that died. Hand it over for termination instead of overwriting the
+            # only reference to it, which is how a tunnel switch used to leave
+            # the previous cloudflared running for the rest of the session.
+            replaced, self._process = self._process, None
+            self._handle = None
             self._status = TunnelStatus(
                 phase="starting",
                 port=selected,
@@ -701,7 +707,11 @@ class TunnelManager:
                 daemon=True,
             )
             self._worker.start()
-            return self._status.as_dict()
+            started = self._status.as_dict()
+        # Outside the lock: terminating waits on a process, and status must stay
+        # readable while it does.
+        self._terminate(replaced, timeout_s=5.0)
+        return started
 
     def stop(self, *, timeout_s: float = 10.0) -> dict:
         """Tear the tunnel down and stop supervising it."""
@@ -763,8 +773,13 @@ class TunnelManager:
 
     def _run(self, port: int, generation: int) -> None:
         try:
-            url = self._launch(port, generation)
+            url, handle = self._launch(port, generation)
             if not self._is_current(generation):
+                # Something newer took over while this one was coming up. The
+                # address is useless now, and the helper behind it goes with it
+                # -- `handle` and not `self._handle`, which by now belongs to
+                # whoever superseded us.
+                self._terminate(handle.process, timeout_s=5.0)
                 return
             # `on_url` runs *before* the status flips to "running": a caller
             # that polls `status()` (or server.py's own on_url-driven config
@@ -828,7 +843,7 @@ class TunnelManager:
             message=f"{message} ({detail})" if detail else message,
         )
 
-    def _launch(self, port: int, generation: int) -> str:
+    def _launch(self, port: int, generation: int) -> tuple[str, transport.ProviderHandle]:
         provider = self.provider()
         with self._lock:
             self._log.clear()
@@ -842,17 +857,28 @@ class TunnelManager:
             self._handle = handle
             self._process = handle.process
 
-        url = provider.discover_url(handle, time.monotonic() + _URL_DISCOVERY_TIMEOUT_S)
-        if not url:
-            raise TunnelError(f"{provider.label} did not produce an address")
+        # Whatever happens next, this launch owns the helper it just started.
+        # `_fail` and `_require_setup` clean up `self._process`, but they bail
+        # out first when the generation has moved on -- and a superseded launch
+        # is exactly when `self._process` is somebody else's. Cleaning up the
+        # handle's *own* process is the only version of this that is always
+        # right, and its absence left a cloudflared per abandoned attempt
+        # running under launchd after the app had quit.
+        try:
+            url = provider.discover_url(handle, time.monotonic() + _URL_DISCOVERY_TIMEOUT_S)
+            if not url:
+                raise TunnelError(f"{provider.label} did not produce an address")
 
-        self._set_status(message="Waiting for the tunnel to come online…")
-        provider.await_ready(handle, time.monotonic() + _REGISTRATION_TIMEOUT_S)
-        if not self._wait_reachable(url, handle, generation):
-            raise TunnelError(
-                "the tunnel address never answered; check that this computer can reach the internet"
-            )
-        return url
+            self._set_status(message="Waiting for the tunnel to come online…")
+            provider.await_ready(handle, time.monotonic() + _REGISTRATION_TIMEOUT_S)
+            if not self._wait_reachable(url, handle, generation):
+                raise TunnelError(
+                    "the tunnel address never answered; check that this computer can reach the internet"
+                )
+        except BaseException:
+            self._terminate(handle.process, timeout_s=5.0)
+            raise
+        return url, handle
 
     @staticmethod
     def _exited(process: subprocess.Popen | None) -> bool:
@@ -984,7 +1010,7 @@ class TunnelManager:
             if not self._is_current(generation):
                 return
             try:
-                url = self._launch(port, generation)
+                url, handle = self._launch(port, generation)
             except transport.SetupRequired as exc:
                 self._require_setup(generation, exc.result)
                 return
@@ -992,6 +1018,7 @@ class TunnelManager:
                 self._fail(generation, str(exc))
                 return
             if not self._is_current(generation):
+                self._terminate(handle.process, timeout_s=5.0)
                 return
             self._next_probe_at = time.monotonic() + _HEALTH_PROBE_INTERVAL_S
             changed = bool(url) and url != previous_url

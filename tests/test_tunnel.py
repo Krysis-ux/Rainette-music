@@ -225,6 +225,58 @@ def test_stop_terminates_the_helper_process(tmp_path, monkeypatch, fast_tunnel):
     assert not status["url"]
 
 
+def test_a_launch_that_fails_takes_its_helper_down_with_it(tmp_path, monkeypatch, fast_tunnel):
+    """An abandoned attempt must not leave cloudflared running.
+
+    Observed on a real machine: two cloudflared processes reparented to launchd,
+    still holding tunnels, after the app that started them had quit. Each failed
+    or superseded attempt leaked one, and they accumulate for as long as the
+    user keeps pressing the button that is not working.
+    """
+    # Arrange: the address is minted but never routes back, so the launch fails.
+    process = FakeProcess(QUICK_TUNNEL_LOG)
+    manager = build_manager(tmp_path, monkeypatch, process, reachable=lambda url: False)
+
+    # Act
+    manager.start(47811)
+    status = settle(manager)
+
+    # Assert
+    assert status["phase"] == "error"
+    assert process.terminated is True, (
+        "the helper this launch started is still running after the launch failed"
+    )
+
+
+def test_starting_a_second_tunnel_terminates_the_first(tmp_path, monkeypatch, fast_tunnel):
+    """Switching port or provider must not abandon the running helper."""
+    # Arrange: each Popen hands back the next process in line.
+    first = FakeProcess(QUICK_TUNNEL_LOG)
+    second = FakeProcess(QUICK_TUNNEL_LOG)
+    queue = [first, second]
+    monkeypatch.setattr(tunnel.subprocess, "Popen", lambda *a, **k: queue.pop(0))
+    manager = tunnel.TunnelManager(
+        tmp_path,
+        binary_locator=lambda: Path("cloudflared"),
+        binary_installer=lambda progress: Path("cloudflared"),
+        reachable_probe=lambda url: True,
+    )
+    manager.start(47811)
+    settle(manager)
+    assert first.terminated is False
+
+    # Act: the same manager is pointed somewhere else.
+    manager.start(47812)
+    settle(manager)
+
+    # Assert
+    assert first.terminated is True, (
+        "the first helper was overwritten rather than terminated, so it kept "
+        "its tunnel open for the rest of the session"
+    )
+    manager.stop()
+
+
 def test_generating_a_tunnel_requires_the_helper_to_be_downloaded_first(tmp_path, monkeypatch):
     # Arrange: a fresh install, before the user has pressed "Download cloudflared".
     manager = build_manager(tmp_path, monkeypatch, FakeProcess([]), helper=None)
