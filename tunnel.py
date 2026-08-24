@@ -48,6 +48,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
@@ -573,9 +574,37 @@ class TunnelManager:
             )
             return self._status.as_dict()
 
+    def _journal(self, message: str) -> None:
+        """Write one line to the app log, from the thread that knows the answer.
+
+        The tunnel is one of this app's two invariants and it had no voice at
+        all: the log said "reopening the managed HTTPS tunnel" and then went
+        silent forever, whether the tunnel came up, failed, or was quietly
+        ignored. Every report of "it just loads and never connects" has been
+        undiagnosable for exactly that reason.
+
+        Written straight to the file rather than through a logger injected from
+        main.py, because tunnel.py cannot import main.py without a cycle, and a
+        missing log is how this became invisible in the first place.
+        """
+        try:
+            path = self._app_data_dir / "rainette-music.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(f"[{stamp}] tunnel: {message}\n")
+        except Exception:
+            pass  # logging must never be the thing that breaks a tunnel
+
     def _set_status(self, **fields) -> None:
         with self._lock:
+            before = self._status.phase
             self._status = replace(self._status, **fields)
+            after = self._status
+        if after.phase != before:
+            detail = after.url or after.setup_message or after.message or ""
+            self._journal(f"{before} -> {after.phase}"
+                          + (f" ({detail[:160]})" if detail else ""))
 
     def _set_helper(self, **fields) -> None:
         with self._lock:
@@ -603,6 +632,17 @@ class TunnelManager:
 
         with self._lock:
             settled = self._helper if self._helper.phase in {"downloading", "ready"} else None
+            if settled is not None and settled.phase == "downloading":
+                # "downloading" is a claim about a thread, so it is only true
+                # while that thread is alive. Treating it as settled forever is
+                # how a spinner outlives the thing it was spinning for: the UI
+                # reads `busy` from this, polls fast, and waits for a download
+                # that stopped happening -- with no timeout and no way back
+                # short of restarting the app.
+                worker = self._helper_worker
+                if worker is None or not worker.is_alive():
+                    self._journal("helper download thread is gone; re-checking the binary")
+                    settled = None
         if settled is not None:
             return settled.as_dict()
 
@@ -679,8 +719,14 @@ class TunnelManager:
             return self._require_setup(None, ready)
         with self._lock:
             if self._status.phase == "starting":
+                # Not an error, but not nothing either: the caller asked and was
+                # given back somebody else's in-flight attempt. If that attempt
+                # never lands this is what a stuck spinner is made of, so it is
+                # no longer silent.
+                self._journal(f"start({selected}) ignored: an attempt is already in flight")
                 return self._status.as_dict()
             if self._status.phase == "running" and self._status.port == selected and self._alive():
+                self._journal(f"start({selected}) ignored: already running on this port")
                 return self._status.as_dict()
             self._generation += 1
             generation = self._generation
@@ -708,6 +754,11 @@ class TunnelManager:
             )
             self._worker.start()
             started = self._status.as_dict()
+        # Journalled outside the lock, and by hand because `start` assigns a
+        # whole new status rather than going through `_set_status`. Without
+        # this the log shows an attempt's end but never its beginning -- and an
+        # attempt that only ever begins is precisely the stuck-spinner case.
+        self._journal(f"start({selected}) via {provider.id} (generation {generation})")
         # Outside the lock: terminating waits on a process, and status must stay
         # readable while it does.
         self._terminate(replaced, timeout_s=5.0)

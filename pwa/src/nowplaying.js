@@ -173,7 +173,12 @@ export function openNowPlaying() {
 				// than a coin toss.
 				onCommit: async percent => {
 					const applied = await setVolume(percent / 100);
-					if (percent <= 100 || boostAvailable()) return;
+					// `boostAvailable()` describes the *local* graph, which
+					// linked mode never builds because the computer is making
+					// the sound. Without this check, asking for more than 100%
+					// while playing on the computer snapped the thumb back and
+					// blamed the track, for a limit that does not apply.
+					if (percent <= 100 || isLinked() || boostAvailable()) return;
 					// A phone whose graph refused to build cannot exceed unity;
 					// snapping the thumb back is the only honest way to say so.
 					volume.setValue(Math.round(applied * 100), 'force');

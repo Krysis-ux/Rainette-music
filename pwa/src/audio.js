@@ -260,7 +260,34 @@ function applyVolume() {
 /* Build the graph if this track's media allows it. Order matters: probe, then
  * flag, then build, then reload — so a phone that cannot support the graph never
  * gets one, and so never goes silent. */
-async function ensureGraph() {
+/* One build at a time, and only one ever.
+ *
+ * `ensureGraph` awaits a real network probe before it builds, and two callers
+ * can reach that await while `graph` is still 'idle' -- a track load and a
+ * volume drag land together every time somebody adjusts volume as a track
+ * changes. Both would then call `buildGraph`, and
+ * `createMediaElementSource` may be called only once per element *ever*: the
+ * second throws, which the loser mistook for "this browser refuses graphs",
+ * setting `blockedPermanently` and stripping `crossorigin` off the element the
+ * winner's live graph was already routing. Every later track then loaded
+ * without CORS through a real source node, which the spec renders as silence
+ * with no error anywhere -- the music simply stops, and the UI still says
+ * playing.
+ *
+ * Sharing the in-flight promise makes the second caller await the first's
+ * answer instead of racing it.
+ */
+let building = null;
+
+function ensureGraph() {
+	if (graph === 'ready') return Promise.resolve(true);
+	if (blockedPermanently) return Promise.resolve(false);
+	if (building) return building;
+	building = buildGraphOnce().finally(() => { building = null; });
+	return building;
+}
+
+async function buildGraphOnce() {
 	if (graph === 'ready') return true;
 	if (blockedPermanently) return false;
 
@@ -289,6 +316,11 @@ async function ensureGraph() {
 		applyVolume();
 		return false;
 	}
+
+	// The probe above is an await, so re-check rather than assume: a second
+	// `createMediaElementSource` on this element would throw and be misread as
+	// a browser that refuses graphs.
+	if (graph === 'ready') return true;
 
 	audio.crossOrigin = 'anonymous';
 	if (!buildGraph(audio)) {

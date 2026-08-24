@@ -1612,6 +1612,26 @@ def _bind_companion_socket(host: str, port: int) -> socket.socket:
     try:
         if os.name == "nt":
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            # POSIX: without this, quitting and relaunching while a phone is
+            # paired fails to rebind for about a minute, and the tunnel never
+            # comes back.
+            #
+            # A paired device pins this port -- `_companion_port_candidates`
+            # deliberately offers no alternative, so there is nothing to fall
+            # back to. The phone long-polls `/events` continuously, so at quit
+            # there is always a recently-closed connection on that port sitting
+            # in TIME_WAIT. bind() then raises "Address already in use" even
+            # though nothing is listening, `start_paired_companion` raises, and
+            # `main()` skips `_restore_tunnel()` entirely: the computer comes up
+            # unreachable and stays that way until TIME_WAIT expires.
+            #
+            # SO_REUSEADDR on POSIX only permits binding over a lingering
+            # TIME_WAIT entry. It does *not* let two live listeners share a
+            # port, so the fail-closed pinned-port policy above is untouched --
+            # a genuine conflict still raises, which is the behaviour that
+            # policy exists to guarantee.
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind((host, port))
         listener.setblocking(False)
         return listener

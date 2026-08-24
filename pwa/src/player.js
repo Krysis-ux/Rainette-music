@@ -748,6 +748,12 @@ function refillRetryBudget() {
 function finishTrack() {
 	if (state.repeat === 'one') {
 		audio.currentTime = 0;
+		// Re-arm the true-end guard. It is normally cleared by `playTrack`, and
+		// repeating in place deliberately does not go through it -- so without
+		// this the guard fires once and never again, and every loop after the
+		// first plays the whole silent tail of a stretched track before the
+		// native `ended` finally arrives.
+		endGuardKey = '';
 		audio.play().catch(reportError);
 		return;
 	}
