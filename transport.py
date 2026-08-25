@@ -455,7 +455,7 @@ class CloudflareQuickProvider(_CloudflareProvider):
     """
 
     id = CLOUDFLARE_QUICK
-    label = "Limited tunnel"
+    label = "Works anywhere"
     description = "No setup at all. The address changes every time Rainette restarts, so your phone has to rescan the code."
     capabilities = ProviderCapabilities(
         stable_hostname=False,
@@ -1128,7 +1128,7 @@ class _TailscaleProvider(_BaseProvider):
 
 
 class TailscaleServeProvider(_TailscaleProvider):
-    """The recommended option: a stable name that is never on the public internet.
+    """A stable name that is never on the public internet.
 
     This is also the closest thing to "just use the local network" that a
     browser will actually accept.  On the same Wi-Fi, Tailscale connects the two
@@ -1141,7 +1141,7 @@ class TailscaleServeProvider(_TailscaleProvider):
     id = TAILSCALE_SERVE
     mode = "serve"
     label = "Direct on your network"
-    description = "Recommended. On the same Wi-Fi your phone talks straight to this computer, so it is fast and nothing leaves your network. The address never changes, and your phone only scans a code once. Needs the free Tailscale app here and on your phone."
+    description = "On the same Wi-Fi your phone talks straight to this computer, so it is fast and nothing leaves your network. The address never changes, and your phone only scans a code once. Needs the free Tailscale app here and on your phone."
 
 
 class TailscaleFunnelProvider(_TailscaleProvider):
@@ -1266,7 +1266,14 @@ def catalogue() -> list[dict]:
             "id": pid,
             "label": _PROVIDER_CLASSES[pid].label,
             "description": _PROVIDER_CLASSES[pid].description,
-            "recommended": pid == TAILSCALE_SERVE,
+            # The recommendation follows the default rather than the option
+            # that is technically nicest. Tailscale is faster and more private
+            # when it applies, but it asks for a VPN app on the computer *and*
+            # the phone, and most people will use the plain tunnel that needs
+            # nothing. Recommending what most people will actually use keeps
+            # the recommendation honest -- and makes the WAN path the one that
+            # has to work, which is where the effort belongs.
+            "recommended": pid == DEFAULT_PROVIDER,
             "default": pid == DEFAULT_PROVIDER,
             **_PROVIDER_CLASSES[pid].capabilities.as_dict(),
         }

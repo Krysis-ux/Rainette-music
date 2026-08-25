@@ -901,6 +901,116 @@ class TestDownloadedMusicWithoutPairing:
         page.close()
 
 
+class TestDownloadsSurviveABadLink:
+    """A download must finish over the ordinary tunnel, on a link that drops.
+
+    This is the WAN path -- the default, and what most people use. `fetch` has
+    no timeout, so a connection that dies mid-transfer used to leave the read
+    hanging forever with no error: the download sat at whatever percentage it
+    had reached, including 0%, until the app was closed. Resuming matters as
+    much as retrying, because restarting a whole track on a metered link is how
+    a download never finishes at all.
+    """
+
+    def _phone_with_flaky_network(self, browser, base_url, computer):
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.set_default_timeout(15_000)
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.add_init_script(FAKE_AUDIO_SCRIPT)
+        # A relay that drops the first transfer half way and honours the Range
+        # header on the retry, which is what the real one does.
+        page.add_init_script(r"""
+        (() => {
+            const TOTAL = 400;
+            window.__fetchLog = [];
+            const real = window.fetch.bind(window);
+            window.fetch = (input, init = {}) => {
+                const url = String(input?.url || input);
+                if (!url.includes('/audio/')) return real(input, init);
+                const range = (init.headers || {}).Range || '';
+                window.__fetchLog.push(range || '(none)');
+                const start = range ? Number(range.match(/bytes=(\d+)-/)[1]) : 0;
+                const first = !range;
+                const body = new ReadableStream({
+                    start(controller) {
+                        // Half the track arrives...
+                        controller.enqueue(new Uint8Array(first ? TOTAL / 2 : TOTAL - start));
+                        if (!first) controller.close();
+                    },
+                    pull(controller) {
+                        // ...and the link dies only once that half has been
+                        // *read*. Erroring in start() would kill the stream
+                        // before a single byte was counted, leaving nothing to
+                        // resume from -- which is not what a dropped
+                        // connection does.
+                        if (first) controller.error(new TypeError('network error'));
+                    },
+                });
+                return Promise.resolve(new Response(body, {
+                    status: first ? 200 : 206,
+                    headers: {
+                        'Content-Type': 'audio/mp4',
+                        'Content-Length': String(first ? TOTAL : TOTAL - start),
+                    },
+                }));
+            };
+        })();
+        """)
+        page.add_init_script(
+            "localStorage.setItem('rainette.pwa.endpoint', %s);"
+            "localStorage.setItem('rainette.pwa.token', 'test-token');"
+            "localStorage.setItem('rainette.pwa.device_id', 'phone-1');"
+            % json.dumps(ENDPOINT)
+        )
+
+        def companion(route):
+            parsed = urlparse(route.request.url)
+            if parsed.path == "/status":
+                body = {"ok": True, "name": "Studio Mac", "device_id": "phone-1"}
+            elif parsed.path == "/command":
+                body = computer.handle_command(json.loads(route.request.post_data or "{}"))
+            elif parsed.path == "/events":
+                after = int(parse_qs(parsed.query).get("after", ["0"])[0])
+                body = computer.read_events(after)
+            else:
+                body = {"ok": True}
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+        page.route(f"{ENDPOINT}/**", companion)
+        page.goto(base_url + "index.html", wait_until="domcontentloaded")
+        return page, errors
+
+    def test_a_dropped_transfer_resumes_instead_of_hanging(self, browser, static_server):
+        computer = FakeComputer()
+        page, errors = self._phone_with_flaky_network(browser, static_server, computer)
+        page.locator("#appView").wait_for(state="visible")
+
+        result = page.evaluate(
+            """async () => {
+                const dl = await import('./src/downloads.js');
+                const phases = [];
+                const track = { source_id: 't1', title: 'Track 1', artist: 'Tester' };
+                let error = null, row = null;
+                try {
+                    row = await dl.downloadTrack(track, {
+                        onProgress: p => phases.push(p.phase),
+                    });
+                } catch (e) { error = String(e && (e.message || e)); }
+                return { size: row?.blob?.size ?? null, phases, log: window.__fetchLog, error };
+            }"""
+        )
+
+        assert result["log"][0] == "(none)", "the first attempt should ask for the whole file"
+        assert result["log"][1] == "bytes=200-", (
+            f"the retry must resume from where it stopped, not start again; "
+            f"asked for {result['log'][1]!r}"
+        )
+        assert "reconnecting" in result["phases"], "the resume was never surfaced"
+        assert not errors, errors
+        page.close()
+
+
 class TestScanner:
     def test_the_setup_screen_offers_a_scanner(self, browser, static_server):
         computer = FakeComputer()

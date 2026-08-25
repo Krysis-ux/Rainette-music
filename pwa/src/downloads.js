@@ -33,6 +33,25 @@ import {
  */
 const RESOLVE_TIMEOUT_MS = 50000;
 
+/* A download that has stopped receiving bytes, and what to do about it.
+ *
+ * `fetch` has no timeout. A mobile link that drops mid-transfer -- a hotspot
+ * losing signal, a train, a lift -- leaves the read hanging forever with no
+ * error, so the download sits at whatever percentage it reached, including 0%,
+ * until the app is closed. That is the "stuck at 0% all day" report, and it is
+ * a bug rather than slowness: nothing is going to arrive, and nothing says so.
+ *
+ * So a download that goes quiet for this long is treated as dead and resumed
+ * from where it stopped, with a `Range` header -- the same one seeking already
+ * uses, which the relay forwards and googlevideo honours. Resuming matters as
+ * much as retrying: starting a 4 MB track over on a metered link is how a
+ * download never finishes.
+ */
+const STALL_MS = 20000;
+const MAX_RESUMES = 4;
+/* Between attempts, so a link that is down for a moment is not hammered. */
+const RESUME_BACKOFF_MS = [0, 1000, 3000, 6000];
+
 /* Content types the relay actually returns, and what a file of each should be
  * called. Anything unrecognised keeps `.m4a`, which is what the format ladder
  * asks for and therefore the overwhelmingly likely answer. */
@@ -134,17 +153,11 @@ async function runDownload(track, { onProgress, signal }) {
 	onProgress?.({ phase: 'preparing', received: 0, total: 0, ratio: 0 });
 	const url = await resolveUrl(track);
 	onProgress?.({ phase: 'connecting', received: 0, total: 0, ratio: 0 });
-	const response = await fetch(url, { signal, cache: 'no-store' });
-	if (!response.ok) {
-		// The relay answers a failed upstream with a JSON error and a real
-		// status, so there is something specific to say rather than "failed".
-		throw new Error(await relayError(response));
-	}
 
-	const blob = await readWithProgress(response, onProgress, signal);
+	const { blob, contentType } = await fetchResumable(url, onProgress, signal);
 	if (!blob.size) throw new Error('That download arrived empty.');
 
-	const type = (response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+	const type = (contentType || '').split(';')[0].trim().toLowerCase();
 	const extension = EXTENSIONS[type] || 'm4a';
 	const artwork = await fetchArtwork(track, signal);
 
@@ -191,38 +204,115 @@ async function relayError(response) {
 	return `Your computer could not send that track (${response.status}).`;
 }
 
-/* Read the body in chunks so a 4 MB download can show movement. `response.blob()`
- * would be one line, but it reports nothing until it is finished, and a
- * progress bar that only ever shows 0% and then 100% is not a progress bar. */
-async function readWithProgress(response, onProgress, signal) {
-	const total = Number(response.headers.get('Content-Length')) || 0;
-	if (!response.body?.getReader) return response.blob();   // no streams: still correct, just silent
-
-	const reader = response.body.getReader();
+/* Fetch the whole track, surviving a link that comes and goes.
+ *
+ * Kept deliberately close to what playback already does: the same relay URL,
+ * the same `Range` header seeking uses. What is new is that a read which stops
+ * producing bytes is noticed at all -- `fetch` will wait on a dead socket
+ * forever -- and that the retry asks for the rest rather than the whole thing.
+ */
+async function fetchResumable(url, onProgress, signal) {
 	const chunks = [];
 	let received = 0;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			chunks.push(value);
-			received += value.length;
-			// `total` is 0 when the response carries no Content-Length. The
-			// ratio is then meaningless, so it is reported as null rather than
-			// as 0 -- a caller can tell "no progress yet" from "cannot know",
-			// and show movement instead of a bar frozen at zero.
-			onProgress?.({
-				phase: 'downloading',
-				received,
-				total,
-				ratio: total ? received / total : null,
-			});
+	let total = 0;
+	let contentType = '';
+	let lastError = null;
+
+	for (let attempt = 0; attempt <= MAX_RESUMES; attempt += 1) {
+		if (signal?.aborted) throw new Error('Download stopped.');
+		if (attempt) {
+			const wait = RESUME_BACKOFF_MS[Math.min(attempt, RESUME_BACKOFF_MS.length - 1)];
+			onProgress?.({ phase: 'reconnecting', received, total, ratio: total ? received / total : null });
+			if (wait) await sleep(wait, signal);
 		}
-	} catch (error) {
-		try { await reader.cancel(); } catch { /* already gone */ }
-		throw signal?.aborted ? new Error('Download stopped.') : error;
+
+		// Each attempt gets its own controller so the stall watchdog can end
+		// this read without cancelling the caller's whole download.
+		const attemptStop = new AbortController();
+		const onOuterAbort = () => attemptStop.abort();
+		signal?.addEventListener('abort', onOuterAbort, { once: true });
+		let watchdog = null;
+		const arm = () => {
+			clearTimeout(watchdog);
+			watchdog = setTimeout(() => attemptStop.abort(), STALL_MS);
+		};
+
+		try {
+			const headers = received ? { Range: `bytes=${received}-` } : {};
+			arm();
+			const response = await fetch(url, {
+				signal: attemptStop.signal, cache: 'no-store', headers,
+			});
+			clearTimeout(watchdog);
+
+			if (!response.ok) throw new Error(await relayError(response));
+			contentType = response.headers.get('Content-Type') || contentType;
+
+			// A server that ignored the Range restarts the body from zero, so
+			// the bytes already held are not a prefix of what is arriving.
+			if (received && response.status !== 206) {
+				chunks.length = 0;
+				received = 0;
+			}
+			if (!total) {
+				const length = Number(response.headers.get('Content-Length')) || 0;
+				total = response.status === 206 ? received + length : length;
+			}
+			if (!response.body?.getReader) {
+				const whole = await response.blob();
+				return { blob: whole, contentType };
+			}
+
+			const reader = response.body.getReader();
+			try {
+				for (;;) {
+					arm();
+					const { done, value } = await reader.read();
+					if (done) break;
+					chunks.push(value);
+					received += value.length;
+					onProgress?.({
+						phase: 'downloading',
+						received,
+						total,
+						ratio: total ? received / total : null,
+					});
+				}
+			} finally {
+				clearTimeout(watchdog);
+				try { await reader.cancel(); } catch { /* already finished */ }
+			}
+
+			// A short body is a truncated transfer, not a finished one: resume.
+			if (total && received < total) {
+				lastError = new Error('The connection dropped part-way.');
+				continue;
+			}
+			return { blob: new Blob(chunks, { type: contentType || 'audio/mp4' }), contentType };
+		} catch (error) {
+			clearTimeout(watchdog);
+			if (signal?.aborted) throw new Error('Download stopped.');
+			lastError = error;
+		} finally {
+			signal?.removeEventListener('abort', onOuterAbort);
+		}
 	}
-	return new Blob(chunks, { type: response.headers.get('Content-Type') || 'audio/mp4' });
+
+	throw new Error(
+		received
+			? 'The connection kept dropping, so that download could not finish.'
+			: String(lastError?.message || 'That download could not be started.'),
+	);
+}
+
+function sleep(ms, signal) {
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(resolve, ms);
+		signal?.addEventListener('abort', () => {
+			clearTimeout(timer);
+			reject(new Error('Download stopped.'));
+		}, { once: true });
+	});
 }
 
 /* Cover art is fetched separately and stored as a blob, so the local library

@@ -118,6 +118,9 @@ export function trackDownloadItems(track, { onChanged } = {}) {
 const PHASE_LABEL = {
 	preparing: 'Preparing',
 	connecting: 'Connecting to',
+	// The link dropped and the download is resuming from where it stopped.
+	// Worth naming: silence here is what "stuck" used to mean.
+	reconnecting: 'Reconnecting for',
 };
 
 /** Download one track, saying what happened. Never rejects. */

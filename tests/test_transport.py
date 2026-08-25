@@ -100,7 +100,7 @@ def test_the_manager_of_an_unconfigured_install_uses_the_quick_tunnel(tmp_path):
 
     # Assert
     assert status["provider"] == "cloudflare-quick"
-    assert status["provider_label"] == "Limited tunnel"
+    assert status["provider_label"] == "Works anywhere"
     assert status["stable_hostname"] is False
 
 
@@ -119,13 +119,18 @@ def test_every_advertised_provider_can_be_built(tmp_path):
 def test_the_labels_the_settings_page_shows_are_the_agreed_ones():
     """Labels describe what the user gets, not which vendor supplies it."""
     labels = {entry["id"]: entry["label"] for entry in transport.catalogue()}
-    assert labels["cloudflare-quick"] == "Limited tunnel"
+    assert labels["cloudflare-quick"] == "Works anywhere"
     assert labels["tailscale-serve"] == "Direct on your network"
     assert labels["tailscale-funnel"] == "Direct, plus reachable anywhere"
     # The recommendation is the one that is both fast on a home network and
     # still a secure context, so the phone client stays installable.
+    # The recommendation follows the default. Tailscale is better where it
+    # applies, but it asks for a VPN app on both devices; the plain tunnel needs
+    # nothing and is what most people will use, so it is the one recommended --
+    # and the one that has to work.
     recommended = [entry["id"] for entry in transport.catalogue() if entry["recommended"]]
-    assert recommended == ["tailscale-serve"]
+    assert recommended == [transport.DEFAULT_PROVIDER]
+    assert transport.DEFAULT_PROVIDER == "cloudflare-quick"
 
 
 def test_only_the_private_link_is_kept_off_the_public_internet():
