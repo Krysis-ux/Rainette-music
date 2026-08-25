@@ -29,18 +29,15 @@ import server
 
 
 class CompanionRebindTests(unittest.TestCase):
-    def _free_port(self) -> int:
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            return probe.getsockname()[1]
-
     @unittest.skipIf(os.name == "nt", "TIME_WAIT rebinding is a POSIX problem")
     def test_the_port_rebinds_while_a_closed_connection_lingers(self):
         """The exact shape of quit-and-relaunch with a phone paired."""
-        port = self._free_port()
-
-        # A listener, and a client that talked to it -- the long-poll.
-        listener = server._bind_companion_socket("127.0.0.1", port)
+        # Port 0 lets the kernel choose, and the socket holds it from that
+        # moment. Probing for a free port and closing it first leaves a gap in
+        # which a neighbouring test can take it -- which is exactly how this
+        # test failed once in a full run and passed every time on its own.
+        listener = server._bind_companion_socket("127.0.0.1", 0)
+        port = listener.getsockname()[1]
         listener.listen(8)
         client = socket.create_connection(("127.0.0.1", port), timeout=5)
         accepted, _ = listener.accept()
@@ -71,8 +68,8 @@ class CompanionRebindTests(unittest.TestCase):
         silently moved somewhere the phone cannot find. A *live* listener must
         still be a conflict; only the TIME_WAIT ghost is forgiven.
         """
-        port = self._free_port()
-        held = server._bind_companion_socket("127.0.0.1", port)
+        held = server._bind_companion_socket("127.0.0.1", 0)
+        port = held.getsockname()[1]
         held.listen(8)
         try:
             with self.assertRaises(OSError):
