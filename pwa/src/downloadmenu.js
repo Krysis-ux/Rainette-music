@@ -26,7 +26,7 @@
 import { el, toast, tap } from './dom.js';
 import { openSheet } from './sheets.js';
 import { artistName } from './state.js';
-import { isLocalTrack } from './local.js';
+import { isLocalTrack, formatBytes } from './local.js';
 import {
 	downloadTrack, downloadTracks, removeDownload, saveCopy,
 	isDownloaded, isDownloading, canChooseLocation,
@@ -111,6 +111,15 @@ export function trackDownloadItems(track, { onChanged } = {}) {
 	return items;
 }
 
+/* What the sheet says while there is nothing to measure. `preparing` is the
+ * computer resolving the stream (a yt-dlp call, allowed 50s) and `connecting`
+ * is the wait for the first byte -- together they are most of a short track's
+ * wall time, and they used to read as a frozen 0%. */
+const PHASE_LABEL = {
+	preparing: 'Preparing',
+	connecting: 'Connecting to',
+};
+
 /** Download one track, saying what happened. Never rejects. */
 export async function runTrackDownload(track) {
 	if (isDownloaded(track)) { toast('Already on this phone', { icon: 'downloaded' }); return false; }
@@ -170,7 +179,12 @@ export function runListDownload(tracks, { title = 'Download' } = {}) {
 				body.append(el('h2', 'sheet-title sheet-drag', title));
 
 				const count = el('p', 'download-count', `${pending.length} track${pending.length === 1 ? '' : 's'} to fetch`);
-				const now = el('p', 'download-now', 'Starting...');
+				const now = el('p', 'download-now', 'Preparing…');
+
+				// The number carries the precision; the bar carries the feel.
+				const percent = el('span', 'download-percent', '0%');
+				const head = el('div', 'download-head');
+				head.append(count, percent);
 
 				const bar = el('div', 'download-bar');
 				const fill = el('i', 'download-fill');
@@ -187,7 +201,7 @@ export function runListDownload(tracks, { title = 'Download' } = {}) {
 					stop.textContent = 'Stopping...';
 				});
 
-				body.append(count, bar, now, stop);
+				body.append(head, bar, now, stop);
 
 				/* The sheet being dismissed is not a cancel: a download the person
 				 * walked away from should still finish. Only Stop stops it.
@@ -204,15 +218,28 @@ export function runListDownload(tracks, { title = 'Download' } = {}) {
 
 				downloadTracks(pending, {
 					signal: controller.signal,
-					onProgress: ({ done, total, track, ratio }) => {
+					onProgress: ({ done, total, track, ratio, phase, received, bytes }) => {
 						// `done + ratio` reads as fractional progress through the
 						// list rather than a bar that jumps a whole track at a time.
-						const at = Math.min(total, done + (ratio || 0));
-						fill.style.width = `${total ? (at / total) * 100 : 0}%`;
+						// A null ratio means this track's size is unknown, so the
+						// track counts as started but not measurable -- the bar
+						// keeps the position it earned rather than snapping back.
+						const share = ratio == null ? 0 : ratio;
+						const at = Math.min(total, done + share);
+						const pct = total ? (at / total) * 100 : 0;
+						fill.style.width = `${pct}%`;
+						// Unknown size for the current track: keep the bar honest
+						// about the tracks already finished, and let the label
+						// carry the movement instead of faking a percentage.
+						bar.classList.toggle('is-indeterminate', ratio == null && phase === 'downloading');
 						bar.setAttribute('aria-valuenow', String(Math.round(at)));
+						percent.textContent = `${Math.round(pct)}%`;
 						count.textContent = `${done} of ${total} downloaded`;
 						const who = artistName(track);
-						now.textContent = who ? `${track.title || 'Track'} — ${who}` : (track.title || 'Track');
+						const name = who ? `${track.title || 'Track'} — ${who}` : (track.title || 'Track');
+						now.textContent = PHASE_LABEL[phase]
+							? `${PHASE_LABEL[phase]} ${name}`
+							: (ratio == null && received ? `${name} · ${formatBytes(received)}` : name);
 					},
 				}).then(result => {
 					settled = true;

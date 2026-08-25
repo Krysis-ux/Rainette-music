@@ -1224,11 +1224,27 @@ dialog .primary { margin-top: 10px; }
 
 .sheet-download .sheet-body { display: grid; gap: 12px; }
 
+/* Count on the left, percentage on the right, sharing one baseline — so the
+   number that changes has a fixed home and the sheet never reflows. */
+.download-head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+}
+
 .download-count {
 	margin: 0;
 	color: var(--text);
 	font-size: 14px;
 	font-weight: 560;
+}
+
+.download-percent {
+	color: var(--text-muted);
+	font-size: 13px;
+	font-weight: 560;
+	font-variant-numeric: tabular-nums;
 }
 
 .download-bar {
@@ -1271,8 +1287,26 @@ dialog .primary { margin-top: 10px; }
 
 .download-stop:disabled { opacity: 0.5; }
 
+/* A track whose size the server did not state cannot have a percentage, so the
+   bar shows movement instead of inventing one: the earned width stays, and a
+   sheen travels over it. Anything else means either a frozen bar or a lie. */
+.download-bar.is-indeterminate {
+	background:
+		linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 45%, transparent), transparent)
+		var(--surface);
+	background-size: 40% 100%;
+	background-repeat: no-repeat;
+	animation: download-sweep 1.1s linear infinite;
+}
+
+@keyframes download-sweep {
+	from { background-position: -40% 0; }
+	to   { background-position: 140% 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
 	.download-fill { transition: none; }
+	.download-bar.is-indeterminate { animation: none; }
 }
 
 /* A live equaliser marks the playing row. Colour alone gets lost in a list of

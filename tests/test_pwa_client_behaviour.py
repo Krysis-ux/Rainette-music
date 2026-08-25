@@ -822,6 +822,85 @@ class TestCarTransportCommands:
         page.close()
 
 
+class TestDownloadedMusicWithoutPairing:
+    """Downloads are on the phone, so the pairing screen must not gate them.
+
+    A downloaded track plays from a blob in this phone's own storage and never
+    touches the network. Requiring a pairing first was a gate with nothing
+    behind it, and it bit hardest exactly when the computer was off or
+    unreachable -- the moment the downloads exist for.
+    """
+
+    def _unpaired_phone(self, browser, base_url):
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.set_default_timeout(8_000)
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.add_init_script(FAKE_AUDIO_SCRIPT)
+        page.goto(base_url + "index.html", wait_until="domcontentloaded")
+        return page, errors
+
+    def _seed_one_download(self, page):
+        page.evaluate(
+            """async () => {
+                const local = await import('./src/local.js');
+                const blob = new Blob([new Uint8Array(2048)], { type: 'audio/mp4' });
+                await local.saveDownloadedTrack({
+                    catalogKey: 'yt:seeded', blob, title: 'Midnight Drive',
+                    artist: 'Tester', album: 'Demo EP', artwork: null,
+                    duration_s: 6, file_name: 'midnight.m4a',
+                });
+            }"""
+        )
+
+    def test_a_phone_with_no_downloads_is_not_offered_any(self, browser, static_server):
+        """A door onto nothing is worse than no door."""
+        page, errors = self._unpaired_phone(browser, static_server)
+        page.locator("#setupView").wait_for(state="visible")
+        page.wait_for_timeout(400)
+
+        assert page.locator("#offlineLibrary").is_hidden()
+        assert not errors, errors
+        page.close()
+
+    def test_downloaded_music_is_offered_before_pairing(self, browser, static_server):
+        page, errors = self._unpaired_phone(browser, static_server)
+        page.locator("#setupView").wait_for(state="visible")
+        self._seed_one_download(page)
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#setupView").wait_for(state="visible")
+
+        page.locator("#offlineLibrary").wait_for(state="visible")
+        assert "1 track" in page.locator("#offlineCount").inner_text()
+        assert not errors, errors
+        page.close()
+
+    def test_it_opens_the_local_library_and_plays_with_no_computer(
+            self, browser, static_server):
+        """The invariant: the music plays. No pairing, no network, no excuses."""
+        page, errors = self._unpaired_phone(browser, static_server)
+        page.locator("#setupView").wait_for(state="visible")
+        self._seed_one_download(page)
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#offlineLibrary").wait_for(state="visible")
+
+        page.locator("#openDownloads").click()
+        page.locator("#appView").wait_for(state="visible")
+        page.locator("#libraryList .track").first.wait_for(state="visible")
+        assert "Midnight Drive" in page.locator("#libraryList").inner_text()
+
+        page.locator("#libraryList .track").first.click()
+        page.wait_for_function("() => window.__rainetteAudio?.paused === false")
+
+        src = page.evaluate("() => window.__rainetteAudio.src")
+        assert src.startswith("blob:"), (
+            f"a downloaded track must play from this phone's own storage, not "
+            f"the network; got {src[:60]!r}"
+        )
+        assert not errors, errors
+        page.close()
+
+
 class TestScanner:
     def test_the_setup_screen_offers_a_scanner(self, browser, static_server):
         computer = FakeComputer()

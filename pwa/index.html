@@ -53,6 +53,30 @@
         <p class="sessions-divider"><span>or pair a new computer</span></p>
       </section>
 
+      <!-- Music already on this phone. Downloads live in the phone's own
+           storage and need no computer to play, so making people pair first to
+           reach their own files was a gate with nothing behind it — worst of
+           all when the computer is off, which is exactly when you want the
+           downloads. Hidden entirely when there is nothing downloaded. -->
+      <section id="offlineLibrary" class="sessions" hidden aria-labelledby="offlineTitle">
+        <h2 id="offlineTitle" class="sessions-title">On this phone</h2>
+        <div class="sessions-list">
+          <button id="openDownloads" class="session-row" type="button">
+            <span class="session-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+                   stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M5 21h14"/>
+              </svg>
+            </span>
+            <span class="session-copy">
+              <b>Downloaded music</b>
+              <span id="offlineCount">Ready to play without your computer</span>
+            </span>
+          </button>
+        </div>
+        <p class="sessions-divider"><span>or pair a computer</span></p>
+      </section>
+
       <form id="pairForm" class="pair-form">
         <label class="field">
           <span>Pairing link</span>

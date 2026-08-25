@@ -247,7 +247,59 @@ function showSetup(message = '') {
 	setupError.textContent = message;
 	$('#setupStandaloneNote').hidden = !(isStandalone() && !state.token);
 	renderRecentSessions();
+	renderOfflineLibrary();
 	setStatus('', 'Not connected');
+}
+
+/* Downloaded tracks need no computer, so the pairing screen offers them.
+ *
+ * A download is already on this phone: `local.js` plays it from a blob and
+ * never asks the network. Requiring a pairing first was a gate with nothing
+ * behind it, and it bit hardest exactly when the computer was off or
+ * unreachable — the moment the downloads exist for. Counted rather than
+ * assumed, so the row never appears promising music that is not there. */
+async function renderOfflineLibrary() {
+	const panel = $('#offlineLibrary');
+	const label = $('#offlineCount');
+	try {
+		const count = await localTrackCount();
+		panel.hidden = count === 0;
+		if (!count) return;
+		const bytes = await localBytes().catch(() => 0);
+		const tracks = `${count} track${count === 1 ? '' : 's'}`;
+		label.textContent = bytes ? `${tracks} · ${formatBytes(bytes)}` : tracks;
+	} catch {
+		// IndexedDB unavailable (private mode, wiped storage). Offering a door
+		// that opens onto nothing is worse than not offering one.
+		panel.hidden = true;
+	}
+}
+
+/* Open the app with no computer behind it.
+ *
+ * Deliberately not `showApp`: there is no session to start, no event loop to
+ * run and no status to poll. `state.connected` stays false, which is what every
+ * other module already checks before reaching for the network, so the rest of
+ * the app degrades the way it does when a computer goes away mid-session --
+ * a path that already exists rather than a second one invented here. */
+function openLocalOnly() {
+	closeAllSheets();
+	setupView.hidden = true;
+	appView.hidden = false;
+	tabBar.hidden = false;
+	computerLabel.textContent = 'On this phone';
+	setStatus('', 'On this phone');
+	// Land where the music actually is, rather than on a Home tab that has
+	// nothing to show and a Search that cannot reach anything.
+	library.mode = 'local';
+	library.playlistId = null;
+	library.playlistName = '';
+	library.playlist = null;
+	for (const [id, mode] of LIBRARY_MODES) {
+		$(id).setAttribute('aria-selected', String(mode === 'local'));
+	}
+	switchTab('library');
+	renderLibraryPanel();
 }
 
 function showApp(status) {
@@ -1219,6 +1271,8 @@ $('#connectionButton').addEventListener('click', () => {
 	if (state.connected) switchTab('settings');
 	else showSetup();
 });
+
+$('#openDownloads').addEventListener('click', () => { openLocalOnly(); });
 
 $('#libraryRefreshButton').addEventListener('click', () => { state.library = []; renderLibraryPanel(); });
 

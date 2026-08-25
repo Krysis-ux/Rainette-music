@@ -123,7 +123,17 @@ export function downloadTrack(track, { onProgress, signal } = {}) {
 async function runDownload(track, { onProgress, signal }) {
 	if (isLocalTrack(track)) throw new Error('That track is already on this phone.');
 
+	/* Say that something is happening before anything is measurable.
+	 *
+	 * `resolveUrl` is a yt-dlp call on the computer and is allowed 50 seconds;
+	 * the fetch that follows has its own wait before the first byte. Until then
+	 * there is no ratio to report, and reporting nothing left the bar sitting
+	 * at a dead 0% -- which is what "stuck at 0% all day" actually looks like,
+	 * whether or not anything is wrong. A phase costs nothing and is the
+	 * difference between "working" and "frozen". */
+	onProgress?.({ phase: 'preparing', received: 0, total: 0, ratio: 0 });
 	const url = await resolveUrl(track);
+	onProgress?.({ phase: 'connecting', received: 0, total: 0, ratio: 0 });
 	const response = await fetch(url, { signal, cache: 'no-store' });
 	if (!response.ok) {
 		// The relay answers a failed upstream with a JSON error and a real
@@ -197,7 +207,16 @@ async function readWithProgress(response, onProgress, signal) {
 			if (done) break;
 			chunks.push(value);
 			received += value.length;
-			onProgress?.({ received, total, ratio: total ? received / total : 0 });
+			// `total` is 0 when the response carries no Content-Length. The
+			// ratio is then meaningless, so it is reported as null rather than
+			// as 0 -- a caller can tell "no progress yet" from "cannot know",
+			// and show movement instead of a bar frozen at zero.
+			onProgress?.({
+				phase: 'downloading',
+				received,
+				total,
+				ratio: total ? received / total : null,
+			});
 		}
 	} catch (error) {
 		try { await reader.cancel(); } catch { /* already gone */ }
@@ -264,11 +283,12 @@ export async function downloadTracks(tracks, { onProgress, signal } = {}) {
 
 	for (const track of wanted) {
 		if (signal?.aborted) return { total, done, failed, cancelled: true, errors };
-		onProgress?.({ done, total, track, ratio: 0, failed });
+		onProgress?.({ done, total, track, ratio: 0, failed, phase: 'preparing' });
 		try {
 			await downloadTrack(track, {
 				signal,
-				onProgress: ({ ratio }) => onProgress?.({ done, total, track, ratio, failed }),
+				onProgress: ({ ratio, phase, received, total: bytes }) =>
+					onProgress?.({ done, total, track, ratio, failed, phase, received, bytes }),
 			});
 			done += 1;
 		} catch (error) {
@@ -276,7 +296,7 @@ export async function downloadTracks(tracks, { onProgress, signal } = {}) {
 			failed += 1;
 			errors.push({ track, message: String(error?.message || error) });
 		}
-		onProgress?.({ done, total, track, ratio: 1, failed });
+		onProgress?.({ done, total, track, ratio: 1, failed, phase: 'done' });
 	}
 	await refreshDownloaded();
 	return { total, done, failed, cancelled: false, errors };
