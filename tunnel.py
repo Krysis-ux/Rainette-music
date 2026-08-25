@@ -39,6 +39,7 @@ from __future__ import annotations
 import io
 import os
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -370,6 +371,69 @@ def _probe_reachable(url: str) -> bool:
         return exc.code in (200, 401)
     except (urllib.error.URLError, OSError, ValueError):
         return False
+
+
+def _tls_is_intercepted(host: str = "www.youtube.com") -> bool:
+    """True when something on this network re-signs TLS for *host*.
+
+    A school or office firewall that inspects traffic presents its own
+    certificate. `music_bridge.describe_resolve_failure` already names this for
+    yt-dlp; the tunnel needs it for the same reason, because the same network
+    blocks the tunnel and the user is told neither.
+
+    Deliberately compared against a control host: a machine that simply has no
+    working TLS at all would otherwise be reported as filtered.
+    """
+    def issuer(name: str) -> str:
+        # `getpeercert()` returns an empty dict when verification is off, and it
+        # has to be off here -- the whole point is to look at a certificate this
+        # machine does *not* trust. So the DER is read and parsed instead.
+        try:
+            from cryptography import x509
+        except Exception:
+            return ""
+        try:
+            with socket.create_connection((name, 443), timeout=5) as raw:
+                context = ssl.create_default_context()
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+                with context.wrap_socket(raw, server_hostname=name) as tls:
+                    der = tls.getpeercert(binary_form=True)
+            if not der:
+                return ""
+            return x509.load_der_x509_certificate(der).issuer.rfc4514_string()
+        except Exception:
+            return ""
+
+    filtered = issuer(host)
+    control = issuer("www.google.com")
+    if not filtered or not control:
+        return False
+    # Same issuer for both means an ordinary CA, or a proxy in front of
+    # everything -- either way it says nothing specific about this host.
+    return filtered != control and "google" not in filtered.lower()
+
+
+def describe_unreachable(url: str) -> str:
+    """Say why an address that was minted never answered.
+
+    "check that this computer can reach the internet" was the only thing this
+    ever said, and on the network that actually causes it the computer's
+    internet is fine -- it is the tunnel specifically that is blocked. Naming
+    the firewall is the difference between a person changing networks and a
+    person restarting the app for three minutes at a time.
+    """
+    if _tls_is_intercepted():
+        return (
+            "this network is blocking the tunnel — its firewall is inspecting "
+            "encrypted traffic, so Cloudflare's address never reaches this "
+            "computer. Try another Wi-Fi network or a phone hotspot."
+        )
+    return (
+        "the tunnel address never answered. The connection was made, but "
+        "nothing reached this computer through it — a firewall or a captive "
+        "portal on this network is the usual cause."
+    )
 
 
 class TunnelManager:
@@ -923,9 +987,7 @@ class TunnelManager:
             self._set_status(message="Waiting for the tunnel to come online…")
             provider.await_ready(handle, time.monotonic() + _REGISTRATION_TIMEOUT_S)
             if not self._wait_reachable(url, handle, generation):
-                raise TunnelError(
-                    "the tunnel address never answered; check that this computer can reach the internet"
-                )
+                raise TunnelError(describe_unreachable(url))
         except BaseException:
             self._terminate(handle.process, timeout_s=5.0)
             raise

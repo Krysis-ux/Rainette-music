@@ -520,3 +520,59 @@ def test_written_config_is_valid_json(isolated_config):
         "pwa_url": "https://music-pwa-web.vercel.app",
         "public_url": "https://calm-frog-mixes.trycloudflare.com",
     }
+
+
+# ── naming a network that blocks the tunnel ───────────────────────────────
+
+
+def test_a_filtered_network_is_named_rather_than_blamed_on_the_internet(monkeypatch):
+    """"Check your internet" is wrong advice on the network that causes this.
+
+    A school or office FortiGate re-signs TLS and blocks the tunnel while the
+    computer's ordinary internet works perfectly. Sitting for three minutes and
+    then saying "check that this computer can reach the internet" sends the
+    user to fix something that is not broken.
+    """
+    monkeypatch.setattr(tunnel, "_tls_is_intercepted", lambda *a, **k: True)
+    message = tunnel.describe_unreachable("https://x.trycloudflare.com")
+    assert "firewall" in message
+    assert "another Wi-Fi" in message or "hotspot" in message
+
+
+def test_an_ordinary_failure_does_not_claim_a_firewall(monkeypatch):
+    monkeypatch.setattr(tunnel, "_tls_is_intercepted", lambda *a, **k: False)
+    message = tunnel.describe_unreachable("https://x.trycloudflare.com")
+    assert "never answered" in message
+
+
+def test_the_interception_probe_can_actually_run(monkeypatch):
+    """It is all inside a broad `except`, so a coding error looks like "clean".
+
+    This shipped returning False for every network because `socket` was not
+    imported: the NameError was swallowed by the same handler that exists for
+    genuine network failures. Calling it against a stubbed connector proves the
+    body runs rather than failing silently.
+    """
+    seen = []
+
+    class _FakeTLS:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def getpeercert(self, binary_form=False): return b""
+
+    class _FakeCtx:
+        check_hostname = True
+        verify_mode = None
+        def wrap_socket(self, raw, server_hostname=None):
+            seen.append(server_hostname)
+            return _FakeTLS()
+
+    class _FakeSock:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+
+    monkeypatch.setattr(tunnel.socket, "create_connection", lambda *a, **k: _FakeSock())
+    monkeypatch.setattr(tunnel.ssl, "create_default_context", lambda *a, **k: _FakeCtx())
+
+    assert tunnel._tls_is_intercepted() is False   # no cert bytes: no claim
+    assert seen, "the probe never opened a connection; its body did not run"
