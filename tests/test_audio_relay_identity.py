@@ -432,3 +432,48 @@ class PhoneDiagnosticContractTests(unittest.TestCase):
             "an open-ended range with no cancel would pull the whole track "
             "down just to read a status code",
         )
+
+
+class TrustStoreTests(unittest.TestCase):
+    """The frozen macOS build shipped with no certificate authorities at all.
+
+    ``no-certifi`` tells yt-dlp to use the operating system's trust store. On
+    Windows that picks up enterprise roots, which is the point. On macOS Python
+    cannot read the Keychain, and a frozen build's OpenSSL default paths point
+    at the *build* machine's Homebrew directory — so it means "no roots", every
+    request to YouTube fails before it starts, and the app told users on their
+    own home Wi-Fi that a firewall was intercepting the connection.
+    """
+
+    def test_system_trust_is_windows_only(self):
+        import os
+        if os.name == "nt":
+            self.assertIn("no-certifi", music_bridge._SYSTEM_TRUST_COMPAT)
+        else:
+            self.assertEqual(
+                music_bridge._SYSTEM_TRUST_COMPAT, set(),
+                "off Windows this must be empty so yt-dlp uses the certifi "
+                "bundle the app already ships; the OS store is not reachable "
+                "from a frozen Python here",
+            )
+
+    def test_no_roots_is_reported_as_our_fault_not_the_network(self):
+        original = music_bridge._has_trust_roots
+        music_bridge._has_trust_roots = lambda: False
+        try:
+            message = music_bridge.describe_resolve_failure(
+                RuntimeError("CERTIFICATE_VERIFY_FAILED certificate verify failed"))
+        finally:
+            music_bridge._has_trust_roots = original
+        self.assertIn("fault in the app", message)
+        self.assertNotIn("firewall", message)
+
+    def test_a_real_interception_still_names_the_network(self):
+        original = music_bridge._has_trust_roots
+        music_bridge._has_trust_roots = lambda: True
+        try:
+            message = music_bridge.describe_resolve_failure(
+                RuntimeError("CERTIFICATE_VERIFY_FAILED certificate verify failed"))
+        finally:
+            music_bridge._has_trust_roots = original
+        self.assertIn("firewall", message)

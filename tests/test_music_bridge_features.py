@@ -1,6 +1,7 @@
 import time
 import unittest
 import tempfile
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -89,9 +90,23 @@ class FakeState:
 
 class MusicBridgeFeatureTests(unittest.TestCase):
     def test_network_clients_use_the_windows_system_trust_store(self):
-        self.assertTrue(music_bridge.SYSTEM_TRUST_ENABLED)
-        self.assertIn("no-certifi", music_bridge._SEARCH_OPTS["compat_opts"])
-        self.assertIn("no-certifi", music_bridge._STREAM_OPTS["compat_opts"])
+        """On Windows only — the name was always right, the assertion was not.
+
+        This asserted `no-certifi` on every platform, which is what kept a real
+        bug in place: on a frozen macOS build the OS trust store is unreachable
+        (Python cannot read the Keychain, and the bundled OpenSSL's default
+        paths point at the build machine), so it meant "no roots at all" and
+        every YouTube request failed before it started. The app then blamed the
+        user's network for it.
+        """
+        if os.name == "nt":
+            self.assertTrue(music_bridge.SYSTEM_TRUST_ENABLED)
+            self.assertIn("no-certifi", music_bridge._SEARCH_OPTS["compat_opts"])
+            self.assertIn("no-certifi", music_bridge._STREAM_OPTS["compat_opts"])
+        else:
+            self.assertFalse(music_bridge.SYSTEM_TRUST_ENABLED)
+            self.assertNotIn("no-certifi", music_bridge._SEARCH_OPTS["compat_opts"])
+            self.assertNotIn("no-certifi", music_bridge._STREAM_OPTS["compat_opts"])
 
     def test_import_does_not_replace_the_process_ssl_context(self):
         """Client trust configuration must not globally replace SSLContext.

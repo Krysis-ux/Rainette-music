@@ -10,8 +10,10 @@ consumes the resolved URL directly.
 from __future__ import annotations
 
 import json
+import os
 import re
 import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -25,13 +27,25 @@ import audio_outputs
 import local_library
 import shared
 
-# yt-dlp normally prefers certifi.  ``no-certifi`` asks its own request layer to
-# load the operating-system trust store instead, including enterprise roots on
-# Windows, without replacing ``ssl.SSLContext`` process-wide.  The old global
-# truststore injection installed a client-only context in the stdlib module;
-# that made the companion's TLS *server* accept and then drop every connection.
-_SYSTEM_TRUST_COMPAT = {"no-certifi"}
-SYSTEM_TRUST_ENABLED = True
+# ``no-certifi`` asks yt-dlp's request layer to use the operating-system trust
+# store rather than certifi, without replacing ``ssl.SSLContext`` process-wide
+# (the old global truststore injection installed a client-only context in the
+# stdlib module, which made the companion's TLS *server* accept and then drop
+# every connection).
+#
+# **Windows only, deliberately.** There it picks up enterprise roots, which is
+# the whole point. On macOS it is actively harmful: Python's ``ssl`` cannot read
+# the Keychain, and a frozen build's OpenSSL has no CA path that exists on the
+# user's machine — measured on a real install, ``get_default_verify_paths()``
+# points at the *build* machine's Homebrew directory. So "use the system store"
+# means "use no roots at all", every TLS verify fails with "unable to get local
+# issuer certificate", and the app blamed the user's network for it — telling
+# people on their own home Wi-Fi that a firewall was intercepting YouTube.
+#
+# The bundle already ships ``certifi/cacert.pem``; this stops us refusing to use
+# it on the one platform that has nothing else.
+_SYSTEM_TRUST_COMPAT = {"no-certifi"} if os.name == "nt" else set()
+SYSTEM_TRUST_ENABLED = os.name == "nt"
 
 # yt-dlp is an optional dependency; the player degrades gracefully without it.
 try:
@@ -602,6 +616,22 @@ def stream_request_headers(source_id: str) -> dict[str, str]:
     return dict((cached or {}).get("http_headers") or {})
 
 
+def _has_trust_roots() -> bool:
+    """Can this process verify *any* certificate?
+
+    A frozen macOS build was shipping with none: its OpenSSL default paths
+    pointed at the build machine's Homebrew directory, which does not exist on
+    a user's Mac. Zero roots makes every TLS handshake fail with "unable to get
+    local issuer certificate" -- indistinguishable, from the error text alone,
+    from a firewall re-signing traffic. This is what tells them apart, and it
+    needs no network to answer.
+    """
+    try:
+        return bool(ssl.create_default_context().get_ca_certs())
+    except Exception:
+        return False
+
+
 def describe_resolve_failure(exc: BaseException) -> str:
     """Turn a yt-dlp failure into something a person can act on.
 
@@ -612,6 +642,16 @@ def describe_resolve_failure(exc: BaseException) -> str:
     text = str(exc)
     lowered = text.lower()
     if "certificate_verify_failed" in lowered or "certificate verify failed" in lowered:
+        # Two very different causes, one error string. Blaming the network for
+        # both told people sitting on their own home Wi-Fi that a firewall was
+        # intercepting YouTube -- which sent them to reset a router that was
+        # working perfectly, while the actual fault was in this build.
+        if not _has_trust_roots():
+            return ("Rainette cannot verify secure connections on this computer: "
+                    "this copy has no certificate authorities loaded, so every "
+                    "request to YouTube fails before it starts. This is a fault "
+                    "in the app rather than your network — reinstalling the "
+                    "latest version is the fix.")
         return ("This network is blocking YouTube — its firewall is intercepting "
                 "the connection, so Rainette cannot reach the audio. Try another "
                 "Wi-Fi network or a phone hotspot.")
