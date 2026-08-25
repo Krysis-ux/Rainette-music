@@ -183,3 +183,31 @@ class FrontendReleaseContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlaybackFailureReasonTests(unittest.TestCase):
+    """A failure the computer can explain must not arrive as "playback failed".
+
+    `music_bridge.describe_resolve_failure` names the common causes -- a network
+    blocking YouTube, an unavailable video, a bot check -- and sends the text as
+    `msg`. The relay has always forwarded `error_reason`, and the banner has
+    always been able to render one. Nothing ever put the two together, so every
+    named cause was computed and then discarded, and the user saw the one string
+    that tells them nothing.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mini = (ROOT / "web" / "miniplayer.js").read_text(encoding="utf-8")
+        cls.music = (ROOT / "web" / "rainette_music.js").read_text(encoding="utf-8")
+
+    def test_the_broadcast_carries_a_reason(self):
+        self.assertIn("error_reason: String(errorReason", self.mini)
+
+    def test_a_failed_reresolve_keeps_the_computers_words(self):
+        self.assertIn("reason = String(res?.msg", self.mini,
+                      "the named cause arrives as `msg` and must not be dropped")
+        self.assertIn("_terminalLoadFailure(loadToken, reason)", self.mini)
+
+    def test_the_banner_prefers_the_reason_over_the_generic_text(self):
+        self.assertIn("msg.error_reason", self.music)

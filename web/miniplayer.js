@@ -460,14 +460,19 @@ function _applyAndPlay(track, url, loadToken) {
 	});
 }
 
-function _terminalLoadFailure(loadToken) {
+function _terminalLoadFailure(loadToken, reason = '') {
 	const track = state.queue[state.index];
 	if (!track || !loadGuard.isCurrent(loadToken, trackKey(track))) return false;
 	state.resolvingId = null;
 	state.playing = false;
 	_renderPlay();
 	_renderMeta(track, 'error');
-	_broadcast('error', false);
+	// The computer already worked out *why* -- `describe_resolve_failure` names
+	// a network blocking YouTube, an unavailable video, a bot check -- and this
+	// was throwing it away, so every one of them reached the user as the same
+	// unactionable "playback failed". The banner has always been able to show a
+	// reason; nothing ever gave it one.
+	_broadcast('error', false, reason);
 	if (pendingOutputTransfer?.trackKey === trackKey(track)) finishOutputTransfer(false, 'Desktop could not load this track');
 	return false;
 }
@@ -571,6 +576,7 @@ async function _reResolveAndResume(loadToken) {
 	track._url = '';
 	track._urlAt = 0;
 	track._expiresHintS = 0;
+	let reason = '';
 	try {
 		const res = await requestStream(track, { forceRefresh: true, loadToken });
 		if (!loadGuard.isCurrent(loadToken, trackKey(state.queue[state.index]))) return false;
@@ -582,8 +588,12 @@ async function _reResolveAndResume(loadToken) {
 			_applyAndPlay(track, res.url, loadToken);
 			return true;
 		}
-	} catch { /* fall through */ }
-	return _terminalLoadFailure(loadToken);
+		// `msg` is where the computer puts the named cause.
+		reason = String(res?.msg || '');
+	} catch (error) {
+		reason = String(error?.message || '');
+	}
+	return _terminalLoadFailure(loadToken, reason);
 }
 
 // ── Transport ────────────────────────────────────────────────────────────────
@@ -960,7 +970,7 @@ function _broadcastEq() {
 }
 
 // ── Now-playing broadcast (keeps the browser window in sync) ─────────────────
-function _broadcast(mode, playing) {
+function _broadcast(mode, playing, errorReason = '') {
 	const track = state.queue[state.index] || null;
 	const cleanTrack = publicTrack(track);
 	const cleanQueue = state.queue.map(publicTrack).filter(Boolean);
@@ -972,6 +982,7 @@ function _broadcast(mode, playing) {
 		track: cleanTrack,
 		state: resolvedMode,
 		playing: !!playing,
+		error_reason: String(errorReason || ''),
 		repeat: state.repeat,
 		// Derived compatibility field: every consumer that predates three-state
 		// repeat (and the Python relay's bool coercion) still reads `loop`.
