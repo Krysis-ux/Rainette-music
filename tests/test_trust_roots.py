@@ -41,14 +41,43 @@ def _run_with_no_roots(script: str) -> subprocess.CompletedProcess:
     )
 
 
+def _can_simulate_no_roots() -> bool:
+    """Can this platform be put into the broken state at all?
+
+    On Windows it cannot: Python loads the system certificate store regardless
+    of `SSL_CERT_FILE`, so the probe still sees hundreds of roots. That is not a
+    gap in the test — it is the reason the bug is macOS-only, and why
+    `no-certifi` is right on Windows and wrong everywhere else. The tests that
+    depend on the simulation skip rather than assert something the platform
+    makes impossible.
+    """
+    try:
+        probe = _run_with_no_roots(
+            "import ssl; print(len(ssl.create_default_context().get_ca_certs()))"
+        )
+        return probe.stdout.strip() == "0"
+    except Exception:
+        return False
+
+
+NO_ROOTS_SIMULATABLE = _can_simulate_no_roots()
+_NEEDS_SIMULATION = unittest.skipUnless(
+    NO_ROOTS_SIMULATABLE,
+    "this platform always has trust roots (Windows loads the system store "
+    "regardless), which is why the bug it guards cannot happen here",
+)
+
+
 class TrustRootTests(unittest.TestCase):
+    @_NEEDS_SIMULATION
     def test_a_process_with_no_roots_really_has_none(self):
-        """The premise. Without it the next test proves nothing."""
+        """The premise. Without it the tests below prove nothing."""
         probe = _run_with_no_roots(
             "import ssl; print(len(ssl.create_default_context().get_ca_certs()))"
         )
         self.assertEqual(probe.stdout.strip(), "0", probe.stderr[-400:])
 
+    @_NEEDS_SIMULATION
     def test_importing_shared_restores_them(self):
         probe = _run_with_no_roots(
             "import shared, ssl; "
@@ -61,6 +90,7 @@ class TrustRootTests(unittest.TestCase):
             "every TLS client in the app fails before reaching the network",
         )
 
+    @_NEEDS_SIMULATION
     def test_a_stale_ssl_cert_file_is_not_trusted(self):
         """A variable naming a file that is gone is still "no roots"."""
         probe = _run_with_no_roots("import shared; print(bool(shared.TRUST_BUNDLE))")
