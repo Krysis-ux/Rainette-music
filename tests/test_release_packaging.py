@@ -177,7 +177,7 @@ def test_github_release_pipeline_splits_tests_platform_builds_and_publish_permis
     # macOS builds on a real macOS runner: the bundle is produced by PyInstaller
     # via AppKit and packaged with ditto, neither of which cross-compiles.
     assert "needs: test" in macos_build_job
-    assert "runs-on: macos-14" in macos_build_job
+    assert "runs-on: macos-15" in macos_build_job
     assert "release/build-macos-release.sh --version \"${RELEASE_VERSION}\" --dmg" in macos_build_job
     # Both builds, because this one job signs both platforms' manifests and so
     # cannot start until each has produced one.
@@ -356,3 +356,16 @@ def test_every_runtime_dependency_is_declared():
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
     for package in ("aiohttp", "cryptography", "filelock", "yt-dlp", "ytmusicapi", "mutagen"):
         assert package in requirements, f"{package} is imported but not declared"
+
+
+def test_macos_bundle_runs_the_native_interface_over_the_engine():
+    """The build script and the app agree on the engine's filename."""
+    script = _build_macos_script()
+    locator = (ROOT / "macos" / "Sources" / "RainetteMusic" / "Engine" / "EngineProcess.swift").read_text(encoding="utf-8")
+
+    assert 'swift build -c release --package-path "$ROOT/macos"' in script
+    assert 'mv "$MACOS_DIR/$APP_NAME" "$MACOS_DIR/rainette-engine"' in script
+    assert 'static let bundledName = "rainette-engine"' in locator
+    assert script.index("Native interface") < script.index("codesign --force --deep")
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert "rainette-engine\" --engine" in workflow

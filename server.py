@@ -1276,6 +1276,38 @@ def build_companion_app(
     return app
 
 
+# ── Native app bridge: WindowApi calls over HTTP (desktop app only) ─────────
+
+_native_api: Callable[[str, list], object] | None = None
+
+
+def set_native_api(dispatch: Callable[[str, list], object] | None) -> None:
+    global _native_api
+    _native_api = dispatch
+
+
+async def native_api_call(request: web.Request) -> web.StreamResponse:
+    if not _request_authorized(request):
+        return _json_error(403, "forbidden")
+    dispatch = _native_api
+    if dispatch is None:
+        return _json_error(404, "no native front-end is attached")
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        body = {}
+    args = body.get("args") if isinstance(body, dict) else None
+    args = args if isinstance(args, list) else []
+    method = request.match_info.get("method", "")
+    try:
+        result = await asyncio.to_thread(dispatch, method, args)  # some block for seconds
+    except KeyError:
+        return _json_error(404, f"unknown method: {method}")
+    except Exception as exc:
+        return _json_error(500, str(exc))
+    return web.json_response({"ok": True, "result": result})
+
+
 def build_app() -> web.Application:
     app = web.Application()
     app.on_startup.append(_on_startup)
@@ -1286,6 +1318,7 @@ def build_app() -> web.Application:
     app.router.add_post("/playlist-artwork/{playlist_id}", playlist_artwork_upload)
     app.router.add_delete("/playlist-artwork/{playlist_id}", playlist_artwork_delete)
     app.router.add_get("/playlist-artwork/{artwork_key}", playlist_artwork_get)
+    app.router.add_post("/native/{method}", native_api_call)
     app.router.add_get("/{tail:.*}", static_handler)
     return app
 

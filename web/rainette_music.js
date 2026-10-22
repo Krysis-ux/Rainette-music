@@ -18,9 +18,10 @@ const FILTER_PREFIX = 'rainette.musicFilters.';
 const ARTIST_MODE_KEY = 'rainette.artistViewMode';
 const FOLDER_CLOSED_PREFIX = 'rainette.folderClosed.';
 
+// Grid unless someone chose the list.
 function _savedLayout() {
-	try { return localStorage.getItem(LAYOUT_KEY) === 'grid' ? 'grid' : 'list'; }
-	catch { return 'list'; }
+	try { return localStorage.getItem(LAYOUT_KEY) === 'list' ? 'list' : 'grid'; }
+	catch { return 'grid'; }
 }
 
 function lsGet(k, fallback = null) { try { const v = localStorage.getItem(k); return v == null ? fallback : v; } catch { return fallback; } }
@@ -424,11 +425,27 @@ function albumCard(album) {
 	);
 	metaWrap.style.cursor = 'pointer';
 	metaWrap.addEventListener('click', () => openAlbum(album));
+	const play = iconBtn('play', 'rw-icon-btn', () => playAlbum(album), 'Play');
 	const open = btn('Open', 'rw-btn rw-btn-ghost', () => openAlbum(album));
 	const actWrap = el('div', 'rw-track-actions');
-	actWrap.append(open);
+	actWrap.append(play, open);
 	card.append(thumbBox(album.thumbnail_url, 'ALB'), metaWrap, actWrap);
 	return card;
+}
+
+// Play a release from its card; the id prefix keeps the album page's handler out.
+const PLAY_ALBUM_PREFIX = 'mplay_';
+async function playAlbum(album) {
+	const known = Array.isArray(album?.tracks) ? album.tracks : [];
+	if (known.length) { window.RainetteMusic?.playQueue(known, 0); return; }
+	const res = await helperRequest('music_album_tracks', {
+		id: PLAY_ALBUM_PREFIX + Math.random().toString(36).slice(2),
+		album_id: album?.id || album?.browse_id || '',
+		title: album?.title || album?.name || '',
+		artist: album?.artist || '',
+	}, 20000);
+	if (res?.ok && res.tracks?.length) window.RainetteMusic?.playQueue(res.tracks, 0);
+	else downloadStatus(`Couldn't load ${album?.title || 'this release'}`);
 }
 
 function playAction(track, queue) {
@@ -1010,20 +1027,27 @@ function renderAlbumDetail() {
 		const list = (pageState.view?.tracks || []).filter(t => String(t.source || '') !== 'local');
 		startDownload(list, album.title || kind.toLowerCase());
 	});
+	const play = btn('Play', 'rw-btn rw-btn-primary', () => {
+		const list = pageState.view?.tracks || [];
+		if (list.length) window.RainetteMusic?.playQueue(list, 0);
+	});
 	head.append(
 		btn('Back', 'rw-btn rw-btn-ghost', () => { pageState.view = null; applyTab(); }),
 		el('div', 'rw-track-title', album.title || kind),
+		play,
 		download,
 		btn('Start mix', 'rw-btn rw-btn-primary', () => startMixFromSeed({ kind: 'album', album })),
 	);
 	body.appendChild(head);
 	if (view.loading) {
-		// Nothing to download until the track list has arrived.
+		// Nothing to play or download until the track list has arrived.
+		play.disabled = true;
 		download.disabled = true;
 		body.appendChild(createRainetteLoader(`Loading ${kind.toLowerCase()}`));
 		return;
 	}
 	const tracks = view.tracks || [];
+	play.disabled = !tracks.length;
 	download.disabled = !tracks.length;
 	const list = trackList('rwAlbumTracks');
 	if (!tracks.length) list.appendChild(_empty('No tracks found', 'Try searching this album title.'));
@@ -3615,7 +3639,7 @@ function onHelperMessage(msg) {
 			}
 			break;
 		case 'music_album_tracks_result':
-			if (pageState.view?.kind === 'album') {
+			if (pageState.view?.kind === 'album' && !String(msg.id || '').startsWith(PLAY_ALBUM_PREFIX)) {
 				if (msg.ok) pageState.view = { kind: 'album', album: msg.album || pageState.view.album, loading: false, tracks: msg.tracks || [] };
 				else pageState.view = { ...pageState.view, loading: false, tracks: [], msg: msg.msg || '' };
 				renderAlbumDetail();

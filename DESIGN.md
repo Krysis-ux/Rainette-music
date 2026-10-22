@@ -91,6 +91,12 @@ window  ⇄  ws://127.0.0.1:<port>/ws  ⇄  server.py dispatch
 The WebSocket message contract keeps the frontend modules in sync with the
 native application.
 
+### The native macOS interface
+
+- `macos/` is a SwiftUI app that launches `main.py --engine` and talks to `/ws`.
+- `js_api` calls go through `POST /native/<method>` (`main.NATIVE_API_METHODS`).
+- Audio stays in `web/miniplayer.html`, hosted invisibly; it publishes Now Playing.
+
 ### Where playback lives
 
 One record answers "which surface owns the audio right now", and it lives on

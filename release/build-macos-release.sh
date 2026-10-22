@@ -14,7 +14,9 @@
 # release/README-macos.md for the exact difference.
 #
 # Usage:
-#   release/build-macos-release.sh [--version X.Y.Z] [--dmg]
+#   release/build-macos-release.sh [--version X.Y.Z] [--dmg] [--classic]
+#
+# --classic skips the native SwiftUI app (macos/) and ships the pywebview UI.
 #
 set -euo pipefail
 
@@ -41,10 +43,12 @@ PYTHON="${PYTHON:-$ROOT/.venv-mac/bin/python}"
 [ -x "$PYTHON" ] || PYTHON="$(command -v python3)"
 
 WANT_DMG=0
+WANT_CLASSIC=0
 REQUESTED_VERSION=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --dmg) WANT_DMG=1; shift ;;
+        --classic) WANT_CLASSIC=1; shift ;;
         --version) REQUESTED_VERSION="${2:-}"; shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -137,6 +141,17 @@ set_plist LSApplicationCategoryType string "public.app-category.music"
 set_plist NSLocalNetworkUsageDescription string \
     "Rainette Music uses your local network so a paired phone can browse and play your library."
 echo "==> Info.plist updated"
+
+# ── Native interface: SwiftUI app as the executable, PyInstaller's as rainette-engine ──
+if [ "$WANT_CLASSIC" -eq 0 ]; then
+    swift --version 2>&1 | head -1 | sed 's/^/    /'
+    swift build -c release --package-path "$ROOT/macos" --product RainetteMusic
+    NATIVE_BIN="$(swift build -c release --package-path "$ROOT/macos" --show-bin-path)/RainetteMusic"
+    MACOS_DIR="$APP_BUNDLE/Contents/MacOS"
+    mv "$MACOS_DIR/$APP_NAME" "$MACOS_DIR/rainette-engine"
+    cp "$NATIVE_BIN" "$MACOS_DIR/$APP_NAME"
+    echo "==> Native interface installed; engine is Contents/MacOS/rainette-engine"
+fi
 
 # ── Signature ───────────────────────────────────────────────────────────────
 # An ad-hoc signature is not optional on Apple Silicon: an unsigned arm64 binary
