@@ -176,13 +176,15 @@ def fulfill_test_asset(route):
     route.continue_()
 
 
-def open_fake_miniplayer(browser, base_url):
+def open_fake_miniplayer(browser, base_url, extra_init_script=""):
     """Open the real detached-player module with deterministic browser APIs."""
     page = browser.new_page(viewport={"width": 352, "height": 184})
     diagnostics = []
     page.set_default_timeout(5_000)
     page.add_init_script(FAKE_WEBSOCKET_SCRIPT)
     page.add_init_script(FAKE_AUDIO_SCRIPT)
+    if extra_init_script:
+        page.add_init_script(extra_init_script)
     page.on("pageerror", lambda error: diagnostics.append(f"pageerror:{error}"))
     page.route("**/*", fulfill_test_asset)
     page.goto(base_url + "miniplayer.html", wait_until="domcontentloaded")
@@ -1568,6 +1570,206 @@ def test_pausing_then_skipping_does_not_pause_the_next_track():
                 "previous track - a pause meant for the element you left landed "
                 f"on the element you started: {latest}"
             )
+            assert not diagnostics, diagnostics
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _serve_web():
+    handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
+    server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, f"http://127.0.0.1:{server.server_port}/"
+
+
+def _resolve_stream(page, track):
+    page.wait_for_function(
+        "sourceId => window.__rainetteSentMessages.some(m => "
+        "m.type === 'music_stream_url' && m.source_id === sourceId && !m.prefetch)",
+        arg=track["source_id"],
+    )
+    request = page.evaluate(
+        "sourceId => window.__rainetteSentMessages.filter(m => "
+        "m.type === 'music_stream_url' && m.source_id === sourceId && !m.prefetch).at(-1)",
+        track["source_id"],
+    )
+    emit_ws(page, {"type": "music_stream_url_result", "id": request["id"], "ok": True,
+                   "source_id": track["source_id"],
+                   "url": f"https://audio.invalid/{track['source_id']}.m4a"})
+
+
+# Captures Media Session handlers so a test can press Now Playing's buttons.
+CAPTURE_MEDIA_HANDLERS_SCRIPT = """
+(() => {
+    window.__mediaHandlers = {};
+    const session = navigator.mediaSession;
+    if (!session) return;
+    const original = session.setActionHandler.bind(session);
+    session.setActionHandler = (action, handler) => {
+        window.__mediaHandlers[action] = handler;
+        try { original(action, handler); } catch (_error) { /* unsupported here */ }
+    };
+})();
+"""
+
+STRETCHED_TRACK = {"id": "s", "source": "youtube", "source_id": "src-stretched",
+                   "title": "Stretched", "artist": "Looper", "duration_s": 100,
+                   "thumbnail_url": "https://lh3.googleusercontent.com/abc=w120-h120-l90-rj",
+                   "metadata": {"album_name": "Loops"}}
+
+
+def _start_stretched_track(page):
+    """Play STRETCHED_TRACK on an element that reports twice its real length."""
+    emit_ws(page, {"type": "music_remote_control", "action": "set_repeat", "mode": "one"})
+    emit_ws(page, {"type": "music_remote_play", "tracks": [STRETCHED_TRACK], "index": 0})
+    _resolve_stream(page, STRETCHED_TRACK)
+    page.wait_for_function(
+        "() => window.__rainetteSentMessages.some(m => m.type === 'music_now_playing_set' && m.playing === true)"
+    )
+    # The element reports twice the real 100s, as AVFoundation does.
+    page.evaluate("() => { window.__rainetteFakeAudioInstances.at(-1).duration = 200; }")
+
+
+def _reach_real_end(page):
+    """Advance to the real end and report what the element did about it."""
+    return page.evaluate(
+        """() => {
+            const a = window.__rainetteFakeAudioInstances.at(-1);
+            const before = a.playCalls;
+            a.currentTime = 99.8;
+            a.dispatchEvent(new Event('timeupdate'));
+            return { currentTime: a.currentTime, replayed: a.playCalls > before };
+        }"""
+    )
+
+
+def test_repeat_one_keeps_replaying_a_stretched_track():
+    """Repeat-one restarts at the real end on every pass, not just the first."""
+    server, thread, base = _serve_web()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page, diagnostics = open_fake_miniplayer(browser, base)
+            _start_stretched_track(page)
+            for loop in range(1, 4):
+                result = _reach_real_end(page)
+                assert result["replayed"] and result["currentTime"] == 0, (
+                    f"pass {loop} ran past the real end into the silent tail: {result}"
+                )
+            assert not diagnostics, diagnostics
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_seek_lands_inside_the_real_track_when_duration_is_stretched():
+    server, thread, base = _serve_web()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page, diagnostics = open_fake_miniplayer(browser, base)
+            _start_stretched_track(page)
+            emit_ws(page, {"type": "music_remote_control", "action": "seek", "ratio": 0.5})
+            position = page.evaluate("() => window.__rainetteFakeAudioInstances.at(-1).currentTime")
+            assert position == 50, position
+            assert not diagnostics, diagnostics
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_now_playing_shows_the_song_and_its_artwork():
+    """Now Playing gets the song, artist, album and artwork."""
+    server, thread, base = _serve_web()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page, diagnostics = open_fake_miniplayer(browser, base, CAPTURE_MEDIA_HANDLERS_SCRIPT)
+            _start_stretched_track(page)
+            meta = page.evaluate(
+                """() => {
+                    const m = navigator.mediaSession.metadata;
+                    return { title: m.title, artist: m.artist, album: m.album,
+                             artwork: m.artwork.map(a => a.src),
+                             state: navigator.mediaSession.playbackState };
+                }"""
+            )
+            assert meta["title"] == "Stretched" and meta["artist"] == "Looper", meta
+            assert meta["album"] == "Loops", meta
+            assert meta["artwork"] == ["https://lh3.googleusercontent.com/abc=w544-h544-l90-rj"], meta
+            assert meta["state"] == "playing", meta
+
+            # A repeated pause must not flip back to playing.
+            page.evaluate("() => { window.__mediaHandlers.pause(); }")
+            page.wait_for_timeout(600)
+            page.evaluate("() => { window.__mediaHandlers.pause(); }")
+            page.wait_for_timeout(600)
+            paused = page.evaluate("() => window.__rainetteFakeAudioInstances.at(-1).paused")
+            assert paused, "a second pause from Now Playing resumed playback"
+            page.evaluate("() => { window.__mediaHandlers.play(); }")
+            page.wait_for_timeout(300)
+            assert not page.evaluate("() => window.__rainetteFakeAudioInstances.at(-1).paused")
+            assert not diagnostics, diagnostics
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_a_single_plays_from_its_card_and_lists_default_to_grid():
+    """A single plays from its card; lists default to the grid."""
+    server, thread, base = _serve_web()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1060, "height": 730})
+            diagnostics = []
+            page.add_init_script(FAKE_WEBSOCKET_SCRIPT)
+            page.on("pageerror", lambda error: diagnostics.append(f"pageerror:{error}"))
+            page.route("**/*", fulfill_test_asset)
+            page.set_default_timeout(7_000)
+            page.goto(base + "?remote=1", wait_until="domcontentloaded")
+            page.locator("#rwMusicTabs").wait_for(state="visible")
+
+            page.locator('#rwMusicTabs button[data-tab="search"]').click()
+            page.locator('#rwMusicBody input[type="search"]').fill("rain")
+            page.wait_for_function(
+                "() => window.__rainetteSentMessages.some(m => m.type === 'music_catalog_search')"
+            )
+            search_id = page.evaluate(
+                "() => window.__rainetteSentMessages.filter(m => m.type === 'music_catalog_search').at(-1).id"
+            )
+            single = {"id": "MPREb_single", "title": "Only Song", "artist": "Solo", "release_type": "Single"}
+            emit_ws(page, {"type": "music_catalog_search_result", "id": search_id, "ok": True,
+                           "songs": [], "artists": [], "albums": [single]})
+
+            assert page.locator("#rwMusicResults").evaluate("el => el.classList.contains('layout-grid')"), (
+                "a fresh install should open in the grid layout"
+            )
+            page.locator("#rwMusicResults .rw-track-card", has_text="Only Song").get_by_role("button", name="Play").click()
+            page.wait_for_function(
+                "() => window.__rainetteSentMessages.some(m => m.type === 'music_album_tracks' && m.album_id === 'MPREb_single')"
+            )
+            request_id = page.evaluate(
+                "() => window.__rainetteSentMessages.filter(m => m.type === 'music_album_tracks').at(-1).id"
+            )
+            song = {"source": "youtube", "source_id": "only-1", "title": "Only Song", "artist": "Solo"}
+            emit_ws(page, {"type": "music_album_tracks_result", "id": request_id, "ok": True,
+                           "album": single, "tracks": [song]})
+            page.wait_for_function(
+                "() => window.__rainetteSentMessages.some(m => m.type === 'music_remote_play' "
+                "&& m.tracks.length === 1 && m.tracks[0].source_id === 'only-1')"
+            )
+            assert page.locator("#rwMusicResults").count() == 1
             assert not diagnostics, diagnostics
             browser.close()
     finally:

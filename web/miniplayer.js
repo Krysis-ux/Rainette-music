@@ -357,6 +357,8 @@ async function _loadCurrent({ preservePaused = false } = {}) {
 	activeMediaBinding = null;
 	state.playing = false;
 	state.status = 'loading';
+	// Re-arm the stretched-end guard for every play-through.
+	_endGuardKey = '';
 	_renderPlay();
 	await _drainPreviousMedia();
 	if (!loadGuard.isCurrent(loadToken, trackKey(state.queue[state.index]))) return;
@@ -552,8 +554,9 @@ function _bindMediaLifecycle(binding, owner) {
 		if (els.dur) els.dur.textContent = fmt(total);
 		_guardStretchedEnd();
 		_broadcastProgress();
+		_publishPosition();
 	});
-	on('seeked', () => _broadcastProgress(true));
+	on('seeked', () => { _broadcastProgress(true); _publishPosition(true); });
 	on('durationchange', () => { if (els.dur) els.dur.textContent = fmt(trueDuration()); });
 	on('ended', () => _next(true));
 	on('error', () => _retryOrFail(binding.token));
@@ -702,6 +705,10 @@ function _togglePlay() {
 	}
 }
 
+// Absolute verbs, safe to repeat.
+function _play() { if (audio && audio.paused && !state.resolvingId) _togglePlay(); }
+function _pause() { if (state.resolvingId || (audio && !audio.paused)) _togglePlay(); }
+
 let _pauseIntent = 0;
 
 /** Guarantee a requested pause actually lands, whatever the fade does.
@@ -776,6 +783,8 @@ function _prev() {
 // stream URL. Fall back to a full load if the element refuses to restart.
 function _replayCurrent() {
 	if (!audio) { _loadCurrent(); return; }
+	// Re-arm the stretched-end guard, or repeat-one runs into the silent tail.
+	_endGuardKey = '';
 	try {
 		audio.currentTime = 0;
 		const started = audio.play();
@@ -1069,19 +1078,83 @@ function _renderMeta(track, mode) {
 		els.artShell?.classList.remove('has-art');
 	}
 	els.root.classList.toggle('error', mode === 'error');
+	_publishMediaSession(track);
 }
 function _renderPlay() {
 	if (els.play) els.play.innerHTML = state.playing ? ICON.pause : ICON.play;
 	if (els.playPill) els.playPill.innerHTML = state.playing ? ICON.pause : ICON.play;
+	try { if (navigator.mediaSession) navigator.mediaSession.playbackState = state.playing ? 'playing' : 'paused'; } catch { /* unsupported */ }
+}
+
+// ── Media Session (system Now Playing) ───────────────────────────────────────
+
+// Ask for larger artwork: YouTube Music encodes the size in the URL.
+function artworkAt(url, px) {
+	return String(url || '').replace(/=w\d+-h\d+/, `=w${px}-h${px}`);
+}
+
+let _sessionKey = '';
+function _publishMediaSession(track) {
+	if (!('mediaSession' in navigator) || !track) return;
+	const key = trackKey(track) + '|' + (track.thumbnail_url || '');
+	if (key === _sessionKey) return;   // re-setting metadata refetches the artwork
+	_sessionKey = key;
+	try {
+		const art = artworkAt(track.thumbnail_url, 544);
+		navigator.mediaSession.metadata = new MediaMetadata({
+			title: track.title || 'Rainette Music',
+			artist: track.artist || track.metadata?.artists?.[0]?.name || '',
+			album: track.metadata?.album_name || track.album || '',
+			artwork: art ? [{ src: new URL(art, document.baseURI).href, sizes: '544x544' }] : [],
+		});
+	} catch { /* an engine that rejects the artwork still plays */ }
+	_publishPosition(true);
+}
+
+let _positionAt = 0;
+function _publishPosition(force = false) {
+	if (!navigator.mediaSession?.setPositionState || !audio) return;
+	const now = Date.now();
+	if (!force && now - _positionAt < 900) return;
+	_positionAt = now;
+	const length = trueDuration();
+	if (!(length > 0)) return;
+	try {
+		navigator.mediaSession.setPositionState({
+			duration: length,
+			position: clamp(trueTime(), 0, length),
+			playbackRate: audio.playbackRate || 1,
+		});
+	} catch { /* a position the element disagrees with is refused, harmlessly */ }
+}
+
+function wireMediaSession() {
+	if (!('mediaSession' in navigator)) return;
+	const handlers = {
+		// Absolute verbs, never the toggle.
+		play: _play,
+		pause: _pause,
+		nexttrack: () => _next(false),
+		previoustrack: _prev,
+		seekto: details => {
+			if (!audio || !trueDuration()) return;
+			audio.currentTime = clamp(Number(details?.seekTime) || 0, 0, trueDuration());
+			_publishPosition(true);
+			_broadcastProgress(true);
+		},
+	};
+	for (const [action, handler] of Object.entries(handlers)) {
+		try { navigator.mediaSession.setActionHandler(action, handler); } catch { /* unsupported action */ }
+	}
 }
 function _setSeek(ratio) {
 	const pct = clamp(Number(ratio) || 0, 0, 1) * 100;
 	if (els.seekFill) els.seekFill.style.width = pct + '%';
 }
 function _seekToClientX(x) {
-	if (!audio || !audio.duration || !els.seek) return;
+	if (!audio || !trueDuration() || !els.seek) return;
 	const r = els.seek.getBoundingClientRect();
-	audio.currentTime = clamp((x - r.left) / Math.max(1, r.width), 0, 1) * audio.duration;
+	audio.currentTime = clamp((x - r.left) / Math.max(1, r.width), 0, 1) * trueDuration();
 }
 
 // ── Icons ────────────────────────────────────────────────────────────────────
@@ -1320,12 +1393,13 @@ function wireRemote() {
 			// doing" during a load means cancel it — and _togglePlay owns that
 			// path. Without this arm, pressing the pause-looking button on a
 			// loading row would do nothing at all.
-			else if (a === 'pause') { if (state.resolvingId || (audio && !audio.paused)) _togglePlay(); }
-			else if (a === 'play') { if (audio && audio.paused && !state.resolvingId) _togglePlay(); }
+			else if (a === 'pause') _pause();
+			else if (a === 'play') _play();
 			else if (a === 'toggle') _togglePlay();
 			else if (a === 'next') _next(false);
 			else if (a === 'prev') _prev();
-			else if (a === 'seek' && audio && audio.duration) { audio.currentTime = clamp(Number(msg.ratio || 0), 0, 1) * audio.duration; _broadcastProgress(true); }
+			// Seek against the real duration; macOS doubles some streams'.
+			else if (a === 'seek' && audio && trueDuration()) { audio.currentTime = clamp(Number(msg.ratio || 0), 0, 1) * trueDuration(); _broadcastProgress(true); }
 		}
 	});
 }
@@ -1335,6 +1409,7 @@ function boot() {
 	initAudio();
 	buildUI();
 	wireRemote();
+	wireMediaSession();
 	document.addEventListener('rainette:helper-open', () => {
 		sendHelper({ type: 'music_request_state' });
 	});

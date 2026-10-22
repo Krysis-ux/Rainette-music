@@ -807,16 +807,19 @@ def _launch_macos_update(archive: Path, work_dir: Path) -> None:
     script = work_dir / "swap.sh"
     # The old bundle is moved aside rather than deleted outright, so a failed
     # move back is still recoverable by hand; the trash copy is removed only
-    # once the replacement is in place.
+    # once the replacement is in place. It also waits for the native app (host).
     script.write_text(
         "#!/bin/sh\n"
         "set -e\n"
         f'pid="{os.getpid()}"\n'
+        f'host="{_ENGINE_HOST_PID or ""}"\n'
         f'bundle="{bundle}"\n'
         f'replacement="{replacement}"\n'
         f'work="{work_dir}"\n'
         'i=0\n'
         'while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 60 ]; do sleep 0.5; i=$((i+1)); done\n'
+        'i=0\n'
+        'while [ -n "$host" ] && kill -0 "$host" 2>/dev/null && [ "$i" -lt 60 ]; do sleep 0.5; i=$((i+1)); done\n'
         'old="$work/previous.app"\n'
         'rm -rf "$old"\n'
         'mv "$bundle" "$old"\n'
@@ -1117,13 +1120,20 @@ class WindowApi:
             return {"ok": True, "cancelled": True}
 
         path = chosen[0] if isinstance(chosen, (list, tuple)) else str(chosen)
+        return self.add_music_folder(path)
+
+    def add_music_folder(self, path: str):
+        """Watch a folder chosen in the native app's picker (token-only, never from a phone)."""
+        path = str(path or "").strip()
+        if not path or not os.path.isdir(path):
+            return {"ok": False, "msg": "That folder could not be found."}
         try:
             import shared
 
-            shared.STATE.add_local_root(str(path))
+            shared.STATE.add_local_root(path)
         except Exception as exc:
             return {"ok": False, "msg": str(exc)}
-        return {"ok": True, "path": str(path)}
+        return {"ok": True, "path": path}
 
     def companion_management_state(self):
         return server.companion_management_state()
@@ -1274,7 +1284,7 @@ class WindowApi:
             pass
         # Belt and suspenders: if destroying the windows didn't end the process,
         # force it so the installer isn't left waiting on a locked file.
-        threading.Timer(2.0, lambda: os._exit(0)).start()
+        threading.Timer(2.0, lambda: os._exit(ENGINE_EXIT_FOR_UPDATE)).start()
 
     def main_reveal(self):
         if not self._main_window:
@@ -1709,7 +1719,58 @@ def _shutdown_tunnel() -> None:
         pass
 
 
-def main() -> int:
+#: Methods the native app may call through server.native_api_call.
+NATIVE_API_METHODS = frozenset({
+    "companion_create_invitation", "companion_management_state",
+    "companion_approve_request", "companion_reject_request", "companion_revoke_device",
+    "tunnel_status", "tunnel_providers", "tunnel_set_provider", "tunnel_preflight",
+    "tunnel_helper_download", "tunnel_setup_step", "tunnel_start", "tunnel_stop",
+    "pwa_config_get", "pwa_config_set",
+    "app_version", "check_for_updates", "update_progress", "apply_update",
+    "add_music_folder",
+})
+
+#: The native app this engine serves, so an update can wait for it to quit.
+_ENGINE_HOST_PID: int | None = None
+
+ENGINE_HANDSHAKE_PREFIX = "RAINETTE_ENGINE "
+
+#: Exit code meaning "quit for an update"; any other exit is treated as a crash.
+ENGINE_EXIT_FOR_UPDATE = 75
+
+
+def _native_dispatcher(api: WindowApi):
+    def dispatch(method: str, args: list):
+        if method not in NATIVE_API_METHODS:
+            raise KeyError(method)
+        return getattr(api, method)(*args)
+    return dispatch
+
+
+def _run_engine(port: int) -> int:
+    """Serve the native app instead of opening windows; exit when its stdin closes."""
+    global _ENGINE_HOST_PID
+    _ENGINE_HOST_PID = os.getppid()
+    import signal
+
+    # Run atexit (tunnel shutdown) on SIGTERM.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(128 + signal.SIGTERM))
+    server.set_native_api(_native_dispatcher(WindowApi()))
+    handshake = {"port": port, "token": server.APP_TOKEN, "version": version.APP_VERSION}
+    sys.stdout.write(ENGINE_HANDSHAKE_PREFIX + json.dumps(handshake) + "\n")
+    sys.stdout.flush()
+    log(f"engine serving a native front-end (pid {_ENGINE_HOST_PID})")
+    try:
+        while sys.stdin.buffer.read(4096):
+            pass
+    except (OSError, ValueError):
+        pass
+    log("native front-end went away; engine stopping")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    engine = "--engine" in (sys.argv[1:] if argv is None else argv)
     try:
         port = server.start()
     except Exception:
@@ -1733,6 +1794,8 @@ def main() -> int:
 
     url = f"http://127.0.0.1:{port}/"
     log(f"server up at {url}")
+    if engine:
+        return _run_engine(port)
     print(f"Rainette Music running at {url}")
 
     # 1. Native window (blocks until closed).

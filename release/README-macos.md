@@ -16,6 +16,14 @@ Produces `release/out-macos/Rainette Music.app`. Add `--dmg` for a
 drag-to-Applications disk image, and `--version X.Y.Z` to assert the build
 version matches `version.APP_VERSION` (the same gate the Windows script applies).
 
+### The native interface
+
+- `Contents/MacOS/Rainette Music` is the SwiftUI app (`macos/`); `rainette-engine` is PyInstaller's.
+- Liquid Glass needs Swift 6.2+; older toolchains build with materials.
+- `--classic` ships the pywebview interface instead.
+- Dev: `macos/run-dev.sh` (`RAINETTE_ENGINE_HOME=/tmp/x` for a throwaway library).
+- Classic interface: `defaults write com.rainette.music UseClassicInterface -bool YES`.
+
 ## What differs from the Windows build
 
 | | Windows | macOS |

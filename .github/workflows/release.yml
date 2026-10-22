@@ -153,7 +153,7 @@ jobs:
   # --sign/notarytool steps to release/build-macos-release.sh rather than here.
   macos-build:
     needs: test
-    runs-on: macos-14
+    runs-on: macos-15  # Xcode 26: Liquid Glass needs the macOS 26 SDK
     env:
       RELEASE_VERSION: ${{ needs.test.outputs.release_version }}
 
@@ -174,6 +174,16 @@ jobs:
       - name: Install macOS build dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
+      - name: Select the newest Xcode for the native interface
+        run: |
+          set -euo pipefail
+          newest="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -n "$newest" ]; then sudo xcode-select -s "$newest"; fi
+          swift --version
+          if ! swift --version 2>&1 | grep -Eq 'Swift version (6\.([2-9]|[1-9][0-9])|[7-9])'; then
+            echo "::warning::Swift < 6.2: the native interface will use materials instead of Liquid Glass"
+          fi
+
       - name: Build the macOS app bundle and disk image
         run: ./release/build-macos-release.sh --version "${RELEASE_VERSION}" --dmg
 
@@ -193,6 +203,12 @@ jobs:
           for asset in index.html rainette_music.js audio_outputs.js miniplayer.html; do
             [ -f "$APP/Contents/Resources/web/$asset" ] || { echo "bundled web/$asset is missing" >&2; exit 1; }
           done
+
+          # Native app plus engine, and the engine still hands over.
+          [ -x "$APP/Contents/MacOS/rainette-engine" ] || { echo "the engine executable is missing" >&2; exit 1; }
+          file "$APP/Contents/MacOS/Rainette Music" | grep -q "Mach-O" || { echo "the native executable is missing" >&2; exit 1; }
+          handshake="$(HOME="$RUNNER_TEMP/engine-home" "$APP/Contents/MacOS/rainette-engine" --engine < /dev/null | head -1)"
+          case "$handshake" in RAINETTE_ENGINE*) echo "engine handshake ok" ;; *) echo "engine gave no handshake: $handshake" >&2; exit 1 ;; esac
 
           codesign --verify --deep --strict "$APP"
 
@@ -440,21 +456,8 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
           body: |
-            **Windows** — get `RainetteMusicSetup.exe` and run it.
-
-            **macOS** — get `RainetteMusic-macOS.dmg` and drag Rainette Music into Applications.
-            It's not yet notarized, so macOS will call it damaged on first launch. It isn't.
-            Run this once:
-
-            ```
-            xattr -dr com.apple.quarantine "/Applications/Rainette Music.app"
-            ```
-
-            After that first install, Rainette updates itself on macOS too. Open it
-            from **Applications** rather than straight from the disk image, or macOS
-            runs it from a read-only copy that cannot be replaced.
-
-            **Phone** — open the [PWA](https://music-pwa-web.vercel.app) and pair it. Nothing to install.
-
-            The `latest*.json` files and the `.zip` are for the updater. You don't need them.
+            - **Windows**: run `RainetteMusicSetup.exe`.
+            - **macOS**: drag `RainetteMusic-macOS.dmg` into Applications; it is not yet notarized, so run once: `xattr -dr com.apple.quarantine "/Applications/Rainette Music.app"`
+            - Open it from **Applications**, not the disk image (a read-only copy can't update).
+            - **Phone**: open the [PWA](https://music-pwa-web.vercel.app) and pair.
           files: release-assets/*
