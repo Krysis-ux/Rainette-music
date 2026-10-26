@@ -21,6 +21,7 @@ and leaves the property intact.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,6 +30,29 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+@pytest.fixture(autouse=True)
+def _never_run_the_real_tailscale(monkeypatch):
+    """Refuse to execute Tailscale from a test.
+
+    On macOS the `tailscale` CLI is the Tailscale *app* binary, so running it
+    opens the app. Every suite run used to launch Tailscale on the developer's
+    machine: tests that mocked preflight/launch but not `stop` ran
+    `tailscale serve --https=443 off` for real, and a login test whose fake
+    status read as "daemon asleep" made `_wake_daemon` run
+    `open -a Tailscale`. Tests that want a command's answer patch
+    `subprocess.run` themselves, which overrides this for that test.
+    """
+    real_run = subprocess.run
+
+    def guarded_run(command, *args, **kwargs):
+        argv = command if isinstance(command, (list, tuple)) else [command]
+        if any(Path(str(arg)).stem.lower() == "tailscale" for arg in argv):
+            raise OSError("tests never run the real Tailscale")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", guarded_run)
 
 
 @pytest.fixture(autouse=True, scope="session")
