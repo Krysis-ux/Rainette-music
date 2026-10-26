@@ -12,14 +12,15 @@
 import { STORAGE } from './state.js';
 
 export const THEMES = [
-	{ id: 'midnight', label: 'Midnight', hint: 'The original — near-black, green light' },
-	{ id: 'dark', label: 'Dark', hint: 'Neutral grey, easier on OLED' },
+	{ id: 'midnight', label: 'Midnight', hint: 'True black, like the iPhone itself' },
+	{ id: 'dark', label: 'Graphite', hint: 'The Mac app\u2019s dark grey' },
 	{ id: 'mono', label: 'Monochrome', hint: 'No colour at all' },
 	{ id: 'light', label: 'Light', hint: 'For daylight' },
 ];
 
 export const ACCENTS = [
-	{ id: 'default', label: 'Rainette green' },
+	{ id: 'default', label: 'Blue' },
+	{ id: 'green', label: 'Rainette green' },
 	{ id: 'teal', label: 'Teal' },
 	{ id: 'purple', label: 'Purple' },
 	{ id: 'amber', label: 'Amber' },
@@ -32,10 +33,10 @@ const ACCENT_IDS = ACCENTS.map(accent => accent.id);
 /* The status bar and the browser's own chrome are painted from this, so it has
  * to move with the theme or a light app keeps a black notch. */
 const THEME_COLOR = {
-	midnight: '#0a0d0b',
-	dark: '#141614',
+	midnight: '#000000',
+	dark: '#1e1e20',
 	mono: '#101010',
-	light: '#f4f6f4',
+	light: '#ffffff',
 };
 
 function read(key, allowed, fallback) {

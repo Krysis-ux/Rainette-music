@@ -1,7 +1,8 @@
 /* ==========================================================================
    Rainette product tokens (--rw-*)
-   Default is Rainette's paper-and-ink workspace. Dark mode keeps the same
-   green accent so the product identity remains stable between appearances.
+   Matches the native Mac app: Apple's neutral greys, system blue as the
+   accent, translucent glass for anything that floats. Green remains as an
+   accent choice.
    ========================================================================== */
 
 :root {
@@ -9,55 +10,65 @@
 	--rainette-nav-peek: 30px;
 
 	/* Surfaces */
-	--rw-bg:             oklch(97.5% 0.008 155);
-	--rw-bg-sunken:      oklch(94% 0.014 155);
-	--rw-surface:        oklch(99.2% 0.004 155);
-	--rw-surface-raised: oklch(99.8% 0.002 155);
+	--rw-bg:             #ffffff;
+	--rw-bg-sunken:      #f5f5f7;
+	--rw-surface:        #ffffff;
+	--rw-surface-raised: #ffffff;
 
 	/* Text */
-	--rw-text:        oklch(17% 0.016 155);
-	--rw-text-soft:   oklch(38% 0.020 155);
-	--rw-text-muted:  oklch(56% 0.018 155);
+	--rw-text:        #1d1d1f;
+	--rw-text-soft:   #48484a;
+	--rw-text-muted:  #6e6e73;
 
 	/* Accent */
-	--rw-accent:        oklch(47% 0.125 155);
-	--rw-accent-strong: oklch(38% 0.110 155);
-	--rw-accent-soft:   oklch(92.5% 0.038 155);
-	--rw-on-accent:     oklch(99% 0.004 155);
+	--rw-accent:        #007aff;
+	--rw-accent-strong: #0062cc;
+	--rw-accent-soft:   rgb(0 122 255 / 0.12);
+	--rw-on-accent:     #ffffff;
 	/* Stable reference for the Settings accent-swatch preview — unlike
 	   --rw-accent, this never gets remapped by .rw-accent-teal/-purple. */
-	--rw-accent-default: oklch(47% 0.125 155);
+	--rw-accent-default: #007aff;
 
 	/* Quiet category accents */
+	--rw-green:       oklch(47% 0.125 155);
+	--rw-green-soft:  oklch(92.5% 0.038 155);
 	--rw-teal:        oklch(58% 0.095 176);
 	--rw-teal-soft:   oklch(90% 0.045 176);
 	--rw-purple:      oklch(58% 0.090 292);
 	--rw-purple-soft: oklch(91% 0.045 292);
-	--rw-danger:      oklch(55% 0.155 25);
-	--rw-danger-soft: oklch(92% 0.055 25);
-	--rw-warn:        oklch(64% 0.115 78);
-	--rw-warn-soft:   oklch(92% 0.060 78);
+	--rw-danger:      #d70015;
+	--rw-danger-soft: rgb(255 59 48 / 0.12);
+	--rw-warn:        #b25000;
+	--rw-warn-soft:   rgb(255 149 0 / 0.14);
 
 	/* Borders */
-	--rw-border:        oklch(87% 0.012 155);
-	--rw-border-strong: oklch(73% 0.020 155);
+	--rw-border:        rgb(0 0 0 / 0.09);
+	--rw-border-strong: rgb(0 0 0 / 0.17);
 
 	/* Depth */
-	--rw-shadow-sm: 0 1px 2px oklch(18% 0.02 155 / 0.05), 0 5px 16px oklch(18% 0.02 155 / 0.05);
-	--rw-shadow-md: 0 1px 2px oklch(18% 0.02 155 / 0.07), 0 10px 28px oklch(18% 0.02 155 / 0.08);
-	--rw-shadow-lg: 0 2px 4px oklch(18% 0.02 155 / 0.10), 0 18px 52px oklch(18% 0.02 155 / 0.12);
+	--rw-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06), 0 4px 14px rgb(0 0 0 / 0.05);
+	--rw-shadow-md: 0 2px 6px rgb(0 0 0 / 0.07), 0 12px 30px rgb(0 0 0 / 0.08);
+	--rw-shadow-lg: 0 4px 10px rgb(0 0 0 / 0.08), 0 22px 56px rgb(0 0 0 / 0.14);
+
+	/* Glass: anything that floats over content */
+	--rw-glass:      rgb(255 255 255 / 0.72);
+	--rw-glass-edge: rgb(0 0 0 / 0.08);
+	--rw-sidebar:    rgb(245 245 247 / 0.86);
 
 	/* Shape */
 	--rw-radius-bubble:  13px;
 	--rw-radius-control: 10px;
 	--rw-radius-pill:    999px;
 
-	/* Type */
-	--rw-font: "Segoe UI Variable Text", Aptos, "Segoe UI", system-ui, sans-serif;
+	/* Type: each platform's own UI face — Segoe UI Variable on Windows, SF on a Mac. */
+	--rw-font: "Segoe UI Variable Text", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+	--rw-font-display: "Segoe UI Variable Display", -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
 	--rw-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
 
 	/* Motion */
 	--rw-ease: cubic-bezier(0.22, 1, 0.36, 1);
+	/* One controlled overshoot, for presses and things settling into place. */
+	--rw-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
 	--rw-fast: 140ms;
 	--rw-med:  220ms;
 
@@ -80,75 +91,96 @@
    not just <html>. Custom properties cascade regardless of tag name, so
    this is functionally identical everywhere they're toggled on <html>. */
 .rw-theme-light {
-	--rw-bg:             oklch(97.5% 0.008 155);
-	--rw-bg-sunken:      oklch(94% 0.014 155);
-	--rw-surface:        oklch(99.2% 0.004 155);
-	--rw-surface-raised: oklch(99.8% 0.002 155);
+	/* Surfaces */
+	--rw-bg:             #ffffff;
+	--rw-bg-sunken:      #f5f5f7;
+	--rw-surface:        #ffffff;
+	--rw-surface-raised: #ffffff;
 
-	--rw-text:        oklch(17% 0.016 155);
-	--rw-text-soft:   oklch(38% 0.020 155);
-	--rw-text-muted:  oklch(56% 0.018 155);
+	/* Text */
+	--rw-text:        #1d1d1f;
+	--rw-text-soft:   #48484a;
+	--rw-text-muted:  #6e6e73;
 
-	--rw-accent:        oklch(47% 0.125 155);
-	--rw-accent-strong: oklch(38% 0.110 155);
-	--rw-accent-soft:   oklch(92.5% 0.038 155);
-	--rw-on-accent:     oklch(99% 0.004 155);
-	--rw-accent-default: oklch(47% 0.125 155);
+	/* Accent */
+	--rw-accent:        #007aff;
+	--rw-accent-strong: #0062cc;
+	--rw-accent-soft:   rgb(0 122 255 / 0.12);
+	--rw-on-accent:     #ffffff;
+	/* Stable reference for the Settings accent-swatch preview — unlike
+	   --rw-accent, this never gets remapped by .rw-accent-teal/-purple. */
+	--rw-accent-default: #007aff;
 
+	/* Quiet category accents */
+	--rw-green:       oklch(47% 0.125 155);
+	--rw-green-soft:  oklch(92.5% 0.038 155);
 	--rw-teal:        oklch(58% 0.095 176);
 	--rw-teal-soft:   oklch(90% 0.045 176);
 	--rw-purple:      oklch(58% 0.090 292);
 	--rw-purple-soft: oklch(91% 0.045 292);
-	--rw-danger:      oklch(55% 0.155 25);
-	--rw-danger-soft: oklch(92% 0.055 25);
-	--rw-warn:        oklch(64% 0.115 78);
-	--rw-warn-soft:   oklch(92% 0.060 78);
+	--rw-danger:      #d70015;
+	--rw-danger-soft: rgb(255 59 48 / 0.12);
+	--rw-warn:        #b25000;
+	--rw-warn-soft:   rgb(255 149 0 / 0.14);
 
-	--rw-border:        oklch(87% 0.012 155);
-	--rw-border-strong: oklch(73% 0.020 155);
+	/* Borders */
+	--rw-border:        rgb(0 0 0 / 0.09);
+	--rw-border-strong: rgb(0 0 0 / 0.17);
 
-	--rw-shadow-sm: 0 1px 2px oklch(18% 0.02 155 / 0.05), 0 5px 16px oklch(18% 0.02 155 / 0.05);
-	--rw-shadow-md: 0 1px 2px oklch(18% 0.02 155 / 0.07), 0 10px 28px oklch(18% 0.02 155 / 0.08);
-	--rw-shadow-lg: 0 2px 4px oklch(18% 0.02 155 / 0.10), 0 18px 52px oklch(18% 0.02 155 / 0.12);
+	/* Depth */
+	--rw-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06), 0 4px 14px rgb(0 0 0 / 0.05);
+	--rw-shadow-md: 0 2px 6px rgb(0 0 0 / 0.07), 0 12px 30px rgb(0 0 0 / 0.08);
+	--rw-shadow-lg: 0 4px 10px rgb(0 0 0 / 0.08), 0 22px 56px rgb(0 0 0 / 0.14);
+
+	/* Glass: anything that floats over content */
+	--rw-glass:      rgb(255 255 255 / 0.72);
+	--rw-glass-edge: rgb(0 0 0 / 0.08);
+	--rw-sidebar:    rgb(245 245 247 / 0.86);
 }
 
 .rw-theme-dark {
-	/* Surfaces */
-	--rw-bg:             oklch(14.5% 0.014 155);
-	--rw-bg-sunken:      oklch(11.5% 0.012 155);
-	--rw-surface:        oklch(18.5% 0.016 155);
-	--rw-surface-raised: oklch(22.5% 0.018 155);
+	/* Surfaces — the Mac app's graphite window */
+	--rw-bg:             #1f2024;
+	--rw-bg-sunken:      #28292e;
+	--rw-surface:        #28292e;
+	--rw-surface-raised: #313238;
 
 	/* Text */
-	--rw-text:        oklch(94% 0.008 155);
-	--rw-text-soft:   oklch(76% 0.012 155);
-	--rw-text-muted:  oklch(60% 0.014 155);
+	--rw-text:        #f5f5f7;
+	--rw-text-soft:   #c7c7cc;
+	--rw-text-muted:  #98989f;
 
 	/* Accent */
-	--rw-accent:        oklch(76% 0.125 155);
-	--rw-accent-strong: oklch(68% 0.120 155);
-	--rw-accent-soft:   oklch(27% 0.052 155);
-	--rw-on-accent:     oklch(13% 0.016 155);
-	--rw-accent-default: oklch(76% 0.125 155);
+	--rw-accent:        #0a84ff;
+	--rw-accent-strong: #409cff;
+	--rw-accent-soft:   rgb(10 132 255 / 0.2);
+	--rw-on-accent:     #ffffff;
+	--rw-accent-default: #0a84ff;
 
-	/* Quiet category accents */
-	--rw-teal:        oklch(76% 0.095 175);
-	--rw-teal-soft:   oklch(27% 0.045 175);
-	--rw-purple:      oklch(76% 0.085 290);
-	--rw-purple-soft: oklch(27% 0.042 290);
-	--rw-danger:      oklch(70% 0.150 25);
-	--rw-danger-soft: oklch(25% 0.060 25);
-	--rw-warn:        oklch(80% 0.110 75);
-	--rw-warn-soft:   oklch(27% 0.055 75);
+	/* Quiet category accents — dark enough that white text reads on them */
+	--rw-green:       oklch(60% 0.13 155);
+	--rw-green-soft:  oklch(30% 0.06 155);
+	--rw-teal:        oklch(62% 0.1 185);
+	--rw-teal-soft:   oklch(30% 0.05 185);
+	--rw-purple:      oklch(60% 0.14 295);
+	--rw-purple-soft: oklch(30% 0.06 295);
+	--rw-danger:      #ff453a;
+	--rw-danger-soft: rgb(255 69 58 / 0.18);
+	--rw-warn:        #ffd60a;
+	--rw-warn-soft:   rgb(255 214 10 / 0.16);
 
 	/* Borders */
-	--rw-border:        oklch(31% 0.020 155);
-	--rw-border-strong: oklch(42% 0.026 155);
+	--rw-border:        rgb(255 255 255 / 0.08);
+	--rw-border-strong: rgb(255 255 255 / 0.16);
 
 	/* Depth */
-	--rw-shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.30), 0 1px 8px oklch(0% 0 0 / 0.18);
-	--rw-shadow-md: 0 1px 2px oklch(0% 0 0 / 0.34), 0 8px 24px oklch(0% 0 0 / 0.24);
-	--rw-shadow-lg: 0 2px 4px oklch(0% 0 0 / 0.38), 0 14px 42px oklch(0% 0 0 / 0.34);
+	--rw-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3), 0 2px 10px rgb(0 0 0 / 0.18);
+	--rw-shadow-md: 0 2px 6px rgb(0 0 0 / 0.34), 0 10px 28px rgb(0 0 0 / 0.26);
+	--rw-shadow-lg: 0 4px 10px rgb(0 0 0 / 0.38), 0 22px 56px rgb(0 0 0 / 0.42);
+
+	--rw-glass:      rgb(44 45 50 / 0.72);
+	--rw-glass-edge: rgb(255 255 255 / 0.1);
+	--rw-sidebar:    rgb(40 41 46 / 0.86);
 }
 
 /* Monochrome — true grayscale (chroma 0 throughout, including danger/warn:
@@ -190,41 +222,52 @@
 /* Midnight — deeper and cooler than the default dark theme (near-black
    surfaces, a richer blue accent) rather than a variant of the same graphite. */
 .rw-theme-midnight {
-	--rw-bg:             oklch(9% 0.010 260);
-	--rw-bg-sunken:      oklch(6% 0.008 260);
-	--rw-surface:        oklch(12% 0.012 260);
-	--rw-surface-raised: oklch(16% 0.014 260);
+	--rw-bg:             #000000;
+	--rw-bg-sunken:      #0e0e10;
+	--rw-surface:        #161618;
+	--rw-surface-raised: #1f1f22;
 
-	--rw-text:        oklch(94% 0.006 240);
-	--rw-text-soft:   oklch(76% 0.010 240);
-	--rw-text-muted:  oklch(56% 0.012 240);
+	--rw-text:        #f5f5f7;
+	--rw-text-soft:   #c7c7cc;
+	--rw-text-muted:  #8e8e93;
 
-	--rw-accent:        oklch(72% 0.140 250);
-	--rw-accent-strong: oklch(62% 0.150 250);
-	--rw-accent-soft:   oklch(22% 0.060 250);
-	--rw-on-accent:     oklch(10% 0.015 250);
-	--rw-accent-default: oklch(72% 0.140 250);
+	--rw-accent:        #0a84ff;
+	--rw-accent-strong: #409cff;
+	--rw-accent-soft:   rgb(10 132 255 / 0.2);
+	--rw-on-accent:     #ffffff;
+	--rw-accent-default: #0a84ff;
 
-	--rw-teal:        oklch(74% 0.100 190);
-	--rw-teal-soft:   oklch(20% 0.050 190);
-	--rw-purple:      oklch(74% 0.110 300);
-	--rw-purple-soft: oklch(20% 0.050 300);
-	--rw-danger:      oklch(68% 0.170 22);
-	--rw-danger-soft: oklch(20% 0.070 22);
-	--rw-warn:        oklch(78% 0.120 80);
-	--rw-warn-soft:   oklch(20% 0.060 80);
+	--rw-green:       oklch(60% 0.13 155);
+	--rw-green-soft:  oklch(26% 0.06 155);
+	--rw-teal:        oklch(62% 0.1 190);
+	--rw-teal-soft:   oklch(24% 0.05 190);
+	--rw-purple:      oklch(60% 0.14 300);
+	--rw-purple-soft: oklch(24% 0.06 300);
+	--rw-danger:      #ff453a;
+	--rw-danger-soft: rgb(255 69 58 / 0.18);
+	--rw-warn:        #ffd60a;
+	--rw-warn-soft:   rgb(255 214 10 / 0.16);
 
-	--rw-border:        oklch(24% 0.014 260);
-	--rw-border-strong: oklch(32% 0.018 255);
+	--rw-border:        rgb(255 255 255 / 0.08);
+	--rw-border-strong: rgb(255 255 255 / 0.15);
 
-	--rw-shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.40), 0 1px 10px oklch(0% 0 0 / 0.24);
-	--rw-shadow-md: 0 1px 2px oklch(0% 0 0 / 0.44), 0 10px 30px oklch(0% 0 0 / 0.30);
-	--rw-shadow-lg: 0 2px 4px oklch(0% 0 0 / 0.48), 0 18px 56px oklch(0% 0 0 / 0.40);
+	--rw-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4), 0 2px 10px rgb(0 0 0 / 0.24);
+	--rw-shadow-md: 0 2px 6px rgb(0 0 0 / 0.44), 0 10px 30px rgb(0 0 0 / 0.3);
+	--rw-shadow-lg: 0 4px 10px rgb(0 0 0 / 0.48), 0 22px 56px rgb(0 0 0 / 0.5);
+
+	--rw-glass:      rgb(28 28 30 / 0.74);
+	--rw-glass-edge: rgb(255 255 255 / 0.1);
+	--rw-sidebar:    rgb(14 14 16 / 0.9);
 }
 
 /* Accent presets (Settings → Appearance). Only remap the accent role itself —
    --rw-on-accent stays whatever the active light/dark theme already defines,
    since both alternates sit at a similar lightness to the default accent. */
+html.rw-accent-green {
+	--rw-accent:        var(--rw-green);
+	--rw-accent-strong: color-mix(in oklab, var(--rw-green) 78%, black);
+	--rw-accent-soft:   var(--rw-green-soft);
+}
 html.rw-accent-teal {
 	--rw-accent:        var(--rw-teal);
 	--rw-accent-strong: color-mix(in oklab, var(--rw-teal) 78%, black);

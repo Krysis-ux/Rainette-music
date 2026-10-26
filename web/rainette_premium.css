@@ -1,0 +1,748 @@
+/* The native Mac app's look, for the desktop window (Windows, and the Mac's
+   Classic Interface).
+
+   The Mac app (macos/) is SwiftUI; this window is the same product drawn in a
+   web view, so it borrows the Mac app's rules rather than its code: system
+   greys and system blue (rainette_tokens.css), a sidebar of glyphs grouped
+   under quiet headings, a large-title header, frameless artwork cards whose
+   controls appear on hover, a floating glass player bar, and Now Playing drawn
+   over the song's own artwork.
+
+   Loaded after rainette_pages.css and app.css, and kept to one file on
+   purpose: everything here is a restyle of something that already exists, so
+   removing the <link> brings the previous look back whole. */
+
+/* ── Ground ───────────────────────────────────────────────────────────── */
+
+#rwMusicPage { background: var(--rw-bg); }
+
+#rwMusicPage.rainette-page {
+	font-family: var(--rw-font);
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+#rwMusicPage ::-webkit-scrollbar { width: 12px; height: 12px; }
+#rwMusicPage ::-webkit-scrollbar-track { background: transparent; }
+#rwMusicPage ::-webkit-scrollbar-thumb {
+	border: 3px solid transparent;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--rw-text) 22%, transparent) padding-box;
+}
+#rwMusicPage ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--rw-text) 36%, transparent); }
+
+/* ── Shell ────────────────────────────────────────────────────────────────
+   The sidebar runs the full height and the player bar belongs to the content
+   column, as on the Mac. The bar still owns a real grid row, so nothing can
+   end up underneath it. */
+
+@media (min-width: 901px) {
+	.rw-music-shell {
+		grid-template-columns: 232px minmax(0, 1fr);
+		grid-template-areas:
+			"sidebar main"
+			"sidebar player";
+	}
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────── */
+
+#rwMusicPage .rw-music-sidebar {
+	gap: 8px;
+	padding: 16px 10px 12px;
+	background: var(--rw-sidebar);
+	border-right: 1px solid var(--rw-border);
+}
+
+#rwMusicPage .rw-music-brand { gap: 10px; padding: 2px 8px 8px; }
+#rwMusicPage .rw-music-mark { width: 30px; height: 30px; border-radius: 8px; }
+#rwMusicPage .rw-music-brand-name { font: 650 15px/1.1 var(--rw-font-display); letter-spacing: -0.01em; }
+#rwMusicPage .rw-music-brand-sub { font-size: 11px; }
+
+#rwMusicPage .rw-music-nav { gap: 1px; }
+
+#rwMusicPage .rw-nav-group {
+	padding: 14px 10px 5px;
+	color: var(--rw-text-muted);
+	font: 600 11px/1 var(--rw-font);
+}
+
+#rwMusicPage .rw-music-nav button {
+	gap: 10px;
+	min-height: 32px;
+	padding: 0 10px;
+	border: 0;
+	border-radius: 8px;
+	color: var(--rw-text);
+	font: 500 13px/1 var(--rw-font);
+}
+
+#rwMusicPage .rw-music-nav button svg { flex: none; color: var(--rw-accent); }
+#rwMusicPage .rw-music-nav button:hover { background: color-mix(in srgb, var(--rw-text) 6%, transparent); }
+#rwMusicPage .rw-music-nav button:active { transform: scale(0.98); }
+
+#rwMusicPage .rw-music-nav button.on {
+	background: color-mix(in srgb, var(--rw-text) 11%, transparent);
+	color: var(--rw-text);
+	font-weight: 600;
+}
+
+#rwMusicPage .rw-pinned-playlist { border-radius: 8px; color: var(--rw-text-soft); font: 500 12.5px/1 var(--rw-font); }
+#rwMusicPage .rw-pinned-playlist:hover { background: color-mix(in srgb, var(--rw-text) 6%, transparent); }
+
+#rwMusicPage .rw-music-sidebar-foot { border-top-color: var(--rw-border); }
+#rwMusicPage .rw-sidebar-label { font-weight: 600; letter-spacing: 0.04em; }
+
+/* ── Segmented control ────────────────────────────────────────────────── */
+
+#rwMusicPage .rw-segment,
+.rw-modal .rw-segment {
+	gap: 0;
+	padding: 2px;
+	border: 0;
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--rw-text) 8%, transparent);
+	box-shadow: none;
+}
+
+#rwMusicPage .rw-segment button,
+.rw-modal .rw-segment button { border-radius: 6px; padding: 6px 12px; font-weight: 500; }
+
+#rwMusicPage .rw-segment button.on,
+.rw-modal .rw-segment button.on {
+	background: var(--rw-surface-raised);
+	color: var(--rw-text);
+	box-shadow: 0 1px 2px rgb(0 0 0 / 0.14), 0 0 0 0.5px rgb(0 0 0 / 0.06);
+}
+
+.rw-theme-dark #rwMusicPage .rw-segment button.on,
+.rw-theme-midnight #rwMusicPage .rw-segment button.on { background: color-mix(in srgb, var(--rw-text) 22%, transparent); }
+
+/* ── Header: a large title, as on the Mac ─────────────────────────────── */
+
+#rwMusicPage .rw-page-head {
+	padding: 30px 36px 6px;
+	background: transparent;
+	border-bottom: 0;
+}
+
+#rwMusicPage .rw-page-eyebrow {
+	margin: 0 0 4px;
+	color: var(--rw-text-muted);
+	font: 600 11px/1.2 var(--rw-font);
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+#rwMusicPage .rw-page-eyebrow:empty,
+#rwMusicPage .rw-page-sub:empty { display: none; }
+
+#rwMusicPage .rw-page-title {
+	font: 700 30px/1.1 var(--rw-font-display);
+	letter-spacing: -0.022em;
+}
+
+#rwMusicPage .rw-page-head.is-home .rw-page-title { font-size: 34px; }
+#rwMusicPage .rw-page-sub { margin-top: 5px; color: var(--rw-text-muted); font-size: 13px; }
+#rwMusicPage .rw-page-body { padding: 8px 36px 0; }
+
+#rwMusicPage .rw-section-title { margin: 26px 0 2px; }
+
+#rwMusicPage .rw-section-title h3 {
+	color: var(--rw-text);
+	font: 700 20px/1.2 var(--rw-font-display);
+	letter-spacing: -0.015em;
+	text-transform: none;
+}
+
+/* ── Surfaces and controls ────────────────────────────────────────────── */
+
+#rwMusicPage .rw-bubble {
+	border-color: var(--rw-border);
+	border-radius: 14px;
+	background: var(--rw-bg-sunken);
+	box-shadow: none;
+}
+
+#rwMusicPage .rw-btn,
+.rw-modal .rw-btn {
+	padding: 8px 15px;
+	border-color: transparent;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--rw-text) 8%, transparent);
+	color: var(--rw-text);
+	font: 600 13px/1 var(--rw-font);
+	transition: background-color var(--rw-fast) var(--rw-ease), transform 200ms var(--rw-spring);
+}
+
+#rwMusicPage .rw-btn:hover,
+.rw-modal .rw-btn:hover {
+	border-color: transparent;
+	background: color-mix(in srgb, var(--rw-text) 13%, transparent);
+	box-shadow: none;
+	transform: none;
+}
+
+#rwMusicPage .rw-btn:active,
+.rw-modal .rw-btn:active { transform: scale(0.96); }
+
+#rwMusicPage .rw-btn-primary,
+.rw-modal .rw-btn-primary { background: var(--rw-accent); color: var(--rw-on-accent); box-shadow: none; }
+
+#rwMusicPage .rw-btn-primary:hover,
+.rw-modal .rw-btn-primary:hover { background: color-mix(in srgb, var(--rw-accent) 88%, var(--rw-text)); }
+
+#rwMusicPage .rw-btn-danger,
+.rw-modal .rw-btn-danger { background: var(--rw-danger-soft); color: var(--rw-danger); }
+
+#rwMusicPage .rw-btn-ghost { background: transparent; }
+#rwMusicPage .rw-btn-ghost:hover { background: color-mix(in srgb, var(--rw-text) 8%, transparent); }
+
+#rwMusicPage .rw-icon-btn {
+	border-color: transparent;
+	border-radius: 50%;
+	background: color-mix(in srgb, var(--rw-text) 7%, transparent);
+	color: var(--rw-text);
+	transition: background-color var(--rw-fast) var(--rw-ease), color var(--rw-fast) var(--rw-ease), transform 200ms var(--rw-spring);
+}
+
+#rwMusicPage .rw-icon-btn:hover {
+	border-color: transparent;
+	background: color-mix(in srgb, var(--rw-text) 14%, transparent);
+	box-shadow: none;
+	transform: none;
+}
+
+#rwMusicPage .rw-icon-btn:active { transform: scale(0.88); }
+
+#rwMusicPage .rw-input,
+#rwMusicPage .rw-textarea,
+.rw-modal .rw-input {
+	border-color: transparent;
+	border-radius: 9px;
+	background: color-mix(in srgb, var(--rw-text) 7%, transparent);
+	box-shadow: none;
+}
+
+#rwMusicPage .rw-input:focus,
+#rwMusicPage .rw-textarea:focus,
+.rw-modal .rw-input:focus {
+	border-color: var(--rw-accent);
+	box-shadow: 0 0 0 3px var(--rw-accent-soft);
+}
+
+#rwMusicPage .rw-inline-link { color: inherit; }
+#rwMusicPage .rw-inline-link:hover { color: var(--rw-accent); text-decoration: none; }
+
+/* ── Cards: frameless artwork, controls over it on hover ─────────────────── */
+
+#rwMusicPage .rw-track-list.layout-grid {
+	grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
+	gap: 26px 22px;
+}
+
+#rwMusicPage .rw-track-list.layout-grid .rw-track-card {
+	position: relative;
+	gap: 8px;
+	padding: 0;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+	box-shadow: none;
+	transform: none;
+}
+
+#rwMusicPage .rw-track-list.layout-grid .rw-track-thumb {
+	border-radius: 10px;
+	background: var(--rw-bg-sunken);
+	outline: 1px solid var(--rw-border);
+	outline-offset: -1px;
+	box-shadow: 0 4px 12px rgb(0 0 0 / 0.14);
+	cursor: pointer;
+	transition: transform 240ms var(--rw-spring), box-shadow 240ms var(--rw-ease);
+}
+
+#rwMusicPage .rw-artist-card .rw-track-thumb { border-radius: 50%; }
+
+#rwMusicPage .rw-track-list.layout-grid .rw-track-card:hover .rw-track-thumb {
+	transform: scale(1.015);
+	box-shadow: 0 12px 28px rgb(0 0 0 / 0.26);
+}
+
+#rwMusicPage .rw-track-list.layout-grid .rw-track-title { font-size: 13px; font-weight: 600; white-space: nowrap; }
+#rwMusicPage .rw-track-list.layout-grid .rw-track-sub { font-size: 12px; white-space: nowrap; }
+#rwMusicPage .rw-track-card.now-playing .rw-track-title { color: var(--rw-accent); }
+
+#rwMusicPage .rw-track-list.layout-grid .rw-track-card.now-playing { background: transparent; }
+
+#rwMusicPage .rw-track-list.layout-grid .rw-track-card.now-playing .rw-track-thumb {
+	outline: 2px solid var(--rw-accent);
+	outline-offset: 2px;
+}
+
+#rwMusicPage .rw-track-now-badge {
+	padding: 2px 7px;
+	border: 0;
+	background: var(--rw-accent-soft);
+	color: var(--rw-accent);
+	font-weight: 600;
+	letter-spacing: 0.04em;
+}
+
+/* The overlay is the artwork's own square; only its buttons take clicks, so
+   a click anywhere else on the cover still reaches the cover. */
+#rwMusicPage .rw-track-list.layout-grid .rw-track-actions {
+	position: absolute;
+	top: 0;
+	right: 0;
+	left: 0;
+	flex-wrap: nowrap;
+	align-items: flex-end;
+	justify-content: space-between;
+	gap: 6px;
+	max-width: none;
+	aspect-ratio: 1;
+	padding: 10px;
+	opacity: 0;
+	transform: translateY(4px);
+	pointer-events: none;
+	transition: opacity 160ms var(--rw-ease), transform 240ms var(--rw-spring);
+}
+
+#rwMusicPage .rw-track-list.layout-grid .rw-track-card:hover .rw-track-actions,
+#rwMusicPage .rw-track-list.layout-grid .rw-track-card:focus-within .rw-track-actions {
+	opacity: 1;
+	transform: none;
+}
+
+#rwMusicPage .rw-track-list.layout-grid .rw-track-actions > * { pointer-events: auto; }
+
+/* A touch screen has no hover, so the controls simply stay. */
+@media (hover: none) {
+	#rwMusicPage .rw-track-list.layout-grid .rw-track-actions { opacity: 1; transform: none; }
+}
+
+#rwMusicPage .rw-track-list.layout-grid .rw-track-actions .rw-icon-btn,
+#rwMusicPage .rw-track-list.layout-grid .rw-track-actions .rw-btn {
+	border: 0.5px solid rgb(255 255 255 / 0.2);
+	background: rgb(30 30 32 / 0.55);
+	-webkit-backdrop-filter: blur(14px) saturate(1.6);
+	backdrop-filter: blur(14px) saturate(1.6);
+	color: #fff;
+}
+
+#rwMusicPage .rw-track-list.layout-grid .rw-track-actions .rw-btn { padding: 7px 12px; font-size: 12px; }
+
+#rwMusicPage .rw-track-list.layout-grid .rw-track-actions .rw-icon-btn:first-child {
+	width: 38px;
+	height: 38px;
+	flex-basis: 38px;
+	border-color: transparent;
+	background: var(--rw-accent);
+	box-shadow: 0 4px 14px rgb(0 0 0 / 0.3);
+}
+
+/* Shelves: one row that scrolls sideways, as the Mac app's do. A thin bar
+   stays visible because a mouse wheel cannot scroll sideways on its own. */
+#rwMusicPage .rw-track-list.layout-grid.rw-shelf {
+	grid-template-columns: none;
+	grid-auto-columns: 176px;
+	grid-auto-flow: column;
+	margin: 0 -4px;
+	padding: 8px 4px 14px;
+	overflow-x: auto;
+	overflow-y: hidden;
+	overscroll-behavior-x: contain;
+	scroll-snap-type: x proximity;
+	/* Snap to the content edge, not the padding edge, or every first card
+	   is snapped 4px under the clip. */
+	scroll-padding-inline: 4px;
+	scrollbar-width: thin;
+	scrollbar-color: color-mix(in srgb, var(--rw-text) 20%, transparent) transparent;
+}
+
+#rwMusicPage .rw-shelf > .rw-track-card { scroll-snap-align: start; }
+
+/* List view: rows, not boxes. */
+#rwMusicPage .rw-track-list:not(.layout-grid) { gap: 0; }
+
+#rwMusicPage .rw-track-list:not(.layout-grid) > .rw-track-card:not(.rw-queue-row) {
+	padding: 7px 10px;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	box-shadow: none;
+}
+
+#rwMusicPage .rw-track-list:not(.layout-grid) > .rw-track-card:not(.rw-queue-row):hover {
+	background: color-mix(in srgb, var(--rw-text) 5%, transparent);
+	box-shadow: none;
+	transform: none;
+}
+
+#rwMusicPage .rw-track-list:not(.layout-grid) > .rw-track-card.now-playing:not(.rw-queue-row) { background: var(--rw-accent-soft); }
+
+#rwMusicPage .rw-track-list:not(.layout-grid) .rw-track-thumb {
+	width: 40px;
+	height: 40px;
+	border-radius: 6px;
+	outline: 1px solid var(--rw-border);
+	outline-offset: -1px;
+	cursor: pointer;
+}
+
+/* ── Continue listening: the song in the player, over its own artwork ─── */
+
+#rwMusicPage .rw-continue-card {
+	position: relative;
+	isolation: isolate;
+	overflow: hidden;
+	/* #rwMusicBody is a flex column; without this the card is squeezed to a
+	   strip whenever the page is taller than the window. */
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 24px;
+	margin: 8px 0 6px;
+	padding: 22px;
+	border: 0;
+	border-radius: 22px;
+	background: #2a2a2e;
+	color: #fff;
+	box-shadow: 0 12px 32px rgb(0 0 0 / 0.18);
+}
+
+#rwMusicPage .rw-continue-card:hover { transform: none; box-shadow: 0 12px 32px rgb(0 0 0 / 0.18); }
+
+#rwMusicPage .rw-continue-card::before {
+	position: absolute;
+	inset: -40%;
+	z-index: -1;
+	background: var(--rw-hero-art, none) center / cover no-repeat;
+	filter: blur(48px) saturate(1.5) brightness(0.62);
+	content: "";
+}
+
+#rwMusicPage .rw-continue-card::after {
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	background: linear-gradient(90deg, rgb(0 0 0 / 0.32), rgb(0 0 0 / 0.08));
+	content: "";
+}
+
+#rwMusicPage .rw-continue-card .rw-track-thumb {
+	width: 132px;
+	height: 132px;
+	border-radius: 12px;
+	box-shadow: 0 16px 34px rgb(0 0 0 / 0.36);
+	cursor: pointer;
+}
+
+#rwMusicPage .rw-continue-copy { display: grid; gap: 4px; min-width: 0; }
+
+#rwMusicPage .rw-continue-card .rw-track-now-badge {
+	display: block;
+	justify-self: start;
+	padding: 0;
+	background: none;
+	color: rgb(255 255 255 / 0.72);
+	font: 700 11px/1.3 var(--rw-font);
+	letter-spacing: 0.08em;
+}
+
+#rwMusicPage .rw-continue-title {
+	display: -webkit-box;
+	overflow: hidden;
+	font: 700 24px/1.18 var(--rw-font-display);
+	letter-spacing: -0.015em;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	text-wrap: balance;
+}
+
+#rwMusicPage .rw-continue-artist {
+	overflow: hidden;
+	color: rgb(255 255 255 / 0.8);
+	font-size: 15px;
+	font-weight: 500;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+#rwMusicPage .rw-continue-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+
+#rwMusicPage .rw-continue-actions .rw-play-action {
+	width: 42px;
+	height: 42px;
+	flex-basis: 42px;
+	background: var(--rw-accent);
+	color: #fff;
+}
+
+#rwMusicPage .rw-continue-actions .rw-btn {
+	background: rgb(255 255 255 / 0.16);
+	-webkit-backdrop-filter: blur(10px);
+	backdrop-filter: blur(10px);
+	color: #fff;
+}
+
+#rwMusicPage .rw-continue-actions .rw-btn:hover { background: rgb(255 255 255 / 0.24); }
+
+/* ── Player bar: a floating glass card under the content ──────────────── */
+
+#rwMusicPage .rw-now-bar {
+	width: auto;
+	margin: 0 18px 14px;
+	border: 0.5px solid var(--rw-glass-edge);
+	border-radius: 22px;
+	background: var(--rw-glass);
+	-webkit-backdrop-filter: blur(30px) saturate(1.8);
+	backdrop-filter: blur(30px) saturate(1.8);
+	box-shadow: 0 0.5px 0 rgb(255 255 255 / 0.06) inset, 0 12px 32px rgb(0 0 0 / 0.16);
+}
+
+#rwMusicPage .rw-now-bar-row {
+	grid-template-columns: minmax(0, 1fr) minmax(220px, 440px) minmax(0, 1fr);
+	gap: 18px;
+	height: 74px;
+	padding: 0 14px;
+}
+
+#rwMusicPage .rw-now-center {
+	display: grid;
+	justify-items: center;
+	gap: 3px;
+	width: 100%;
+}
+
+#rwMusicPage .rw-now-bar-meta:hover { background: color-mix(in srgb, var(--rw-text) 6%, transparent); }
+
+#rwMusicPage .rw-now-art-shell {
+	width: 50px;
+	height: 50px;
+	border: 0;
+	border-radius: 7px;
+	box-shadow: 0 3px 8px rgb(0 0 0 / 0.2);
+}
+
+#rwMusicPage .rw-now-title { font-size: 13px; font-weight: 600; }
+#rwMusicPage .rw-now-artist { margin-top: 2px; font-size: 12px; }
+
+#rwMusicPage .rw-now-controls { gap: 6px; }
+
+#rwMusicPage .rw-now-btn {
+	width: 32px;
+	height: 32px;
+	border: 0;
+	background: transparent;
+	color: var(--rw-text);
+	transition: background-color var(--rw-fast) var(--rw-ease), color var(--rw-fast) var(--rw-ease), transform 180ms var(--rw-spring);
+}
+
+#rwMusicPage .rw-now-btn:hover { background: color-mix(in srgb, var(--rw-text) 8%, transparent); transform: none; }
+#rwMusicPage .rw-now-btn:active { transform: scale(0.86); }
+#rwMusicPage .rw-now-btn svg { width: 17px; height: 17px; }
+
+/* A glyph, not a disc — the Mac player bar's play button. */
+#rwMusicPage .rw-now-play {
+	width: 40px;
+	height: 40px;
+	background: none;
+	box-shadow: none;
+	color: var(--rw-text);
+}
+
+#rwMusicPage .rw-now-play:hover { filter: none; }
+#rwMusicPage .rw-now-play svg { width: 26px; height: 26px; }
+#rwMusicPage .rw-now-loop.on { background: var(--rw-accent-soft); color: var(--rw-accent); }
+
+/* The scrubber, under the transport. ::before widens the hit area to a
+   comfortable height without drawing anything. */
+#rwMusicPage .rw-docked-bar .rw-now-seek {
+	width: 100%;
+	height: 4px;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--rw-text) 16%, transparent);
+	transition: height 150ms var(--rw-ease);
+}
+
+#rwMusicPage .rw-docked-bar .rw-now-seek:hover { height: 6px; }
+#rwMusicPage .rw-docked-bar .rw-now-seek::before { position: absolute; inset: -3px 0 -9px; content: ""; }
+
+#rwMusicPage .rw-docked-bar .rw-now-seek-fill {
+	border-radius: inherit;
+	background: color-mix(in srgb, var(--rw-text) 82%, transparent);
+}
+
+#rwMusicPage .rw-docked-bar .rw-now-seek::after {
+	width: 12px;
+	height: 12px;
+	border: 0;
+	background: #fff;
+	box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
+}
+
+#rwMusicPage .rw-now-output {
+	border: 0;
+	background: color-mix(in srgb, var(--rw-text) 7%, transparent);
+	font-weight: 600;
+}
+
+#rwMusicPage .rw-now-output:hover { background: color-mix(in srgb, var(--rw-text) 13%, transparent); transform: none; }
+#rwMusicPage .rw-now-output.on-phone { background: var(--rw-accent-soft); color: var(--rw-accent); }
+#rwMusicPage .rw-now-volume { accent-color: var(--rw-text-soft); }
+
+/* ── Now Playing: the song's artwork behind everything ────────────────── */
+
+#rwMusicPage .rw-now-view {
+	--rw-text: #fff;
+	--rw-text-soft: rgb(255 255 255 / 0.78);
+	--rw-text-muted: rgb(255 255 255 / 0.6);
+	--rw-border: rgb(255 255 255 / 0.12);
+	--rw-border-strong: rgb(255 255 255 / 0.2);
+	--rw-surface: rgb(255 255 255 / 0.1);
+	--rw-bg-sunken: rgb(255 255 255 / 0.14);
+	isolation: isolate;
+	overflow: hidden;
+	padding: 48px;
+	background: #1c1c1e;
+	-webkit-backdrop-filter: none;
+	backdrop-filter: none;
+	color: #fff;
+	color-scheme: dark;
+}
+
+#rwMusicPage .rw-now-view::before {
+	position: absolute;
+	inset: -15%;
+	z-index: -1;
+	background: var(--rw-now-art, none) center / cover no-repeat;
+	filter: blur(80px) saturate(1.5) brightness(0.55);
+	content: "";
+}
+
+#rwMusicPage .rw-now-view::after {
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	background: rgb(0 0 0 / 0.22);
+	content: "";
+}
+
+#rwMusicPage .rw-now-view-panel {
+	width: min(460px, 100%);
+	padding: 0;
+	border: 0;
+	background: none;
+	box-shadow: none;
+	color: #fff;
+}
+
+#rwMusicPage .rw-now-view-panel.lyrics-open { width: min(1040px, 100%); gap: 56px; }
+#rwMusicPage .rw-now-view-panel.lyrics-open .rw-now-view-main { flex-basis: 420px; max-width: 420px; }
+
+#rwMusicPage .rw-now-view-art-shell,
+#rwMusicPage .rw-now-view-panel.lyrics-open .rw-now-view-art-shell {
+	width: min(400px, 44vh);
+	height: auto;
+	margin: 0 0 20px;
+	border: 0;
+	border-radius: 14px;
+	box-shadow: 0 30px 70px rgb(0 0 0 / 0.5);
+}
+
+/* Paused, the cover settles back a little, as the Mac app's does. The panel
+   is rebuilt on every state change, so this is an arrival, not a transition. */
+#rwMusicPage .rw-now-view-panel.is-paused .rw-now-view-art-shell {
+	transform: scale(0.9);
+	box-shadow: 0 14px 34px rgb(0 0 0 / 0.35);
+	animation: rwArtSettle 520ms var(--rw-spring);
+}
+
+@keyframes rwArtSettle { from { transform: none; } }
+
+#rwMusicPage .rw-now-view-title { font: 700 24px/1.2 var(--rw-font-display); letter-spacing: -0.015em; }
+#rwMusicPage .rw-now-view-artist { margin-bottom: 4px; color: rgb(255 255 255 / 0.75); font-size: 16px; font-weight: 500; }
+
+#rwMusicPage .rw-now-view-seek::before { border: 0; background: rgb(255 255 255 / 0.22); }
+#rwMusicPage .rw-now-view-seek-fill { background: rgb(255 255 255 / 0.9); }
+#rwMusicPage .rw-now-view-time { color: rgb(255 255 255 / 0.6); }
+
+#rwMusicPage .rw-now-view-transport { gap: 18px; margin-top: 12px; }
+
+#rwMusicPage .rw-now-view-btn {
+	width: 48px;
+	height: 48px;
+	border: 0;
+	background: transparent;
+	color: #fff;
+	transition: background-color var(--rw-fast) var(--rw-ease), transform 200ms var(--rw-spring);
+}
+
+#rwMusicPage .rw-now-view-btn svg { width: 26px; height: 26px; }
+#rwMusicPage .rw-now-view-transport > .rw-now-view-btn:first-child,
+#rwMusicPage .rw-now-view-transport > .rw-now-view-btn:last-child { color: rgb(255 255 255 / 0.7); }
+#rwMusicPage .rw-now-view-transport > .rw-now-view-btn:first-child svg,
+#rwMusicPage .rw-now-view-transport > .rw-now-view-btn:last-child svg { width: 19px; height: 19px; }
+#rwMusicPage .rw-now-view-btn:hover { background: rgb(255 255 255 / 0.1); transform: none; }
+#rwMusicPage .rw-now-view-btn:active { transform: scale(0.86); }
+#rwMusicPage .rw-now-view-transport > .rw-now-view-btn.on { background: rgb(255 255 255 / 0.14); color: #fff; }
+
+#rwMusicPage .rw-now-view-play {
+	width: 68px;
+	height: 68px;
+	background: none;
+	box-shadow: none;
+}
+
+#rwMusicPage .rw-now-view-play svg { width: 42px; height: 42px; }
+#rwMusicPage .rw-now-view-vol-slider { accent-color: #fff; }
+
+/* ── Floating panels: glass ───────────────────────────────────────────── */
+
+#rwMusicPage .rw-queue-drawer,
+#rwMusicPage .rw-command-panel,
+#rwMusicPage .rw-shortcuts-panel,
+.rw-modal {
+	border: 0.5px solid var(--rw-glass-edge);
+	border-radius: 16px;
+	background: var(--rw-glass);
+	-webkit-backdrop-filter: blur(30px) saturate(1.8);
+	backdrop-filter: blur(30px) saturate(1.8);
+	box-shadow: var(--rw-shadow-lg);
+}
+
+/* ── Narrow windows ───────────────────────────────────────────────────────
+   Below 900px rainette_pages.css turns the sidebar into a top bar; these keep
+   that working with the rules above. */
+
+@media (max-width: 900px) {
+	#rwMusicPage .rw-nav-group { display: none; }
+	#rwMusicPage .rw-music-sidebar { border-right: 0; border-bottom: 1px solid var(--rw-border); }
+	#rwMusicPage .rw-page-head { padding: 20px 24px 4px; }
+	#rwMusicPage .rw-page-body { padding: 8px 24px 0; }
+}
+
+@media (max-width: 760px) {
+	#rwMusicPage .rw-now-bar { margin: 0 10px 10px; }
+	#rwMusicPage .rw-now-bar-row { grid-template-columns: minmax(0, 1fr) minmax(150px, 240px) auto; gap: 10px; }
+	#rwMusicPage .rw-continue-card { gap: 16px; padding: 16px; }
+	#rwMusicPage .rw-continue-card .rw-track-thumb { width: 96px; height: 96px; }
+	#rwMusicPage .rw-continue-title { font-size: 20px; }
+}
+
+/* ── Motion off means off ─────────────────────────────────────────────── */
+
+html.rw-reduced-motion #rwMusicPage *,
+html.rw-reduced-motion .rw-modal {
+	transition-duration: 1ms !important;
+	animation-duration: 1ms !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	#rwMusicPage *, .rw-modal {
+		transition-duration: 1ms !important;
+		animation-duration: 1ms !important;
+	}
+}

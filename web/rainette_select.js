@@ -70,9 +70,10 @@ export function createSelect({ options, value, onChange, ariaLabel, className = 
 		const viewportBottom = (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight);
 		const dock = document.querySelector('#rwDockedBar');
 		const dockRect = dock && !dock.hidden ? dock.getBoundingClientRect() : null;
-		// A fixed player bar is visually part of the viewport, but not a usable
-		// region for a menu. Only reserve it when it actually reaches the bottom.
-		const safeBottom = dockRect && dockRect.bottom >= viewportBottom - 1
+		// A player bar is visually part of the viewport, but not a usable region
+		// for a menu. Reserve it whenever it sits below the button, whether it is
+		// docked to the bottom edge or floats just above it.
+		const safeBottom = dockRect && dockRect.top > r.bottom && dockRect.left < r.right && dockRect.right > r.left
 			? Math.min(viewportBottom, dockRect.top)
 			: viewportBottom;
 		const gap = 6;

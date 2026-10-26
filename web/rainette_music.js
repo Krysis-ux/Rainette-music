@@ -111,6 +111,32 @@ function navItems() {
 	return ids;
 }
 
+// The sidebar's glyphs, and the heading each group starts under — the Mac
+// app's sidebar, so the two read as one product.
+const NAV_ICON = {
+	home: 'home', search: 'search', songs: 'note', downloads: 'download', following: 'star',
+	recent: 'clock', playlists: 'stack', insights: 'chart', mobile: 'phone', queue: 'listPlay', settings: 'sliders',
+};
+const NAV_GROUP_START = { songs: 'Library', mobile: 'This computer' };
+
+function navMarkup() {
+	return navItems().map(id => {
+		const heading = NAV_GROUP_START[id] ? `<div class="rw-nav-group" aria-hidden="true">${NAV_GROUP_START[id]}</div>` : '';
+		return `${heading}<button data-tab="${id}" type="button">${iconMarkup(NAV_ICON[id] || 'note', 17)}<span>${TAB_META[id].label}</span></button>`;
+	}).join('');
+}
+
+/* Home's header is the Mac app's: today's date over a greeting. */
+function homeGreeting(hour = new Date().getHours()) {
+	if (hour >= 5 && hour < 12) return 'Good morning';
+	if (hour >= 12 && hour < 17) return 'Good afternoon';
+	return 'Good evening';
+}
+
+function todayLabel() {
+	return new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+}
+
 let _host = null;
 let _mounted = false;
 let _listenerBound = false;
@@ -391,7 +417,9 @@ function trackCard(track, actions) {
 	metaWrap.append(titleRow, sub);
 	const actWrap = el('div', 'rw-track-actions');
 	for (const a of actions) actWrap.appendChild(a);
-	card.append(thumbBox(track.thumbnail_url), metaWrap, actWrap);
+	const thumb = thumbBox(track.thumbnail_url);
+	thumb.addEventListener('click', () => actWrap.querySelector('.rw-play-action')?.click());
+	card.append(thumb, metaWrap, actWrap);
 	return card;
 }
 
@@ -412,7 +440,9 @@ function artistCard(artist, extras = []) {
 	follow.setAttribute('aria-label', (following ? 'Unfollow ' : 'Follow ') + (artist.name || 'artist'));
 	const actWrap = el('div', 'rw-track-actions');
 	actWrap.append(open, follow, ...extras);
-	card.append(thumbBox(artist.thumbnail_url, 'A'), metaWrap, actWrap);
+	const thumb = thumbBox(artist.thumbnail_url, 'A');
+	thumb.addEventListener('click', () => openArtist(artist));
+	card.append(thumb, metaWrap, actWrap);
 	return card;
 }
 
@@ -429,7 +459,9 @@ function albumCard(album) {
 	const open = btn('Open', 'rw-btn rw-btn-ghost', () => openAlbum(album));
 	const actWrap = el('div', 'rw-track-actions');
 	actWrap.append(play, open);
-	card.append(thumbBox(album.thumbnail_url, 'ALB'), metaWrap, actWrap);
+	const thumb = thumbBox(album.thumbnail_url, 'ALB');
+	thumb.addEventListener('click', () => openAlbum(album));
+	card.append(thumb, metaWrap, actWrap);
 	return card;
 }
 
@@ -589,9 +621,11 @@ function updateShellChrome() {
 	const eyebrow = _host?.querySelector('#rwMusicEyebrow');
 	const title = _host?.querySelector('#rwMusicTitle');
 	const sub = _host?.querySelector('#rwMusicSub');
-	if (eyebrow) eyebrow.textContent = current.eyebrow;
-	if (title) title.textContent = current.title;
-	if (sub) sub.textContent = current.sub;
+	const home = pageState.tab === 'home' && !pageState.view;
+	_host?.querySelector('.rw-page-head')?.classList.toggle('is-home', home);
+	if (eyebrow) eyebrow.textContent = home ? todayLabel() : '';
+	if (title) title.textContent = home ? homeGreeting() : current.title;
+	if (sub) sub.textContent = home ? '' : current.sub;
 }
 
 function runSearch() {
@@ -1059,6 +1093,7 @@ function openArtist(artist) {
 	const name = artist?.name || artist?.artist || '';
 	pageState.view = { kind: 'artist', artist: { ...artist, name }, loading: true, songs: [], videos: [], albums: [], singles: [] };
 	sendHelper({ type: 'music_artist_catalog', id: 'mart_' + Math.random().toString(36).slice(2), artist_id: artist?.id || artist?.artist_id || '', name });
+	updateShellChrome();
 	renderArtistDetail();
 }
 
@@ -1069,6 +1104,7 @@ function openAlbum(album) {
 	if (id) {
 		sendHelper({ type: 'music_album_tracks', id: 'malb_' + Math.random().toString(36).slice(2), album_id: id, title: album?.title || album?.name || '', artist: album?.artist || '' });
 	}
+	updateShellChrome();
 	renderAlbumDetail();
 }
 
@@ -1216,7 +1252,9 @@ function playlistCard(pl) {
 		iconBtn('play', 'rw-icon-btn', () => openPlaylist(pl, true), 'Open and play'),
 		iconBtn('more', 'rw-icon-btn', () => playlistMenu(pl), 'Playlist actions'),
 	);
-	card.append(thumbBox(playlistArtworkUrl(pl), pl.kind === 'smart' ? 'SP' : 'PL'), metaWrap, actions);
+	const thumb = thumbBox(playlistArtworkUrl(pl), pl.kind === 'smart' ? 'SP' : 'PL');
+	thumb.addEventListener('click', () => openPlaylist(pl));
+	card.append(thumb, metaWrap, actions);
 	return card;
 }
 
@@ -2151,6 +2189,33 @@ function renderInsightsChart(buckets, unit) {
 	return wrap;
 }
 
+/* A row that scrolls sideways in grid view, as the Mac app's shelves do. In
+ * list view it is an ordinary list. */
+function shelf(name) {
+	const list = trackList();
+	list.classList.add('rw-shelf');
+	list.dataset.shelf = name;
+	return list;
+}
+
+/* The song in the player, large, over its own blurred artwork. It is a
+ * .rw-track-card with a data-track-key so syncNowPlayingIndicators() keeps
+ * its play button and its "Now playing / Paused" label current. */
+function continueCard(track, queue) {
+	const card = el('div', 'rw-continue-card rw-track-card now-playing');
+	card.dataset.trackKey = trackKey(track);
+	if (track.thumbnail_url) card.style.setProperty('--rw-hero-art', `url(${JSON.stringify(track.thumbnail_url)})`);
+	const copy = el('div', 'rw-continue-copy');
+	const badge = el('div', 'rw-track-now-badge', currentTrackBadgeLabel());
+	const actions = el('div', 'rw-continue-actions');
+	actions.append(playAction(track, queue), btn('Now Playing', 'rw-btn rw-continue-open', openNowPlayingView));
+	copy.append(badge, el('div', 'rw-continue-title', track.title || '(untitled)'), el('div', 'rw-continue-artist', artistName(track) || ''), actions);
+	const art = thumbBox(track.thumbnail_url);
+	art.addEventListener('click', openNowPlayingView);
+	card.append(art, copy);
+	return card;
+}
+
 // A curated overview, not a browsable list - deliberately no filter/sort
 // toolbar, unlike every other tab. Stacks existing card/list components
 // (trackCard/playlistCard/artistCard) over data already fetched elsewhere
@@ -2158,20 +2223,18 @@ function renderInsightsChart(buckets, unit) {
 function renderHome() {
 	const body = _host?.querySelector('#rwMusicBody');
 	if (!body) return;
+	// Home is rebuilt on every play/pause; a shelf scrolled sideways must not
+	// jump back to its start each time.
+	const shelfScroll = new Map([...body.querySelectorAll('.rw-shelf')].map(list => [list.dataset.shelf, list.scrollLeft]));
 	body.innerHTML = '';
 
 	const current = currentQueueTrack();
-	if (current) {
-		body.appendChild(section('Continue listening'));
-		const list = trackList();
-		list.appendChild(trackCard(current, trackActions(current, pageState.queue.tracks?.length ? pageState.queue.tracks : [current])));
-		body.appendChild(list);
-	}
+	if (current) body.appendChild(continueCard(current, pageState.queue.tracks?.length ? pageState.queue.tracks : [current]));
 
 	body.appendChild(section('Recently played'));
 	const recentTracks = pageState.recent.slice(0, 10);
 	if (recentTracks.length) {
-		const list = trackList();
+		const list = shelf('recent');
 		for (const track of recentTracks) list.appendChild(trackCard(track, trackActions(track, recentTracks)));
 		body.appendChild(list);
 	} else {
@@ -2183,7 +2246,7 @@ function renderHome() {
 		.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || dateValue(b.updated_at) - dateValue(a.updated_at))
 		.slice(0, 8);
 	if (playlists.length) {
-		const list = trackList();
+		const list = shelf('playlists');
 		for (const pl of playlists) list.appendChild(playlistCard(pl));
 		body.appendChild(list);
 	} else {
@@ -2192,7 +2255,7 @@ function renderHome() {
 
 	body.appendChild(section('Top artists'));
 	if (pageState.topArtists.length) {
-		const list = trackList();
+		const list = shelf('artists');
 		for (const artist of pageState.topArtists) {
 			const plays = insightCount(artist.play_count);
 			list.appendChild(artistCard({ ...artist, subscribers: `${plays} play${plays === 1 ? '' : 's'}` }));
@@ -2201,6 +2264,7 @@ function renderHome() {
 	} else {
 		body.appendChild(_empty('No listening history yet', 'Play a few tracks to see your top artists.'));
 	}
+	body.querySelectorAll('.rw-shelf').forEach(list => { list.scrollLeft = shelfScroll.get(list.dataset.shelf) || 0; });
 }
 
 function openCommandPalette() {
@@ -2449,7 +2513,8 @@ function renderNowPlayingView() {
 	const track = currentQueueTrack();
 	const q = pageState.queue || {};
 	view.innerHTML = '';
-	const panel = el('div', 'rw-now-view-panel' + (pageState.lyrics.open ? ' lyrics-open' : ''));
+	const panel = el('div', 'rw-now-view-panel' + (pageState.lyrics.open ? ' lyrics-open' : '') + (q.playing ? '' : ' is-paused'));
+	view.style.setProperty('--rw-now-art', track?.thumbnail_url ? `url(${JSON.stringify(track.thumbnail_url)})` : 'none');
 	// Entrance plays only on the hidden→open transition - this render also runs
 	// on every now-playing broadcast while open, which must not re-animate.
 	if (!_nowViewEntered) {
@@ -3069,7 +3134,6 @@ function ensureDockedBar() {
 		? `<button class="rw-now-btn rw-now-popout" data-act="popout" title="Open mini player" aria-label="Open mini player">${iconMarkup('chevronUp', 16)}</button>`
 		: '';
 	bar.innerHTML = `
-		<div class="rw-now-seek" role="slider" aria-label="Seek"><div class="rw-now-seek-fill"></div></div>
 		<div class="rw-now-bar-row">
 			<button class="rw-now-bar-meta" type="button" title="Open Now Playing">
 				<div class="rw-now-art-shell">
@@ -3081,11 +3145,14 @@ function ensureDockedBar() {
 					<div class="rw-now-artist"></div>
 				</div>
 			</button>
-			<div class="rw-now-controls">
-				<button class="rw-now-btn" data-act="prev" title="Previous" aria-label="Previous">${iconMarkup('prev', 16)}</button>
-				<button class="rw-now-btn rw-now-play" data-act="toggle" title="Play/Pause" aria-label="Play or pause">${iconMarkup('play', 16)}</button>
-				<button class="rw-now-btn" data-act="next" title="Next" aria-label="Next">${iconMarkup('next', 16)}</button>
-				<button class="rw-now-btn rw-now-loop" data-act="loop" title="${REPEAT_LABEL.off}" aria-label="${REPEAT_LABEL.off}">${iconMarkup('loop', 16)}</button>
+			<div class="rw-now-center">
+				<div class="rw-now-controls">
+					<button class="rw-now-btn" data-act="prev" title="Previous" aria-label="Previous">${iconMarkup('prev', 16)}</button>
+					<button class="rw-now-btn rw-now-play" data-act="toggle" title="Play/Pause" aria-label="Play or pause">${iconMarkup('play', 16)}</button>
+					<button class="rw-now-btn" data-act="next" title="Next" aria-label="Next">${iconMarkup('next', 16)}</button>
+					<button class="rw-now-btn rw-now-loop" data-act="loop" title="${REPEAT_LABEL.off}" aria-label="${REPEAT_LABEL.off}">${iconMarkup('loop', 16)}</button>
+				</div>
+				<div class="rw-now-seek" role="slider" aria-label="Seek"><div class="rw-now-seek-fill"></div></div>
 			</div>
 			<div class="rw-now-bar-extra">
 				<button class="rw-now-output" data-act="output" type="button" aria-haspopup="dialog" aria-label="Play on, currently This desktop">
@@ -3684,7 +3751,7 @@ function renderPinnedPlaylists() {
 
 function buildPage(host) {
 	const queueButton = QUEUE_SUPPORTED ? '<button id="rwMusicQueueOpen" class="rw-btn rw-btn-ghost rw-sidebar-action" type="button">Open queue drawer</button>' : '';
-	const tabs = navItems().map(id => `<button data-tab="${id}" type="button"><span>${TAB_META[id].label}</span></button>`).join('');
+	const tabs = navMarkup();
 	host.innerHTML = `
 		<div class="rw-music-shell">
 			<aside class="rw-music-sidebar" aria-label="Music navigation">
@@ -3714,6 +3781,7 @@ function buildPage(host) {
 			<div class="rw-music-main">
 				<div class="rw-page-head">
 					<div>
+						<p class="rw-page-eyebrow" id="rwMusicEyebrow"></p>
 						<h1 class="rw-page-title" id="rwMusicTitle">Search the catalog</h1>
 						<p class="rw-page-sub" id="rwMusicSub">Find songs, artists, and albums without leaving the listening flow.</p>
 					</div>

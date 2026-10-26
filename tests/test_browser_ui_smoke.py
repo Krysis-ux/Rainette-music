@@ -281,8 +281,12 @@ def test_core_release_browser_flow():
                 "shell: el.closest('.rw-music-shell').getBoundingClientRect().height, cards: el.querySelectorAll('.rw-track-card').length })"
             )
             assert body_metrics["scrollHeight"] > body_metrics["clientHeight"], body_metrics
-            assert page.locator("#rwMusicBody .rw-track-list").first.evaluate(
-                "el => getComputedStyle(el).overflowY === 'visible'"
+            # #rwMusicBody is the only vertical scroller: no list may scroll or
+            # clip vertically. Home's shelves scroll sideways, which CSS forces
+            # to overflow-y: hidden, so the property is checked, not the value.
+            assert page.locator("#rwMusicBody .rw-track-list").evaluate_all(
+                "lists => lists.length > 0 && lists.every(el => !['auto', 'scroll'].includes(getComputedStyle(el).overflowY)"
+                " && el.scrollHeight <= el.clientHeight + 1)"
             )
             body.evaluate("el => { el.scrollTop = el.scrollHeight; }")
             assert body.evaluate("el => el.scrollTop > 0")
@@ -312,12 +316,12 @@ def test_core_release_browser_flow():
             )
             assert page.locator("#rwMusicSearchStatus .rw-kage-loader").count() == 0
             assert page.locator("#rwMusicResults .rw-section-title h3").all_inner_texts() == [
-                "SONGS",
-                "ARTISTS",
-                "ALBUMS",
+                "Songs",
+                "Artists",
+                "Albums",
             ]
             page.locator(".rw-search-filters").get_by_text("Artists", exact=True).click()
-            assert page.locator("#rwMusicResults .rw-section-title h3").all_inner_texts() == ["ARTISTS"]
+            assert page.locator("#rwMusicResults .rw-section-title h3").all_inner_texts() == ["Artists"]
 
             page.evaluate("document.documentElement.classList.add('rw-reduced-motion')")
             page.evaluate(
@@ -451,7 +455,12 @@ def test_core_release_browser_flow():
             command_button = page.locator("#rwCommandOpen")
             command_box = command_button.bounding_box()
             dock_box = page.locator("#rwDockedBar").bounding_box()
-            assert command_box and dock_box and command_box["y"] + command_box["height"] <= dock_box["y"], (
+            # The bar sits beside the sidebar in a wide window and under it in
+            # a narrow one; either way it must never cover the button.
+            assert command_box and dock_box and (
+                command_box["y"] + command_box["height"] <= dock_box["y"]
+                or command_box["x"] + command_box["width"] <= dock_box["x"]
+            ), (
                 command_box,
                 dock_box,
             )
@@ -470,7 +479,12 @@ def test_core_release_browser_flow():
             command_button.scroll_into_view_if_needed()
             command_box = command_button.bounding_box()
             dock_box = page.locator("#rwDockedBar").bounding_box()
-            assert command_box and dock_box and command_box["y"] + command_box["height"] <= dock_box["y"], (
+            # The bar sits beside the sidebar in a wide window and under it in
+            # a narrow one; either way it must never cover the button.
+            assert command_box and dock_box and (
+                command_box["y"] + command_box["height"] <= dock_box["y"]
+                or command_box["x"] + command_box["width"] <= dock_box["x"]
+            ), (
                 command_box,
                 dock_box,
             )

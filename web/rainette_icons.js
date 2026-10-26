@@ -40,6 +40,13 @@ const PATHS = {
 	laptop: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/>',
 	phone: '<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M10.5 18.5h3"/>',
 	hdmi: '<path d="M4 8h16v5l-2 3H6l-2-3z"/><path d="M8 8V5h8v3"/>',
+	// Sidebar glyphs, drawn to sit beside the Mac app's SF Symbols.
+	home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/>',
+	note: '<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>',
+	download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
+	star: '<path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>',
+	stack: '<rect x="4" y="8" width="16" height="12" rx="2"/><path d="M7 5h10"/>',
+	sliders: '<path d="M4 8h8"/><path d="M16.5 8H20"/><path d="M4 16h3.5"/><path d="M12 16h8"/><circle cx="14.2" cy="8" r="2.3"/><circle cx="9.8" cy="16" r="2.3"/>',
 	airplay: '<path d="M6 17H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1"/><path d="m12 15 4 6H8z" fill="currentColor" stroke="none"/>',
 };
 

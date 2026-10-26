@@ -2,7 +2,7 @@
  * it, so pairing has a real waiting state. This file owns transport, pairing
  * and connection; everything visual lives in ./src. */
 
-import { state, STORAGE, artworkUrl, artistName, formatTime, readRecent, rememberRecent, trackKey } from './src/state.js';
+import { state, STORAGE, artworkUrl, artistName, formatTime, rememberRecent, trackKey } from './src/state.js';
 import { fetchDesktopRecent, mergeRecent, fetchPlaylists, fetchPlaylistTracks, playlistSubtitle } from './src/collections.js';
 import { $, el, icon, iconButton, toast, stagger } from './src/dom.js';
 import { configureBridge, isUnsupportedCommand } from './src/bridge.js';
@@ -524,7 +524,8 @@ function connectionError(error) {
 function playFromList(list) {
 	return (track, index) => {
 		playTrack(track, list, Math.max(0, index)).catch(showPlaybackError);
-		renderRecent(rememberRecent(track));
+		rememberRecent(track);
+		renderRecent();
 	};
 }
 
@@ -535,9 +536,13 @@ function sameTracks(a, b) {
 }
 
 let shownRecent = [];
+// The computer's last answer. Every render merges it in, so playing a song
+// from the list redraws the same history instead of shrinking it to the few
+// tracks this phone has played itself.
+let desktopRecent = [];
 
-function renderRecent(recent = readRecent()) {
-	const list = recent.slice(0, 12);
+function renderRecent() {
+	const list = mergeRecent(desktopRecent).slice(0, 12);
 	if (sameTracks(list, shownRecent)) return;
 	shownRecent = list;
 	renderTracks($('#recentList'), list, {
@@ -550,7 +555,16 @@ function renderRecent(recent = readRecent()) {
  * copy first keeps the tab populated while the computer answers. */
 let recentInFlight = null;
 
+/* The Mac app's greeting. Repainted whenever Home is refreshed, so a phone left
+ * open from the afternoon does not still say "Good afternoon" at night. */
+function homeGreeting(hour = new Date().getHours()) {
+	if (hour >= 5 && hour < 12) return 'Good morning';
+	if (hour >= 12 && hour < 17) return 'Good afternoon';
+	return 'Good evening';
+}
+
 async function refreshRecent() {
+	$('#homeGreeting').textContent = homeGreeting();
 	renderRecent();
 	// One request at a time: tab switches and playback both ask for this, and
 	// two answers landing together re-render the list twice for no gain.
@@ -558,7 +572,10 @@ async function refreshRecent() {
 	recentInFlight = (async () => {
 		try {
 			const desktop = await fetchDesktopRecent();
-			if (desktop.length) renderRecent(mergeRecent(desktop));
+			if (desktop.length) {
+				desktopRecent = desktop;
+				renderRecent();
+			}
 		} finally {
 			recentInFlight = null;
 		}
@@ -600,6 +617,10 @@ const libraryArtistSort = sortControl({
 	onChange: () => { if (library.mode === 'artists') renderLibraryArtists(); },
 });
 $('#librarySort').append(libraryArtistSort.node);
+// Both controls start visible; without this the first Library visit shows two
+// Sort chips whenever the library arrived before the tab was opened, because
+// that path never re-renders the panel.
+paintLibrarySort();
 
 function claimLibrary() {
 	return ++library.token;
@@ -1010,7 +1031,8 @@ function renderSearchResults() {
 			emptyMessage: 'No songs matched that.',
 			onPlay: (track, index) => {
 				playTrack(track, orderedSongs, index).catch(showPlaybackError);
-				renderRecent(rememberRecent(track));
+				rememberRecent(track);
+				renderRecent();
 			},
 		});
 	}
@@ -1423,6 +1445,7 @@ if ('serviceWorker' in navigator) {
 /* ── Boot ─────────────────────────────────────────────────────────────── */
 
 pairDeviceName.placeholder = defaultDeviceName();
+$('#homeGreeting').textContent = homeGreeting();
 renderRecent();
 
 /* Which tracks are already on this phone, so the download controls can answer

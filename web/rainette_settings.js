@@ -42,26 +42,34 @@ let _listenerBound = false;
 // index.html/miniplayer.html's boot-flash-prevention scripts and
 // miniplayer.js's theme-relay handler mirror this same mapping.
 const THEME_CLASS = { light: 'rw-theme-light', dark: 'rw-theme-dark', mono: 'rw-theme-mono', midnight: 'rw-theme-midnight' };
-const THEME_IDS = Object.keys(THEME_CLASS);
+// 'auto' has no class of its own: it resolves to light or dark from the
+// system, and the boot scripts keep it following the system live.
+const THEME_IDS = ['auto', ...Object.keys(THEME_CLASS)];
+const ACCENT_IDS = ['green', 'teal', 'purple'];
+
+function themeClass(theme) {
+	if (THEME_CLASS[theme]) return THEME_CLASS[theme];
+	return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? THEME_CLASS.dark : THEME_CLASS.light;
+}
 
 function currentTheme() {
 	const t = lsGet(THEME_KEY);
-	return THEME_IDS.includes(t) ? t : 'light';
+	return THEME_IDS.includes(t) ? t : 'auto';
 }
-function currentAccent() { const a = lsGet(ACCENT_KEY); return a === 'teal' || a === 'purple' ? a : 'default'; }
+function currentAccent() { const a = lsGet(ACCENT_KEY); return ACCENT_IDS.includes(a) ? a : 'default'; }
 
 function applyTheme(theme) {
-	if (!THEME_IDS.includes(theme)) theme = 'light';
+	if (!THEME_IDS.includes(theme)) theme = 'auto';
 	lsSet(THEME_KEY, theme);
 	document.documentElement.classList.remove(...Object.values(THEME_CLASS));
-	document.documentElement.classList.add(THEME_CLASS[theme]);
+	document.documentElement.classList.add(themeClass(theme));
 	sendHelper({ type: 'music_theme_set', theme });
 }
 
 function applyAccent(accent) {
 	lsSet(ACCENT_KEY, accent);
-	document.documentElement.classList.remove('rw-accent-teal', 'rw-accent-purple');
-	if (accent === 'teal' || accent === 'purple') document.documentElement.classList.add('rw-accent-' + accent);
+	document.documentElement.classList.remove(...ACCENT_IDS.map(id => 'rw-accent-' + id));
+	if (ACCENT_IDS.includes(accent)) document.documentElement.classList.add('rw-accent-' + accent);
 	sendHelper({ type: 'music_accent_set', accent });
 }
 
@@ -103,7 +111,7 @@ function renderAppearance() {
 	themeText.appendChild(el('div', 'rw-settings-row-label', 'Theme'));
 	themeRow.appendChild(themeText);
 	const themePicker = el('div', 'rw-theme-picker');
-	const themeOptions = [['light', 'Light'], ['dark', 'Dark'], ['mono', 'Monochrome'], ['midnight', 'Midnight']];
+	const themeOptions = [['auto', 'Automatic'], ['light', 'Light'], ['dark', 'Graphite'], ['mono', 'Monochrome'], ['midnight', 'Midnight']];
 	const activeTheme = currentTheme();
 	for (const [id, name] of themeOptions) {
 		const swatch = document.createElement('button');
@@ -116,7 +124,7 @@ function renderAppearance() {
 		// real values for an accurate live preview - without also recoloring
 		// the label text next to it, which needs to stay legible against the
 		// *actual* current theme, not whichever one this swatch is previewing.
-		swatch.appendChild(el('span', 'rw-theme-swatch-preview ' + THEME_CLASS[id]));
+		swatch.appendChild(el('span', 'rw-theme-swatch-preview ' + (THEME_CLASS[id] || 'rw-theme-swatch-auto')));
 		swatch.appendChild(el('span', 'rw-theme-swatch-label', name));
 		swatch.addEventListener('click', () => {
 			applyTheme(id);
@@ -133,7 +141,7 @@ function renderAppearance() {
 	accentText.appendChild(el('div', 'rw-settings-row-label', 'Accent color'));
 	accentRow.appendChild(accentText);
 	const picker = el('div', 'rw-accent-picker');
-	const options = [['default', 'Default'], ['teal', 'Teal'], ['purple', 'Purple']];
+	const options = [['default', 'Blue'], ['green', 'Green'], ['teal', 'Teal'], ['purple', 'Purple']];
 	const active = currentAccent();
 	for (const [id, name] of options) {
 		const swatch = document.createElement('button');

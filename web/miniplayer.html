@@ -11,14 +11,21 @@
 		// localStorage with the main window (same origin).
 		(function () {
 			try {
-				var theme = localStorage.getItem('rainette.theme');
-				if (theme === 'dark') document.documentElement.classList.add('rw-theme-dark');
-				else if (theme === 'midnight') document.documentElement.classList.add('rw-theme-midnight');
-				else if (theme === 'light') { /* explicit light choice - no class, bare :root already is light */ }
-				else document.documentElement.classList.add('rw-theme-light');
+				var root = document.documentElement;
+				var THEMES = { light: 'rw-theme-light', dark: 'rw-theme-dark', mono: 'rw-theme-mono', midnight: 'rw-theme-midnight' };
+				// "auto", or no choice yet, follows the system's light/dark setting
+				// live, the way the native Mac app does.
+				var system = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+				var followSystem = function () { return system && system.matches ? THEMES.dark : THEMES.light; };
+				root.classList.add(THEMES[localStorage.getItem('rainette.theme')] || followSystem());
+				if (system && system.addEventListener) system.addEventListener('change', function () {
+					try { if (THEMES[localStorage.getItem('rainette.theme')]) return; } catch (e) { return; }
+					root.classList.remove(THEMES.light, THEMES.dark);
+					root.classList.add(followSystem());
+				});
 				var accent = localStorage.getItem('rainette.accent');
-				if (accent === 'teal' || accent === 'purple') document.documentElement.classList.add('rw-accent-' + accent);
-				if (localStorage.getItem('rainette.reducedMotion') === '1') document.documentElement.classList.add('rw-reduced-motion');
+				if (accent === 'green' || accent === 'teal' || accent === 'purple') root.classList.add('rw-accent-' + accent);
+				if (localStorage.getItem('rainette.reducedMotion') === '1') root.classList.add('rw-reduced-motion');
 			} catch (e) { /* localStorage unavailable */ }
 		})();
 		window.RW_MINIPLAYER_ENABLED = (function () {
@@ -75,14 +82,15 @@
 		.mp-now { display: flex; align-items: center; gap: 10px; padding: 8px 10px 4px 14px; }
 		#app.collapsed .mp-now { height: 100%; gap: 10px; padding: 7px 8px 7px 14px; }
 		.mp-art-shell {
-			display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
-			background: var(--rw-bg-sunken); border: 1px solid var(--rw-border); color: var(--rw-accent-strong);
+			display: grid; place-items: center; width: 40px; height: 40px; border-radius: 8px; flex-shrink: 0; overflow: hidden;
+			background: var(--rw-bg-sunken); border: 0; color: var(--rw-accent-strong);
+			box-shadow: 0 2px 6px rgb(0 0 0 / 0.18);
 		}
 		#app.collapsed .mp-art-shell {
 			width: 40px; height: 40px; border: 0;
 			background: color-mix(in oklab, var(--rw-accent-soft) 88%, white);
 		}
-		.mp-art { grid-area: 1 / 1; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; visibility: hidden; }
+		.mp-art { grid-area: 1 / 1; width: 100%; height: 100%; border-radius: 8px; object-fit: cover; visibility: hidden; }
 		.mp-art-shell.has-art .mp-art { visibility: visible; }
 		.mp-note { grid-area: 1 / 1; font-size: 22px; font-weight: 700; line-height: 1; }
 		.mp-art-shell.has-art .mp-note { display: none; }
@@ -121,11 +129,12 @@
 			display: none; appearance: none; border: 0; cursor: pointer; flex-shrink: 0;
 			width: 34px; height: 34px; border-radius: 50%;
 			color: var(--rw-on-accent);
-			background: linear-gradient(160deg, var(--rw-accent), var(--rw-accent-strong));
+			background: var(--rw-accent);
 			box-shadow: var(--rw-shadow-sm);
-			transition: filter var(--rw-fast), transform var(--rw-fast);
+			transition: filter var(--rw-fast), transform 180ms var(--rw-spring);
 		}
 		.mp-play-pill:hover { filter: brightness(1.06); }
+		.mp-play-pill:active { transform: scale(0.9); }
 		.mp-play-pill svg { display: block; }
 		#app.collapsed .mp-play-pill { display: grid; place-items: center; }
 
@@ -149,19 +158,19 @@
 
 		/* Seek */
 		.mp-seek { position: relative; height: 14px; margin: 0 14px; cursor: pointer; touch-action: none; }
-		.mp-seek::before { content: ""; position: absolute; left: 0; right: 0; top: 5px; height: 6px; border-radius: 999px; background: var(--rw-bg-sunken); border: 1px solid var(--rw-border); }
-		.mp-seek-fill { position: absolute; left: 0; top: 5px; height: 6px; width: 0; border-radius: 999px; background: var(--rw-accent); }
+		.mp-seek::before { content: ""; position: absolute; left: 0; right: 0; top: 5px; height: 6px; border-radius: 999px; background: color-mix(in srgb, var(--rw-text) 14%, transparent); }
+		.mp-seek-fill { position: absolute; left: 0; top: 5px; height: 6px; width: 0; border-radius: 999px; background: color-mix(in srgb, var(--rw-text) 82%, transparent); }
 		.mp-times { display: flex; justify-content: space-between; padding: 0 14px; font-size: 9px; color: var(--rw-text-muted); font-variant-numeric: tabular-nums; }
 
 		/* Transport */
 		.mp-controls { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 5px 12px 4px; }
-		.mp-btn { appearance: none; border: 1px solid var(--rw-border); background: var(--rw-surface); color: var(--rw-text-soft);
+		.mp-btn { appearance: none; border: 0; background: transparent; color: var(--rw-text);
 			border-radius: 50%; width: 34px; height: 34px; cursor: pointer; display: grid; place-items: center;
-			transition: background var(--rw-fast), border-color var(--rw-fast), color var(--rw-fast), transform var(--rw-fast); }
-		.mp-btn:hover { border-color: var(--rw-border-strong); background: var(--rw-bg-sunken); color: var(--rw-text); transform: translateY(-1px); }
-		.mp-btn.on { color: var(--rw-accent-strong); border-color: var(--rw-accent); background: var(--rw-accent-soft); }
-		.mp-play { width: 42px; height: 42px; color: var(--rw-on-accent); border-color: var(--rw-accent-strong);
-			background: linear-gradient(160deg, var(--rw-accent), var(--rw-accent-strong)); box-shadow: var(--rw-shadow-sm); }
+			transition: background var(--rw-fast), color var(--rw-fast), transform 180ms var(--rw-spring); }
+		.mp-btn:hover { background: color-mix(in srgb, var(--rw-text) 8%, transparent); }
+		.mp-btn:active { transform: scale(0.88); }
+		.mp-btn.on { color: var(--rw-accent); background: var(--rw-accent-soft); }
+		.mp-play { width: 42px; height: 42px; color: var(--rw-on-accent); background: var(--rw-accent); box-shadow: var(--rw-shadow-sm); }
 		.mp-play:hover { filter: brightness(1.06); }
 		.mp-btn svg { display: block; }
 
@@ -171,7 +180,7 @@
 		.mp-vol-ico svg { display: block; }
 		.mp-vol { position: relative; flex: 1; height: 14px; cursor: pointer; touch-action: none; }
 		.mp-vol::before { content: ""; position: absolute; left: 0; right: 0; top: 5px; height: 5px; border-radius: 999px; background: var(--rw-bg-sunken); border: 1px solid var(--rw-border); }
-		.mp-vol-fill { position: absolute; left: 0; top: 5px; height: 5px; width: 66%; border-radius: 999px; background: var(--rw-teal); }
+		.mp-vol-fill { position: absolute; left: 0; top: 5px; height: 5px; width: 66%; border-radius: 999px; background: color-mix(in srgb, var(--rw-text) 70%, transparent); }
 		.mp-vol-val { font-size: 9px; color: var(--rw-text-muted); width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
 	</style>
 </head>

@@ -4,44 +4,53 @@
  * So: a low-luminance ground that does not flare in a dark room, one live
  * accent, and controls sized for a thumb rather than a cursor.
  *
- * Rainette's green is the product's identity on desktop, and here it earns a
- * second job: it is the connection signal. Green means the computer answered.
- * That is the single most important fact in this app, so it is the only thing
- * allowed to be saturated.
+ * The look follows the native Mac app: Apple's neutral greys, system blue as
+ * the accent, glass for anything that floats, and artwork doing the colour.
+ * Green keeps one job of its own — the connection signal. Green means the
+ * computer answered, whatever accent is chosen.
  */
 
 :root {
 	color-scheme: dark;
 
-	/* Ground: near-black, pulled toward the brand green so it reads warm-cool
-	   rather than dead grey. Chroma stays low because chroma at low lightness
-	   turns muddy. */
-	--bg:            oklch(13% 0.012 155);
-	--bg-lift:       oklch(16.5% 0.014 155);
-	--surface:       oklch(19.5% 0.015 155);
-	--surface-high:  oklch(24% 0.016 155);
+	/* Ground: iPhone's own dark appearance — true black, so OLED pixels are
+	   off, with the system greys for anything raised above it. */
+	--bg:            #000;
+	--bg-lift:       #1c1c1e;
+	--surface:       #2c2c2e;
+	--surface-high:  #3a3a3c;
 
-	--text:       oklch(95% 0.008 155);
-	--text-soft:  oklch(78% 0.012 155);
-	--text-muted: oklch(60% 0.012 155);
+	--text:       #fff;
+	--text-soft:  #aeaeb2;
+	--text-muted: #8e8e93;
 
-	/* The desktop accent lifted for a dark ground: same hue, same identity. */
-	--accent:       oklch(72% 0.145 155);
-	--accent-dim:   oklch(52% 0.105 155);
-	--accent-wash:  oklch(72% 0.145 155 / 0.13);
-	--on-accent:    oklch(16% 0.03 155);
+	/* System blue, as the Mac app wears it. */
+	--accent:       #0a84ff;
+	--accent-dim:   #0060c7;
+	--accent-wash:  rgb(10 132 255 / 0.16);
+	--on-accent:    #fff;
 
-	--warn:   oklch(76% 0.13 78);
-	--danger: oklch(66% 0.15 25);
+	--ok:     #30d158;
+	--warn:   #ffd60a;
+	--danger: #ff453a;
 
-	--line:      oklch(100% 0 0 / 0.07);
-	--line-firm: oklch(100% 0 0 / 0.13);
+	--line:      rgb(255 255 255 / 0.09);
+	--line-firm: rgb(255 255 255 / 0.15);
 
-	--font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+	/* Anything that floats over content: the mini player, the tab bar, the top
+	   bar. Translucent enough to carry the colour underneath, blurred enough
+	   that text over it stays legible. */
+	--glass:        rgb(28 28 30 / 0.72);
+	--glass-strong: rgb(28 28 30 / 0.86);
+	--glass-edge:   rgb(255 255 255 / 0.1);
+	--glass-blur:   blur(28px) saturate(1.8);
+
+	--font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+	--font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
 
 	--r-sm: 10px;
 	--r-md: 14px;
-	--r-lg: 20px;
+	--r-lg: 22px;
 
 	--ease: cubic-bezier(0.22, 1, 0.36, 1);
 	--fast: 140ms;
@@ -100,14 +109,18 @@
    Same four as the desktop, by the same names. Only the ground and the text
    move; the accent is its own axis below, so any theme can wear any accent. */
 
+/* Graphite: the Mac app's window colour, for anyone who finds true black
+   too stark. */
 .theme-dark {
-	--bg:            oklch(15% 0 0);
-	--bg-lift:       oklch(19% 0 0);
-	--surface:       oklch(22% 0 0);
-	--surface-high:  oklch(27% 0 0);
-	--text:          oklch(96% 0 0);
-	--text-soft:     oklch(79% 0 0);
-	--text-muted:    oklch(62% 0 0);
+	--bg:            #1e1e20;
+	--bg-lift:       #2a2a2d;
+	--surface:       #323236;
+	--surface-high:  #3e3e42;
+	--text:          #fff;
+	--text-soft:     #b4b4b9;
+	--text-muted:    #98989d;
+	--glass:         rgb(42 42 45 / 0.72);
+	--glass-strong:  rgb(42 42 45 / 0.88);
 }
 
 .theme-mono {
@@ -126,29 +139,37 @@
 
 .theme-light {
 	color-scheme: light;
-	--bg:            oklch(97.5% 0.006 155);
-	--bg-lift:       oklch(100% 0 0);
-	--surface:       oklch(94.5% 0.008 155);
-	--surface-high:  oklch(90% 0.01 155);
-	--text:          oklch(22% 0.02 155);
-	--text-soft:     oklch(40% 0.018 155);
-	--text-muted:    oklch(52% 0.015 155);
-	--accent:        oklch(52% 0.14 155);
-	--accent-dim:    oklch(65% 0.1 155);
-	--accent-wash:   oklch(52% 0.14 155 / 0.14);
-	--on-accent:     oklch(99% 0 0);
-	--line:          oklch(0% 0 0 / 0.1);
-	--line-firm:     oklch(0% 0 0 / 0.18);
+	--bg:            #fff;
+	--bg-lift:       #f2f2f7;
+	--surface:       #e9e9ee;
+	--surface-high:  #dcdce1;
+	--text:          #000;
+	--text-soft:     #48484a;
+	--text-muted:    #6e6e73;
+	--accent:        #007aff;
+	--accent-dim:    #4da2ff;
+	--accent-wash:   rgb(0 122 255 / 0.12);
+	--on-accent:     #fff;
+	--ok:            #28a745;
+	--warn:          #b25000;
+	--danger:        #d70015;
+	--line:          rgb(60 60 67 / 0.14);
+	--line-firm:     rgb(60 60 67 / 0.24);
+	--glass:         rgb(249 249 251 / 0.74);
+	--glass-strong:  rgb(249 249 251 / 0.9);
+	--glass-edge:    rgb(0 0 0 / 0.08);
 }
 
 /* Accents are set separately so the choice survives a change of theme. Mono is
    deliberately left alone — an accent is the one thing it is defined by not
    having. */
+.accent-green:not(.theme-mono)  { --accent: oklch(72% 0.145 155); --accent-dim: oklch(52% 0.105 155); --accent-wash: oklch(72% 0.145 155 / 0.14); --on-accent: oklch(16% 0.03 155); }
 .accent-teal:not(.theme-mono)   { --accent: oklch(74% 0.12 195); --accent-dim: oklch(54% 0.09 195); --accent-wash: oklch(74% 0.12 195 / 0.14); --on-accent: oklch(15% 0.03 195); }
 .accent-purple:not(.theme-mono) { --accent: oklch(70% 0.15 300); --accent-dim: oklch(50% 0.12 300); --accent-wash: oklch(70% 0.15 300 / 0.14); --on-accent: oklch(97% 0.01 300); }
 .accent-amber:not(.theme-mono)  { --accent: oklch(80% 0.14 75);  --accent-dim: oklch(60% 0.11 75);  --accent-wash: oklch(80% 0.14 75 / 0.15);  --on-accent: oklch(18% 0.04 75); }
 .accent-rose:not(.theme-mono)   { --accent: oklch(72% 0.15 15);  --accent-dim: oklch(53% 0.12 15);  --accent-wash: oklch(72% 0.15 15 / 0.14);  --on-accent: oklch(98% 0.01 15); }
 
+.theme-light.accent-green  { --accent: oklch(52% 0.14 155); --on-accent: oklch(99% 0 0); }
 .theme-light.accent-teal   { --accent: oklch(50% 0.11 195); --on-accent: oklch(99% 0 0); }
 .theme-light.accent-purple { --accent: oklch(48% 0.16 300); --on-accent: oklch(99% 0 0); }
 .theme-light.accent-amber  { --accent: oklch(58% 0.13 75);  --on-accent: oklch(99% 0 0); }
@@ -183,12 +204,7 @@ body {
 	color: var(--text);
 	-webkit-font-smoothing: antialiased;
 	text-rendering: optimizeLegibility;
-	/* A very slight lift behind the header keeps the top of the screen from
-	   reading as a flat black slab on OLED. */
-	background:
-		radial-gradient(120% 60% at 50% 0%, oklch(22% 0.03 155 / 0.55), transparent 70%),
-		var(--bg);
-	background-attachment: fixed;
+	background: var(--bg);
 }
 
 button, input { font: inherit; color: inherit; }
@@ -218,19 +234,20 @@ button {
 	justify-content: space-between;
 	gap: 12px;
 	padding: calc(var(--safe-top) + 12px) 18px 12px;
-	background: color-mix(in oklab, var(--bg) 82%, transparent);
-	-webkit-backdrop-filter: blur(14px);
-	backdrop-filter: blur(14px);
-	border-bottom: 1px solid var(--line);
+	background: color-mix(in srgb, var(--bg) 76%, transparent);
+	-webkit-backdrop-filter: var(--glass-blur);
+	backdrop-filter: var(--glass-blur);
+	border-bottom: 0.5px solid var(--line);
 }
 
 .brand {
 	display: inline-flex;
 	align-items: center;
 	gap: 9px;
-	font-size: 15px;
-	font-weight: 620;
-	letter-spacing: -0.025em;
+	font-family: var(--font-display);
+	font-size: 17px;
+	font-weight: 650;
+	letter-spacing: -0.02em;
 }
 
 .brand img { border-radius: 7px; }
@@ -241,7 +258,7 @@ button {
 	gap: 8px;
 	max-width: 52vw;
 	padding: 7px 13px 7px 11px;
-	border: 1px solid var(--line-firm);
+	border: 0.5px solid var(--line-firm);
 	border-radius: 999px;
 	background: var(--bg-lift);
 	color: var(--text-soft);
@@ -263,11 +280,11 @@ button {
 }
 
 .status-dot.online {
-	background: var(--accent);
-	box-shadow: 0 0 0 3px var(--accent-wash);
+	background: var(--ok);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
 }
 
-.status-pill:has(.online) { color: var(--text); border-color: color-mix(in oklab, var(--accent) 32%, transparent); }
+.status-pill:has(.online) { color: var(--text); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
 
 .status-dot.busy {
 	background: var(--warn);
@@ -289,10 +306,12 @@ button {
 
 h1 {
 	margin: 6px 0 10px;
-	font-size: clamp(27px, 8vw, 34px);
-	font-weight: 640;
-	line-height: 1.06;
-	letter-spacing: -0.042em;
+	font-family: var(--font-display);
+	font-size: clamp(28px, 8.6vw, 34px);
+	font-weight: 700;
+	line-height: 1.08;
+	letter-spacing: -0.022em;
+	text-wrap: balance;
 }
 
 h2 {
@@ -305,11 +324,11 @@ h2 {
 }
 
 .eyebrow {
-	margin: 0;
-	color: var(--accent);
+	margin: 10px 0 0;
+	color: var(--text-muted);
 	font-size: 12px;
-	font-weight: 640;
-	letter-spacing: 0.07em;
+	font-weight: 600;
+	letter-spacing: 0.06em;
 	text-transform: uppercase;
 }
 
@@ -332,6 +351,16 @@ h2 {
 }
 
 .section-head h1 { margin: 0; }
+
+/* A shelf title, the way the Mac app sets them: a heading, not a label. */
+.section-head h2 {
+	color: var(--text);
+	font-family: var(--font-display);
+	font-size: 22px;
+	font-weight: 700;
+	letter-spacing: -0.018em;
+	text-transform: none;
+}
 
 .panel { display: none; }
 .panel.active { display: block; animation: rise var(--med) var(--ease); }
@@ -486,26 +515,26 @@ h2 {
 }
 
 .primary {
-	padding: 15px 20px;
+	padding: 15px 22px;
 	border: 0;
-	border-radius: var(--r-md);
+	border-radius: 999px;
 	background: var(--accent);
 	color: var(--on-accent);
-	font-size: 15px;
-	font-weight: 640;
+	font-size: 16px;
+	font-weight: 600;
 	letter-spacing: -0.01em;
-	transition: filter var(--fast) var(--ease), transform var(--fast) var(--ease);
+	transition: filter var(--fast) var(--ease), transform var(--base) var(--ease-spring);
 }
 
-.primary:active { transform: scale(0.985); }
+.primary:active { transform: scale(0.96); }
 .primary:hover { filter: brightness(1.06); }
 .primary:disabled { opacity: 0.5; }
 .primary.compact { padding: 0 18px; }
 
 .ghost {
 	padding: 12px 18px;
-	border: 1px solid var(--line-firm);
-	border-radius: var(--r-md);
+	border: 0.5px solid var(--line-firm);
+	border-radius: 999px;
 	background: transparent;
 	color: var(--text-soft);
 	font-size: 14px;
@@ -640,7 +669,10 @@ h2 {
 .segmented button.active {
 	background: var(--surface-high);
 	color: var(--text);
+	box-shadow: 0 1px 3px rgb(0 0 0 / 0.22), 0 0 0 0.5px rgb(0 0 0 / 0.04);
 }
+
+.theme-light .segmented button.active { background: #fff; }
 
 .segmented button:active { transform: scale(0.98); }
 
@@ -648,7 +680,7 @@ h2 {
 
 .collection-row {
 	display: grid;
-	grid-template-columns: 44px minmax(0, 1fr);
+	grid-template-columns: 44px minmax(0, 1fr) auto;
 	align-items: center;
 	gap: 12px;
 	width: 100%;
@@ -714,10 +746,10 @@ h2 {
 
 .search-form input {
 	width: 100%;
-	padding: 14px 16px;
-	border: 1px solid var(--line-firm);
-	border-radius: var(--r-md);
-	background: var(--surface);
+	padding: 12px 14px;
+	border: 1px solid transparent;
+	border-radius: 12px;
+	background: var(--bg-lift);
 	font-size: 16px;
 	-webkit-appearance: none;
 	appearance: none;
@@ -731,23 +763,41 @@ h2 {
 
 /* ── Settings ─────────────────────────────────────────────────────────── */
 
-.settings-list { display: grid; margin-top: 4px; }
+/* Inset grouped, as iPhone's own Settings draws them: one rounded card per
+   group, hairlines between rows that stop short of the left edge. */
+.settings-list {
+	display: grid;
+	margin-top: 4px;
+	overflow: hidden;
+	border-radius: 14px;
+	background: var(--bg-lift);
+}
 
 .settings-list button {
+	position: relative;
 	display: flex;
 	align-items: center;
 	width: 100%;
 	min-height: var(--touch);
-	padding: 16px 4px;
+	padding: 13px 16px;
 	border: 0;
-	border-bottom: 1px solid var(--line);
 	background: none;
 	text-align: left;
+	transition: background var(--fast) var(--ease);
+}
+
+.settings-list button + button::before {
+	position: absolute;
+	top: 0;
+	right: 0;
+	left: 16px;
+	border-top: 0.5px solid var(--line-firm);
+	content: "";
 }
 
 /* A row that gives no feedback on press reads as inert, which is most of why
    this panel felt dead even where it worked. */
-.settings-list button:active { background: var(--bg-lift); }
+.settings-list button:active { background: var(--surface); }
 
 .settings-list button span { display: grid; gap: 3px; }
 .settings-list b { font-size: 14.5px; font-weight: 560; }
@@ -777,18 +827,18 @@ h2 {
 	gap: 8px;
 	max-width: 600px;
 	margin: 0 auto;
-	padding: 11px 13px;
-	border: 1px solid var(--line-firm);
+	padding: 8px 10px 8px 8px;
+	border: 0.5px solid var(--glass-edge);
 	border-radius: var(--r-lg);
-	/* Nearly opaque on purpose. At lower alpha the track list reads straight
+	/* Mostly opaque on purpose. At lower alpha the track list reads straight
 	   through the bar and both become illegible; the blur alone is not enough
 	   separation over a dense list. */
-	background: color-mix(in oklab, var(--surface-high) 97%, transparent);
-	-webkit-backdrop-filter: blur(22px) saturate(1.3);
-	backdrop-filter: blur(22px) saturate(1.3);
+	background: var(--glass-strong);
+	-webkit-backdrop-filter: var(--glass-blur);
+	backdrop-filter: var(--glass-blur);
 	box-shadow:
-		0 1px 0 oklch(100% 0 0 / 0.04) inset,
-		0 12px 38px oklch(0% 0 0 / 0.6);
+		0 0.5px 0 rgb(255 255 255 / 0.06) inset,
+		0 12px 34px rgb(0 0 0 / 0.42);
 	animation: rise var(--med) var(--ease);
 }
 
@@ -796,19 +846,19 @@ h2 {
 .player-progress {
 	position: absolute;
 	top: 0;
-	right: 13px;
-	left: 13px;
+	right: 20px;
+	left: 20px;
 	height: 2px;
 	overflow: hidden;
 	border-radius: 999px;
-	background: var(--line-firm);
+	background: var(--line);
 }
 
 .player-progress span {
 	display: block;
 	width: 100%;
 	height: 100%;
-	background: var(--accent);
+	background: var(--text);
 	transform: scaleX(var(--progress));
 	transform-origin: left;
 }
@@ -853,22 +903,38 @@ h2 {
 #playerArt, .player-copy { pointer-events: none; }
 .player-copy .link-inline { pointer-events: auto; }
 
+/* The artist link's extra touch area grows downward only. The copy is centred
+   in the bar and the title line is taller than the artist line, so the link
+   then always starts below the bar's midline: a tap in the middle of the bar
+   opens Now Playing, as it should, instead of the artist. Growing upward as
+   well put the midline on the link at most phone widths. */
+.player-copy .link-inline {
+	min-height: 0;
+	padding-top: 0;
+	padding-bottom: 9px;
+	margin-top: 0;
+	margin-bottom: -9px;
+}
+
 .player-open:has(.player-open-hit:active) { transform: scale(0.985); opacity: 0.85; }
 
 .player img {
 	width: 46px;
 	height: 46px;
-	border-radius: 10px;
+	border-radius: 9px;
 	object-fit: cover;
-	background: var(--bg-lift);
+	background: var(--surface);
+	outline: 0.5px solid var(--glass-edge);
+	outline-offset: -0.5px;
+	box-shadow: 0 2px 8px rgb(0 0 0 / 0.25);
 }
 
 .player-copy { display: grid; gap: 2px; min-width: 0; }
 
 .player-copy b {
 	overflow: hidden;
-	font-size: 13.5px;
-	font-weight: 570;
+	font-size: 14.5px;
+	font-weight: 600;
 	letter-spacing: -0.012em;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -876,8 +942,8 @@ h2 {
 
 .player-copy span {
 	overflow: hidden;
-	color: var(--text-muted);
-	font-size: 12px;
+	color: var(--text-soft);
+	font-size: 13px;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
@@ -900,11 +966,11 @@ h2 {
 	border: 0;
 	border-radius: 50%;
 	background: none;
-	color: var(--text-soft);
-	transition: color var(--fast) var(--ease), background var(--fast) var(--ease), transform var(--fast) var(--ease);
+	color: var(--text);
+	transition: color var(--fast) var(--ease), background var(--fast) var(--ease), transform var(--base) var(--ease-spring);
 }
 
-.icon:active { background: var(--bg-lift); transform: scale(0.92); }
+.icon:active { background: var(--line); transform: scale(0.86); }
 .icon:hover { color: var(--text); }
 
 /* Icons come from two places and must not fight.
@@ -925,13 +991,12 @@ h2 {
 .player-controls .icon.stroked svg [stroke="none"] { fill: currentColor; }
 
 .icon.play {
-	width: 42px;
-	height: 42px;
-	background: var(--accent);
-	color: var(--on-accent);
+	width: 44px;
+	height: 44px;
+	color: var(--text);
 }
 
-.icon.play:hover { filter: brightness(1.07); }
+.icon.play svg { width: 27px; height: 27px; }
 
 .glyph-pause, .glyph-wait { display: none; }
 .icon.play[data-state="playing"] .glyph-play  { display: none; }
@@ -942,8 +1007,8 @@ h2 {
 	display: block;
 	width: 15px;
 	height: 15px;
-	border: 2px solid color-mix(in oklab, var(--on-accent) 35%, transparent);
-	border-top-color: var(--on-accent);
+	border: 2px solid color-mix(in srgb, var(--text) 30%, transparent);
+	border-top-color: var(--text);
 	border-radius: 50%;
 	animation: spin 700ms linear infinite;
 }
@@ -982,10 +1047,10 @@ h2 {
 	grid-template-columns: repeat(4, 1fr);
 	height: calc(var(--tabbar-h) + var(--safe-bottom));
 	padding-bottom: var(--safe-bottom);
-	background: color-mix(in oklab, var(--bg) 88%, transparent);
-	-webkit-backdrop-filter: blur(18px);
-	backdrop-filter: blur(18px);
-	border-top: 1px solid var(--line);
+	background: var(--glass);
+	-webkit-backdrop-filter: var(--glass-blur);
+	backdrop-filter: var(--glass-blur);
+	border-top: 0.5px solid var(--line);
 }
 
 .tabbar button {
@@ -996,10 +1061,12 @@ h2 {
 	background: none;
 	color: var(--text-muted);
 	font-size: 10.5px;
-	font-weight: 540;
+	font-weight: 560;
 	letter-spacing: 0.01em;
-	transition: color var(--fast) var(--ease);
+	transition: color var(--fast) var(--ease), transform var(--base) var(--ease-spring);
 }
+
+.tabbar button:active { transform: scale(0.9); }
 
 .tabbar svg {
 	width: 21px;
@@ -1055,10 +1122,20 @@ dialog .primary { margin-top: 10px; }
 	position: relative;
 	overflow: hidden;
 	border-radius: var(--r-sm);
-	border-bottom: 1px solid var(--line);
 }
 
-.track-shell:last-child { border-bottom: 0; }
+/* Apple's list separator: it starts where the text does, not under the
+   artwork, so the artwork column reads as one clean edge. */
+.track-shell + .track-shell::before {
+	position: absolute;
+	top: 0;
+	right: 0;
+	left: 62px;
+	z-index: 2;
+	border-top: 0.5px solid var(--line-firm);
+	pointer-events: none;
+	content: "";
+}
 
 /* ── Inline links ─────────────────────────────────────────────────────────
    An artist name that opens the artist. The underline carries the affordance,
@@ -1081,7 +1158,7 @@ dialog .primary { margin-top: 10px; }
 	text-align: left;
 	text-decoration: underline;
 	text-decoration-thickness: 1px;
-	text-decoration-color: color-mix(in oklab, currentColor 32%, transparent);
+	text-decoration-color: color-mix(in oklab, currentColor 24%, transparent);
 	text-underline-offset: 2px;
 	cursor: pointer;
 	-webkit-tap-highlight-color: transparent;
@@ -1186,17 +1263,19 @@ dialog .primary { margin-top: 10px; }
 .track img {
 	width: 48px;
 	height: 48px;
-	border-radius: 9px;
+	border-radius: 7px;
 	object-fit: cover;
 	background: var(--surface);
+	outline: 0.5px solid var(--line-firm);
+	outline-offset: -0.5px;
 }
 
 .track-copy { display: grid; gap: 3px; min-width: 0; }
 
 .track-copy b {
 	overflow: hidden;
-	font-size: 14.5px;
-	font-weight: 560;
+	font-size: 15.5px;
+	font-weight: 500;
 	letter-spacing: -0.012em;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -1209,7 +1288,7 @@ dialog .primary { margin-top: 10px; }
 .track-copy .track-artist {
 	overflow: hidden;
 	color: var(--text-muted);
-	font-size: 12.5px;
+	font-size: 13px;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
@@ -1536,13 +1615,52 @@ img { -webkit-user-drag: none; }
 
 /* ── Now playing card ─────────────────────────────────────────────────── */
 
+/* Always dark, whatever the theme, as the Mac app's Now Playing is: the
+   artwork behind the card decides its colour, and white reads on all of it. */
+.sheet-now {
+	color-scheme: dark;
+	--text: #fff;
+	--text-soft: rgb(255 255 255 / 0.76);
+	--text-muted: rgb(255 255 255 / 0.58);
+	--line: rgb(255 255 255 / 0.14);
+	--line-firm: rgb(255 255 255 / 0.24);
+	--surface: rgb(255 255 255 / 0.14);
+}
+
 .sheet-now .sheet-panel {
+	isolation: isolate;
+	/* clip, not hidden: hidden makes the panel a scroll container, and focusing
+	   a control inside it scrolled the backdrop out from under the card. */
+	overflow: clip;
 	/* The wash is sampled from the artwork, so each track's card carries that
-	   track's colour instead of one house gradient for everything. */
+	   track's colour even before the blurred artwork below has loaded. */
 	background:
-		radial-gradient(120% 65% at 50% 0%, rgb(var(--tint, 60 90 70) / 0.34), transparent 72%),
-		var(--bg-lift);
+		radial-gradient(120% 65% at 50% 0%, rgb(var(--tint, 60 60 70) / 0.5), transparent 72%),
+		#1c1c1e;
 	transition: background 600ms var(--ease), transform var(--med) var(--ease), opacity var(--med) var(--ease);
+}
+
+/* The artwork itself, blurred to colour, behind everything. Oversized so the
+   blur's soft edge falls outside the card. */
+.sheet-now .sheet-panel::before {
+	position: absolute;
+	inset: -25%;
+	z-index: -1;
+	background: var(--now-art, none) center / cover no-repeat;
+	filter: blur(56px) saturate(1.6) brightness(0.62);
+	pointer-events: none;
+	content: "";
+}
+
+/* Darker toward the controls, so white text holds its contrast over a white
+   album cover too. */
+.sheet-now .sheet-panel::after {
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	background: linear-gradient(rgb(0 0 0 / 0.12), rgb(0 0 0 / 0.34) 55%, rgb(0 0 0 / 0.52));
+	pointer-events: none;
+	content: "";
 }
 
 .now-top {
@@ -1579,11 +1697,20 @@ img { -webkit-user-drag: none; }
 .now-art {
 	width: 100%;
 	height: 100%;
-	border-radius: 18px;
+	border-radius: 12px;
 	object-fit: cover;
 	background: var(--surface);
-	box-shadow: 0 26px 60px oklch(0% 0 0 / 0.55);
+	outline: 0.5px solid rgb(255 255 255 / 0.12);
+	outline-offset: -0.5px;
+	box-shadow: 0 26px 60px rgb(0 0 0 / 0.5);
 	animation: art-in 420ms var(--ease);
+	transition: transform 560ms cubic-bezier(0.34, 1.32, 0.64, 1), box-shadow 560ms var(--ease);
+}
+
+/* Paused, the cover settles back a little, the way the Mac app's does. */
+.now-art-shell.is-paused .now-art {
+	transform: scale(0.86);
+	box-shadow: 0 12px 30px rgb(0 0 0 / 0.35);
 }
 
 @keyframes art-in {
@@ -1602,9 +1729,10 @@ img { -webkit-user-drag: none; }
 .now-title {
 	margin: 0;
 	color: var(--text);
-	font-size: clamp(20px, 5.6vw, 25px);
-	font-weight: 660;
-	letter-spacing: -0.032em;
+	font-family: var(--font-display);
+	font-size: clamp(21px, 5.8vw, 26px);
+	font-weight: 700;
+	letter-spacing: -0.02em;
 	line-height: 1.2;
 	text-transform: none;
 }
@@ -1637,33 +1765,40 @@ img { -webkit-user-drag: none; }
 .now-btn {
 	width: 48px;
 	height: 48px;
-	color: var(--text-soft);
+	color: var(--text);
+	transition: color var(--fast) var(--ease), background var(--fast) var(--ease), transform var(--base) var(--ease-spring);
 }
 
-.now-btn.on { color: var(--accent); }
-.now-btn:active { transform: scale(0.9); }
+.now-transport > .now-btn svg { width: 30px; height: 30px; }
+.now-transport > .now-btn:first-child svg,
+.now-transport > .now-btn:last-child svg { width: 21px; height: 21px; }
+.now-transport > .now-btn:first-child,
+.now-transport > .now-btn:last-child { color: var(--text-muted); }
+.now-transport > .now-btn.on { color: var(--accent); background: rgb(255 255 255 / 0.12); }
+.now-btn:active { transform: scale(0.84); }
 
+/* A glyph, not a disc: on the artwork's own colour a filled circle in the
+   accent fights the cover, and the Mac app draws it the same way. */
 .now-play {
 	display: grid;
 	place-items: center;
-	width: 68px;
-	height: 68px;
+	width: 76px;
+	height: 76px;
 	border: 0;
 	border-radius: 50%;
-	background: var(--accent);
-	color: var(--on-accent);
-	box-shadow: 0 8px 26px var(--accent-wash);
-	transition: transform var(--fast) var(--ease), filter var(--fast) var(--ease);
+	background: none;
+	color: var(--text);
+	transition: transform var(--base) var(--ease-spring), background var(--fast) var(--ease);
 }
 
-.now-play:active { transform: scale(0.93); }
-.now-play svg { fill: currentColor; stroke: none; }
+.now-play:active { transform: scale(0.84); background: rgb(255 255 255 / 0.1); }
+.now-play svg { width: 48px; height: 48px; fill: currentColor; stroke: none; }
 
 .now-play-wait {
-	width: 22px;
-	height: 22px;
-	border: 2.5px solid color-mix(in oklab, var(--on-accent) 35%, transparent);
-	border-top-color: var(--on-accent);
+	width: 30px;
+	height: 30px;
+	border: 3px solid rgb(255 255 255 / 0.3);
+	border-top-color: #fff;
 	border-radius: 50%;
 	animation: spin 700ms linear infinite;
 }
@@ -1692,9 +1827,11 @@ img { -webkit-user-drag: none; }
 	gap: 8px;
 	max-width: 100%;
 	padding: 9px 16px;
-	border: 1px solid var(--line-firm);
+	border: 0.5px solid var(--line);
 	border-radius: 999px;
-	background: color-mix(in oklab, var(--surface) 70%, transparent);
+	background: var(--surface);
+	-webkit-backdrop-filter: blur(12px);
+	backdrop-filter: blur(12px);
 	color: var(--text-soft);
 	font-size: 12.5px;
 	font-weight: 580;
@@ -1949,7 +2086,7 @@ img { -webkit-user-drag: none; }
 }
 
 .settings-group {
-	margin: 24px 0 6px;
+	margin: 26px 0 7px 16px;
 	font-size: 11.5px;
 	font-weight: 600;
 	letter-spacing: 0.09em;
@@ -2248,15 +2385,15 @@ img { -webkit-user-drag: none; }
 	background: linear-gradient(105deg, var(--swatch-bg) 0 62%, var(--swatch-accent) 62% 100%);
 }
 
-.theme-swatch-midnight { --swatch-bg: oklch(13% 0.012 155); --swatch-accent: oklch(72% 0.145 155); }
-.theme-swatch-dark     { --swatch-bg: oklch(15% 0 0);       --swatch-accent: oklch(72% 0.145 155); }
-.theme-swatch-mono     { --swatch-bg: oklch(11% 0 0);       --swatch-accent: oklch(88% 0 0); }
-.theme-swatch-light    { --swatch-bg: oklch(97.5% 0.006 155); --swatch-accent: oklch(52% 0.14 155); }
+.theme-swatch-midnight { --swatch-bg: #000;    --swatch-accent: #0a84ff; }
+.theme-swatch-dark     { --swatch-bg: #1e1e20; --swatch-accent: #0a84ff; }
+.theme-swatch-mono     { --swatch-bg: oklch(11% 0 0); --swatch-accent: oklch(88% 0 0); }
+.theme-swatch-light    { --swatch-bg: #fff;    --swatch-accent: #007aff; }
 
 .accent-row {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 12px;
+	gap: 6px;
 	margin: 10px 0 6px;
 }
 
@@ -2276,7 +2413,8 @@ img { -webkit-user-drag: none; }
 .accent-dot:active { transform: scale(0.92); }
 .accent-dot.active { border-color: var(--text); }
 
-.accent-dot-default { --dot: oklch(72% 0.145 155); }
+.accent-dot-default { --dot: #0a84ff; }
+.accent-dot-green   { --dot: oklch(72% 0.145 155); }
 .accent-dot-teal    { --dot: oklch(74% 0.12 195); }
 .accent-dot-purple  { --dot: oklch(70% 0.15 300); }
 .accent-dot-amber   { --dot: oklch(80% 0.14 75); }
@@ -2353,7 +2491,7 @@ img { -webkit-user-drag: none; }
 .now-album {
 	text-decoration: underline;
 	text-decoration-thickness: 1px;
-	text-decoration-color: color-mix(in oklab, currentColor 32%, transparent);
+	text-decoration-color: color-mix(in oklab, currentColor 24%, transparent);
 	text-underline-offset: 3px;
 	transition: color var(--quick) var(--ease), text-decoration-color var(--quick) var(--ease);
 }
@@ -2615,6 +2753,9 @@ img { -webkit-user-drag: none; }
 /* Seek: the thumb takes the text colour because it marks a position, not a
    value — the accent is spent on the portion already played. */
 .rs[data-variant="seek"] .rs-thumb { background: var(--text); }
+.sheet-now .rs[data-variant="seek"] .rs-fill,
+.sheet-now .rs[data-variant="volume"]:not(.is-boosted) .rs-fill { background: rgb(255 255 255 / 0.9); }
+.sheet-now .rs-rail { background: rgb(255 255 255 / 0.22); }
 
 /* In the mono theme --accent sits at 88% lightness and --text at 97%, so the
    thumb would be a pale dot on a pale bar. The ground supplies the separation

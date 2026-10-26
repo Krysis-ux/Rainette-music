@@ -1703,6 +1703,9 @@ html.rw-reduced-motion .rw-now-art.rw-art-swap { animation: none; }
 .rw-accent-swatch-default { background: var(--rw-accent-default); }
 .rw-accent-swatch-teal { background: var(--rw-teal); }
 .rw-accent-swatch-purple { background: var(--rw-purple); }
+.rw-accent-swatch-green { background: var(--rw-green); }
+/* Automatic: half Light, half Graphite. */
+.rw-theme-swatch-preview.rw-theme-swatch-auto { --rw-surface-raised: #ffffff; --rw-border: rgb(0 0 0 / 0.1); background: linear-gradient(115deg, #ffffff 0 50%, #1f2024 50% 100%); }
 
 .rw-theme-picker { display: flex; gap: 12px; flex-wrap: wrap; }
 .rw-theme-swatch {

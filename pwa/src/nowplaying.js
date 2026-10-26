@@ -235,6 +235,8 @@ export function openNowPlaying() {
 					art.dataset.localArt = isLocalTrack(track) ? track.source_id : '';
 					art.src = cover;
 					tintFromArtwork(art, handle.root);
+					// The same image, blurred behind the card (styles.css).
+					handle.root.style.setProperty('--now-art', cover ? `url(${JSON.stringify(cover)})` : 'none');
 				}
 				title.textContent = track.title || 'Untitled';
 
@@ -261,6 +263,7 @@ export function openNowPlaying() {
 					: icon(playing ? 'pause' : 'play', 30);
 				playBtn.setAttribute('aria-label', loading ? 'Loading' : (playing ? 'Pause' : 'Play'));
 				playBtn.classList.toggle('is-loading', loading);
+				artShell.classList.toggle('is-paused', !playing && !loading);
 
 				shuffleBtn.classList.toggle('on', state.shuffled);
 				repeatBtn.innerHTML = icon(state.repeat === 'one' ? 'loopOne' : 'loop', 20);

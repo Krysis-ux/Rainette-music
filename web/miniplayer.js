@@ -1357,11 +1357,12 @@ function wireRemote() {
 		} else if (msg.type === 'music_theme_set') {
 			// Keep in sync with rainette_settings.js's THEME_CLASS map.
 			const THEME_CLASS = { light: 'rw-theme-light', dark: 'rw-theme-dark', mono: 'rw-theme-mono', midnight: 'rw-theme-midnight' };
+			const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
 			document.documentElement.classList.remove(...Object.values(THEME_CLASS));
-			document.documentElement.classList.add(THEME_CLASS[msg.theme] || THEME_CLASS.light);
+			document.documentElement.classList.add(THEME_CLASS[msg.theme] || (systemDark ? THEME_CLASS.dark : THEME_CLASS.light));
 		} else if (msg.type === 'music_accent_set') {
-			document.documentElement.classList.remove('rw-accent-teal', 'rw-accent-purple');
-			if (msg.accent === 'teal' || msg.accent === 'purple') document.documentElement.classList.add('rw-accent-' + msg.accent);
+			document.documentElement.classList.remove('rw-accent-green', 'rw-accent-teal', 'rw-accent-purple');
+			if (['green', 'teal', 'purple'].includes(msg.accent)) document.documentElement.classList.add('rw-accent-' + msg.accent);
 		} else if (msg.type === 'music_remote_control') {
 			const a = msg.action;
 			if (a === 'queue_add_next') queueAddNext(msg.track);
