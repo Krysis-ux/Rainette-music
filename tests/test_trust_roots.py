@@ -19,9 +19,12 @@ own SSL context. `SSL_CERT_FILE` is the one lever all of them read.
 
 from __future__ import annotations
 
+import datetime
+import ipaddress
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -58,6 +61,80 @@ def _can_simulate_no_roots() -> bool:
         return probe.stdout.strip() == "0"
     except Exception:
         return False
+
+
+def _write_test_chain(directory: Path) -> tuple[Path, Path, Path]:
+    """A throwaway root and a 127.0.0.1 certificate it signed."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    window = dict(not_valid_before=now - datetime.timedelta(minutes=5), not_valid_after=now + datetime.timedelta(days=1))
+    root_key = ec.generate_private_key(ec.SECP256R1())
+    root_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Rainette test root")])
+    root = (
+        x509.CertificateBuilder(subject_name=root_name, issuer_name=root_name, public_key=root_key.public_key(),
+                                serial_number=x509.random_serial_number(), **window)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False, key_encipherment=False,
+                                     data_encipherment=False, key_agreement=False, key_cert_sign=True,
+                                     crl_sign=True, encipher_only=False, decipher_only=False), critical=True)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(root_key.public_key()), critical=False)
+        .sign(root_key, hashes.SHA256())
+    )
+    leaf_key = ec.generate_private_key(ec.SECP256R1())
+    leaf = (
+        x509.CertificateBuilder(subject_name=x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")]),
+                                issuer_name=root_name, public_key=leaf_key.public_key(),
+                                serial_number=x509.random_serial_number(), **window)
+        .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(root_key.public_key()), critical=False)
+        .sign(root_key, hashes.SHA256())
+    )
+    paths = directory / "root.pem", directory / "leaf.pem", directory / "leaf.key"
+    paths[0].write_bytes(root.public_bytes(serialization.Encoding.PEM))
+    paths[1].write_bytes(leaf.public_bytes(serialization.Encoding.PEM))
+    paths[2].write_bytes(leaf_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                serialization.NoEncryption()))
+    return paths
+
+
+# Imports in the order the app does: aiohttp first (server.py line order), then
+# shared picks the shipped bundle -- here the test root, via certifi.where().
+_RELAY_PROBE = """
+import aiohttp, asyncio, http.server, ssl, threading
+import certifi
+certifi.where = lambda: {ca!r}
+import server
+from aiohttp import web
+
+tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+tls.load_cert_chain({leaf!r}, {key!r})
+class Ok(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.send_header("Content-Length", "0"); self.end_headers()
+    def log_message(self, *args):
+        pass
+httpd = http.server.HTTPServer(("127.0.0.1", 0), Ok)
+httpd.socket = tls.wrap_socket(httpd.socket, server_side=True)
+threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+async def main():
+    app = web.Application()
+    await server._on_startup(app)
+    try:
+        async with app[server.CLIENT_KEY].get("https://127.0.0.1:%d/" % httpd.server_port) as response:
+            print(response.status)
+    except Exception as exc:
+        print(type(exc).__name__, exc)
+    finally:
+        await server._on_cleanup(app)
+
+asyncio.run(main())
+"""
 
 
 NO_ROOTS_SIMULATABLE = _can_simulate_no_roots()
@@ -104,6 +181,21 @@ class TrustRootTests(unittest.TestCase):
             env={**os.environ, "PYTHONPATH": str(ROOT)},
         )
         self.assertEqual(probe.stdout.strip(), "''", probe.stderr[-400:])
+
+    @_NEEDS_SIMULATION
+    def test_the_audio_relay_trusts_the_bundle_even_though_aiohttp_loads_first(self):
+        """Every phone stream died with CERTIFICATE_VERIFY_FAILED in 0.5.0.
+
+        aiohttp builds its default context when it is imported, and server.py
+        imports it before shared. In a process with no roots that context
+        verifies nothing, and the relay used it: search worked, every stream
+        failed. A local HTTPS server signed by a test root stands in for
+        googlevideo, and that root stands in for the bundle the app ships.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            ca, leaf, key = _write_test_chain(Path(tmp))
+            probe = _run_with_no_roots(_RELAY_PROBE.format(ca=str(ca), leaf=str(leaf), key=str(key)))
+        self.assertEqual(probe.stdout.strip().splitlines()[-1:], ["200"], probe.stdout[-400:] + probe.stderr[-800:])
 
     def test_the_ssl_context_class_is_not_replaced(self):
         """Swapping SSLContext globally broke the companion's TLS *server*.

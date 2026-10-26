@@ -797,9 +797,22 @@ async function diagnoseStreamFailure(url) {
 		if (response.ok || response.status === 206) return 'Your phone could not play this format.';
 		return `Your computer answered ${response.status}.`;
 	} catch {
-		// No answer at all: no DNS, no route, no tunnel. A quick tunnel mints a
-		// new address every start, so a phone holding yesterday's one lands here.
+		// No readable answer. That is either nothing there at all (no tunnel, or
+		// yesterday's quick-tunnel address) or the tunnel's edge standing in for
+		// a computer that is up but failed to fetch the track: Cloudflare swaps
+		// that error for its own page, which carries no CORS headers and cannot
+		// be read from here. Only the first is fixed by rescanning, so ask.
+		if (await computerAnswers()) return 'Your computer is connected but could not load this song.';
 		return 'Cannot reach your computer. Open Rainette there, then rescan the code to reconnect.';
+	}
+}
+
+async function computerAnswers() {
+	try {
+		await command('music_followed_artists', {}, 8000);
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -821,7 +834,9 @@ audio.addEventListener('error', async () => {
 			resumeAt: currentTime(),
 		});
 	} catch {
-		reportError(new Error('The audio stream expired or became unavailable.'));
+		// Not "expired": that guess sent people to rescan a computer that was
+		// fine. Say what actually failed.
+		reportError(new Error(await diagnoseStreamFailure(audio.currentSrc || audio.src)));
 	}
 });
 

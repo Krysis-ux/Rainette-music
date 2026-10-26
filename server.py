@@ -803,7 +803,9 @@ async def audio_proxy(request: web.Request) -> web.StreamResponse:
 
 
 async def _on_startup(app: web.Application) -> None:
-    app[CLIENT_KEY] = aiohttp.ClientSession()
+    # Not aiohttp's default context: in the frozen macOS build that one was
+    # built before the trust bundle existed and verifies nothing.
+    app[CLIENT_KEY] = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=shared.client_ssl_context()))
 
 
 async def _on_cleanup(app: web.Application) -> None:
@@ -874,7 +876,9 @@ def _cors_headers(request: web.Request) -> dict[str, str]:
     return {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        # Range: the phone asks the relay what went wrong with the same open-ended
+        # range its media element used, and Safari preflights it.
+        "Access-Control-Allow-Headers": "Authorization, Content-Type, Range",
         "Access-Control-Max-Age": "600",
         "Vary": "Origin",
     }

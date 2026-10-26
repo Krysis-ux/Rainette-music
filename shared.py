@@ -62,19 +62,29 @@ def _ensure_trust_roots() -> str:
         return ""
     os.environ["SSL_CERT_FILE"] = str(bundle)
     os.environ.setdefault("SSL_CERT_DIR", str(bundle.parent))
-    # Already-created default contexts do not re-read the environment, so the
-    # process-wide default is refreshed once here as well.
-    try:
-        ssl.SSLContext.set_default_verify_paths  # noqa: B018 - presence check
-        ssl.create_default_context().load_verify_locations(cafile=str(bundle))
-    except Exception:
-        pass
     return str(bundle)
 
 
-# Run at import, before any module builds an SSL context. `server.py` and
-# `music_bridge.py` both import this, and both do so before opening a socket.
+# Run at import. Contexts created after this see the bundle; one created
+# before it does not, and aiohttp creates one when it is imported -- see
+# client_ssl_context().
 TRUST_BUNDLE = _ensure_trust_roots()
+
+
+def client_ssl_context() -> ssl.SSLContext:
+    """A verifying TLS client context that trusts the bundle chosen above.
+
+    aiohttp builds its default context once, when it is first imported, and
+    server.py imports aiohttp before this module. In the frozen macOS build that
+    cached context has no roots at all, so a session left on aiohttp's default
+    could not open a single googlevideo URL: every phone stream and the EQ
+    proxy failed with CERTIFICATE_VERIFY_FAILED while search, which builds its
+    context later, kept working. Give every aiohttp session this instead.
+    """
+    context = ssl.create_default_context()
+    if TRUST_BUNDLE:
+        context.load_verify_locations(cafile=TRUST_BUNDLE)
+    return context
 
 STATE: Any = None
 POLICY: Any = None
