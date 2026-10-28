@@ -131,6 +131,9 @@ This proves the extractor works from a JVM on this network today. It does **not*
 1. **PWA:** an empty search shows "Nothing matched that." twice: `#searchMessage` and an empty-state paragraph (`pwa/app.js` `search()`).
 2. **Website:** `release-manifest.json` lacks `macos`, so the manifest is always rejected (§3).
 3. **Website:** the stale 0.2.6 APK is publicly served (§3).
+4. **PWA tests (fixed on this branch):** `tests/test_pwa_client_behaviour.py` failed intermittently on `main` (1 failure in each of 2 runs). The cause was the static test server's listen backlog of 5. Chromium opens ~40 module requests at once, macOS resets one, and the app never boots. `request_queue_size = 128` fixes it.
+5. **PWA (fixed on this branch):** Home never painted its empty-state message. `renderRecent` compared an empty history with its initial empty list and returned early.
+6. **PWA (suspected, unverified):** tracks stored on the computer reach the phone with `source: 'local'`, the same marker the phone uses for its own files. So `isLocalTrack` may send them to the phone's IndexedDB instead of the relay. This needs a check against a real desktop library.
 
 ## 9. Phase 0 exit
 

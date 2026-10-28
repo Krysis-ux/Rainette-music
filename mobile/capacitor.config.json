@@ -1,0 +1,18 @@
+{
+  "appId": "com.krysisux.rainettemusic",
+  "appName": "Rainette Music",
+  "webDir": "../pwa",
+  "android": {
+    "backgroundColor": "#0A0D0B",
+    "allowMixedContent": false
+  },
+  "server": {
+    "hostname": "rainette.localhost",
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SystemBars": {
+      "style": "DARK"
+    }
+  }
+}

@@ -87,7 +87,7 @@ public final class Main {
         check(m4a != null, "m4a progressive stream present for " + info.getId());
         if (m4a == null) return;
         String content = m4a.getContent();
-        log("  expiry", "expire=%s", query(content, "expire"));
+        log("  expiry", "expire=%s client=%s", query(content, "expire"), query(content, "c"));
 
         HttpRequest.Builder req = HttpRequest.newBuilder(URI.create(content)).timeout(Duration.ofSeconds(60));
         if (!fullDownload) req.header("Range", "bytes=0-262143");
