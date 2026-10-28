@@ -14,6 +14,7 @@ import {
 	setVolume, volume as currentVolume, boostAvailable, resumeContext, VOLUME_MAX, volumeIsAdjustable,
 } from './audio.js';
 import { isLocalTrack, localArtworkUrl } from './local.js';
+import { nativeAvailable } from './native-engine.js';
 import {
 	currentTrack, isPlaying, isLoading, currentTime, duration, isLinked,
 	toggle, skip, seekTo, cycleRepeat, toggleShuffle, subscribe,
@@ -45,7 +46,7 @@ export function openNowPlaying() {
 			const body = handle.body;
 
 			const top = el('div', 'now-top sheet-drag');
-			top.append(el('span', 'now-eyebrow', isLinked() ? `Playing on ${state.computerName || 'your computer'}` : 'Playing from your computer'));
+			top.append(el('span', 'now-eyebrow', isLinked() ? `Playing on ${state.computerName || 'your computer'}` : (nativeAvailable() ? 'Playing on this phone' : 'Playing from your computer')));
 			top.append(iconButton('chevronDown', {
 				label: 'Close now playing',
 				className: 'now-close',

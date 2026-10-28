@@ -5,6 +5,11 @@
 import { state, STORAGE, persist, trackKey, artworkUrl, artistName, nextRepeat, rememberRecent, trackDuration, countPlay } from './state.js';
 import { command, mediaUrl } from './bridge.js';
 import { isLocalTrack, localStreamUrl } from './local.js';
+import {
+	nativeAvailable, nativeState, nativePosition, nativeLoad, nativeQueue, nativeStop, nativeResume,
+	nativePause, nativeSeek, nativeSkip, nativeRepeat, nativeResolve, configureNative,
+} from './native-engine.js';
+import { engineFor, isCatalogTrack, describeError, isCanceled } from './source-provider.js';
 
 const audio = new Audio();
 audio.preload = 'metadata';
@@ -121,12 +126,23 @@ export function isLinked() {
 	return state.linked && !!state.remote;
 }
 
+/* Who makes the sound when this phone does: the <audio> element, or the native
+ * app's media service. Exactly one at a time -- `claimNative` silences the
+ * element before the service starts, `releaseNative` stops the service before
+ * the element starts -- so a track can never play twice over itself. */
+let owner = 'element';
+
+export function nativeOwns() {
+	return owner === 'native';
+}
+
 export function currentTrack() {
 	return isLinked() ? (state.remote.track || null) : state.currentTrack;
 }
 
 export function isPlaying() {
-	return isLinked() ? !!state.remote.playing : !audio.paused;
+	if (isLinked()) return !!state.remote.playing;
+	return nativeOwns() ? nativeState.playing : !audio.paused;
 }
 
 export function isLoading() {
@@ -146,11 +162,13 @@ function isStretched() {
 
 export function currentTime() {
 	if (isLinked()) return Number(state.remote.current_time) || 0;
+	if (nativeOwns()) return nativePosition();
 	return audio.currentTime || 0;
 }
 
 export function duration() {
 	if (isLinked()) return Number(state.remote.duration) || 0;
+	if (nativeOwns()) return trackDuration(state.currentTrack) || nativeState.duration;
 	return trackDuration(state.currentTrack) || (Number.isFinite(audio.duration) ? audio.duration : 0);
 }
 
@@ -174,7 +192,7 @@ function publishNowPlaying(playbackState) {
 	command('music_now_playing_set', {
 		track: state.currentTrack,
 		state: playbackState,
-		playing: !audio.paused,
+		playing: isPlaying(),
 		repeat: state.repeat,
 		loop: state.repeat !== 'off',
 		current_time: currentTime(),
@@ -199,7 +217,7 @@ function publishProgress() {
 	command('music_progress', {
 		current_time: currentTime(),
 		duration: duration(),
-		playing: !audio.paused,
+		playing: isPlaying(),
 		source_id: state.currentTrack?.source_id || '',
 	}).catch(() => {});
 }
@@ -276,6 +294,15 @@ async function resolveStream(track, forceRefresh, { prefetch = false } = {}) {
 	// never heard of.
 	if (isLocalTrack(track)) return localStreamUrl(track);
 
+	// In the native app a streamed song is resolved on this phone, even when the
+	// element is the one playing it (a queue that mixes in phone files).
+	if (nativeAvailable() && isCatalogTrack(track)) {
+		const stream = await nativeResolve(track, forceRefresh);
+		const lifeMs = Math.max(60000, Number(stream.expires_at_ms) - Date.now());
+		streams.set(trackKey(track), { url: stream.url, expiresAt: Date.now() + lifeMs * HALF_LIFE });
+		return stream.url;
+	}
+
 	const result = await command('music_stream_url', {
 		source_id: track.source_id,
 		track,
@@ -292,6 +319,8 @@ async function resolveStream(track, forceRefresh, { prefetch = false } = {}) {
 
 /** Resolve what is coming up, so advancing needs no round trip. */
 function prefetchUpcoming() {
+	// The native service prepares its own next track; nothing to warm here.
+	if (nativeOwns()) return;
 	// Only what is still coming up. A queue edit can move or remove the tracks
 	// a previous pass was warming, and paying a yt-dlp resolve for a track the
 	// user has already skipped past is the waste this guard exists to stop.
@@ -314,10 +343,108 @@ function prefetchUpcoming() {
 	for (const key of [...prefetching]) if (!wanted.has(key)) prefetching.delete(key);
 }
 
+/* ── The native engine ─────────────────────────────────────────────────────
+ * In the Android app a queue of streamed songs is played by the phone's media
+ * service. Ownership changes hands only in claimNative and releaseNative. */
+
+/* Every play request, whichever engine takes it. A request that finishes
+ * loading after a newer one began must not start anything: that is how a slow
+ * answer for the song you skipped past would otherwise play over the new one. */
+let playRequests = 0;
+
+function claimNative() {
+	if (owner === 'native') return;
+	owner = 'native';
+	// Silent before the service makes a sound: one owner, never two.
+	audio.pause();
+	if (audio.src) {
+		audio.removeAttribute('src');
+		audio.load();
+	}
+}
+
+async function releaseNative() {
+	if (owner !== 'native') return;
+	owner = 'element';
+	await nativeStop().catch(() => { /* already stopped, or the service is gone */ });
+}
+
+function nativeFailure(error) {
+	const failure = new Error(describeError(error));
+	failure.code = error?.code;
+	return failure;
+}
+
+async function playNatively(track, options, request) {
+	claimNative();
+	state.loading = true;
+	emit();
+	try {
+		const loaded = await nativeLoad(state.queue, state.queueIndex, {
+			resumeAt: Number(options.resumeAt || 0),
+			startPaused: Boolean(options.startPaused),
+			repeat: state.repeat,
+		});
+		if (!loaded || request !== playRequests) return;
+		if (options.startPaused) {
+			publishNowPlaying('paused');
+			return;
+		}
+		rememberRecent(track);
+		countPlay(track);
+		publishNowPlaying('playing');
+	} catch (error) {
+		if (isCanceled(error)) return;
+		throw nativeFailure(error);
+	} finally {
+		state.loading = false;
+		emit();
+	}
+}
+
+/* The service moved on by itself -- a track ended, or the notification or a
+ * headset skipped -- so the page follows it, not the other way round. */
+configureNative({
+	onState: snapshot => {
+		if (!nativeOwns()) return;
+		const track = state.queue[snapshot.index];
+		if (track && trackKey(track) === snapshot.sourceId && snapshot.index !== state.queueIndex) {
+			state.queueIndex = snapshot.index;
+			state.currentTrack = track;
+			rememberRecent(track);
+			countPlay(track);
+			publishNowPlaying(snapshot.playing ? 'playing' : 'paused');
+		}
+		publishProgress();
+		emit();
+	},
+	onError: error => { if (nativeOwns()) reportError(nativeFailure(error)); },
+});
+
+/** Hand a queue edit to the service without interrupting the current track. */
+function syncNativeQueue() {
+	if (!nativeOwns()) return;
+	nativeQueue(state.queue, state.queueIndex).then(applied => {
+		if (applied) return;
+		// The playing track left the queue: carry on from where the page points now.
+		const index = Math.max(0, state.queueIndex);
+		const next = state.queue[index];
+		if (next) playTrack(next, state.queue, index, { startPaused: !nativeState.playing }).catch(reportError);
+	}).catch(error => reportError(nativeFailure(error)));
+}
+
+/** A phone file cannot join a queue the service is streaming; say so, once. */
+function refuseForNative(track) {
+	if (!nativeOwns() || isCatalogTrack(track)) return false;
+	reportError(new Error('Music stored on this phone can’t join a streamed queue yet. Play it on its own instead.'));
+	return true;
+}
+
 /* ── Playback ──────────────────────────────────────────────────────────────*/
 
 export async function playTrack(track, queue = [track], index = 0, options = {}) {
 	if (!track?.source_id) throw new Error('This track has no playable source.');
+	const request = ++playRequests;
 
 	// Playing something from the phone takes ownership of the session back from
 	// the desktop, which is the only sane reading of "I pressed play here".
@@ -336,6 +463,11 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 	if (!options.forceRefresh) state.streamRetries = 0;
 	cleanSince = 0;
 
+	// A queue the native service can stream end to end is its to play. A retry
+	// (`forceRefresh`) only ever comes from the element's own error handler.
+	if (!options.forceRefresh && engineFor(state.queue) === 'native') return playNatively(track, options, request);
+	if (nativeOwns()) await releaseNative();
+
 	// Only a track whose URL still has to be fetched is "loading"; one already
 	// resolved starts now and never shows a spinner.
 	const ready = options.forceRefresh ? '' : readyStream(track);
@@ -350,14 +482,16 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 		const url = ready || await resolveStream(track, options.forceRefresh);
 
 		// A newer play may have started while this one was resolving; adopting
-		// its stream would swap the track out from under the user.
-		if (trackKey(state.currentTrack) !== trackKey(track)) return;
+		// its stream would swap the track out from under the user -- or, if the
+		// newer one went to the native service, play a second copy over it.
+		if (request !== playRequests || trackKey(state.currentTrack) !== trackKey(track)) return;
 
 		const resumeAt = Number(options.resumeAt || 0);
-		// A blob URL is already absolute, and there may be no companion to
-		// resolve it against — local files are meant to play with no computer
-		// paired at all.
-		audio.src = isLocalTrack(track) ? url : mediaUrl(url);
+		// A blob URL, or one this phone resolved itself, is already absolute,
+		// and there may be no companion to resolve it against -- local files and
+		// on-device streams are meant to play with no computer paired at all.
+		// Only the computer's relative relay paths go through mediaUrl().
+		audio.src = isLocalTrack(track) || /^(blob:|https?:)/.test(url) ? url : mediaUrl(url);
 		audio.load();
 		if (resumeAt > 0) {
 			audio.addEventListener('loadedmetadata', () => {
@@ -435,6 +569,11 @@ export async function play() {
 	// Mid-resolve there is no stream to start yet. Calling play() here rejects
 	// and surfaces a failure for a track that is loading perfectly well.
 	if (state.loading) return;
+	// The service's own `play` is just as absolute: repeating it never pauses.
+	if (nativeOwns()) {
+		await nativeResume().catch(error => reportError(nativeFailure(error)));
+		return;
+	}
 	// No `if (!audio.paused) return` guard: `play()` on a playing element is
 	// already a no-op per spec, so the guard bought nothing -- and it could
 	// strand playback outright. After an iOS interruption an element can read
@@ -458,6 +597,10 @@ export function pause() {
 		return;
 	}
 	if (!state.currentTrack) return;
+	if (nativeOwns()) {
+		nativePause().catch(() => { /* nothing playing to pause */ });
+		return;
+	}
 	// Unconditional for the same reason as `play()`: `pause()` on a paused
 	// element is a no-op. Notably this is *not* guarded on `state.loading` --
 	// a track still resolving is not paused, and "stop" during a load has to
@@ -478,13 +621,28 @@ export async function toggle() {
 	}
 	if (!state.currentTrack) return;
 	if (state.loading) return;
-	if (audio.paused) await play();
-	else pause();
+	if (isPlaying()) pause();
+	else await play();
 }
 
 export async function skip(offset) {
 	if (isLinked()) { remoteControl(offset > 0 ? 'next' : 'prev'); return; }
 	if (!state.queue.length) return;
+	if (nativeOwns()) {
+		// Same rules as below, applied by the service so the notification and a
+		// headset behave identically: previous restarts a track past 3 s, repeat
+		// all wraps. The one gap is the end of the queue, where the service would
+		// do nothing; stop on the last track instead, as the element does.
+		const last = state.queueIndex >= state.queue.length - 1;
+		if (offset > 0 && last && state.repeat !== 'all') {
+			await nativePause().catch(() => {});
+			await nativeSeek(0).catch(() => {});
+			emit();
+			return;
+		}
+		await nativeSkip(offset).catch(error => reportError(nativeFailure(error)));
+		return;
+	}
 
 	// Repeat-one applies to the track ending on its own, not to a deliberate
 	// press of next — a user asking for the next track means it.
@@ -524,6 +682,11 @@ export function seekTo(seconds) {
 		if (total > 0) remoteControl('seek', { ratio: Math.max(0, Math.min(1, seconds / total)) });
 		return;
 	}
+	if (nativeOwns()) {
+		const total = duration();
+		nativeSeek(Math.max(0, total > 0 ? Math.min(seconds, total) : seconds)).catch(() => {});
+		return;
+	}
 	if (!Number.isFinite(audio.duration)) return;
 	audio.currentTime = Math.max(0, Math.min(seconds, duration()));
 }
@@ -540,7 +703,10 @@ export function cycleRepeat() {
 	state.repeat = nextRepeat(state.repeat);
 	persist(STORAGE.repeat, state.repeat);
 	if (isLinked()) remoteControl('set_repeat', { mode: state.repeat });
-	else publishNowPlaying(audio.paused ? 'paused' : 'playing');
+	else {
+		if (nativeOwns()) nativeRepeat(state.repeat).catch(() => {});
+		publishNowPlaying(isPlaying() ? 'playing' : 'paused');
+	}
 	emit();
 	return state.repeat;
 }
@@ -569,7 +735,8 @@ export function toggleShuffle() {
 		state.shuffled = true;
 	}
 	state.queueIndex = playing ? state.queue.indexOf(playing) : state.queueIndex;
-	publishNowPlaying(audio.paused ? 'paused' : 'playing');
+	publishNowPlaying(isPlaying() ? 'playing' : 'paused');
+	syncNativeQueue();
 	emit();
 	return state.shuffled;
 }
@@ -578,17 +745,21 @@ export function toggleShuffle() {
 
 export function queueAddNext(track) {
 	if (isLinked()) { remoteControl('queue_add_next', { track }); return; }
+	if (refuseForNative(track)) return;
 	const at = state.queueIndex < 0 ? state.queue.length : state.queueIndex + 1;
 	state.queue = [...state.queue.slice(0, at), track, ...state.queue.slice(at)];
-	publishNowPlaying(audio.paused ? 'paused' : 'playing');
+	publishNowPlaying(isPlaying() ? 'playing' : 'paused');
+	syncNativeQueue();
 	prefetchUpcoming();
 	emit();
 }
 
 export function queueAddEnd(track) {
 	if (isLinked()) { remoteControl('queue_add_end', { track }); return; }
+	if (refuseForNative(track)) return;
 	state.queue = [...state.queue, track];
-	publishNowPlaying(audio.paused ? 'paused' : 'playing');
+	publishNowPlaying(isPlaying() ? 'playing' : 'paused');
+	syncNativeQueue();
 	prefetchUpcoming();
 	emit();
 }
@@ -599,7 +770,8 @@ export function queueRemove(index) {
 	state.queue = state.queue.filter((_track, position) => position !== index);
 	if (index < state.queueIndex) state.queueIndex -= 1;
 	else if (index === state.queueIndex) state.queueIndex = Math.min(state.queueIndex, state.queue.length - 1);
-	publishNowPlaying(audio.paused ? 'paused' : 'playing');
+	publishNowPlaying(isPlaying() ? 'playing' : 'paused');
+	syncNativeQueue();
 	prefetchUpcoming();
 	emit();
 }
@@ -614,7 +786,8 @@ export function queueMove(from, to) {
 	// The index follows the track, not the position: a reorder must never
 	// silently change what is playing.
 	state.queueIndex = playing ? next.indexOf(playing) : state.queueIndex;
-	publishNowPlaying(audio.paused ? 'paused' : 'playing');
+	publishNowPlaying(isPlaying() ? 'playing' : 'paused');
+	syncNativeQueue();
 	prefetchUpcoming();
 	emit();
 }
@@ -628,7 +801,8 @@ export async function queuePlayIndex(index) {
 export function queueClearUpNext() {
 	if (isLinked()) { remoteControl('queue_clear_up_next'); return; }
 	state.queue = state.queue.slice(0, Math.max(0, state.queueIndex + 1));
-	publishNowPlaying(audio.paused ? 'paused' : 'playing');
+	publishNowPlaying(isPlaying() ? 'playing' : 'paused');
+	syncNativeQueue();
 	prefetchUpcoming();
 	emit();
 }
@@ -828,6 +1002,9 @@ audio.addEventListener('error', async () => {
 	const wait = STREAM_RETRY_BACKOFF_MS[Math.min(state.streamRetries, STREAM_RETRY_BACKOFF_MS.length - 1)];
 	state.streamRetries += 1;
 	if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+	// The native service took over while this waited: a retry now would start
+	// the element over it.
+	if (nativeOwns()) return;
 	try {
 		await playTrack(state.currentTrack, state.queue, state.queueIndex, {
 			forceRefresh: true,
@@ -844,6 +1021,7 @@ wireMediaSession();
 
 /** Pause this phone's own audio without forgetting the queue it holds. */
 export function pauseLocal() {
+	if (nativeOwns()) { nativePause().catch(() => {}); return; }
 	if (!audio.paused) audio.pause();
 }
 
@@ -860,7 +1038,8 @@ export function audioElement() {
 /** Reload the current track in place, keeping its position and play state. */
 export async function reloadCurrent() {
 	const track = state.currentTrack;
-	if (!track) return;
+	// The service's audio never passes through the page's graph; nothing to reload.
+	if (!track || nativeOwns()) return;
 	await playTrack(track, state.queue, state.queueIndex, {
 		resumeAt: audio.currentTime || 0,
 		startPaused: audio.paused,
@@ -872,14 +1051,16 @@ export function localSession() {
 	return {
 		queue: state.queue,
 		index: state.queueIndex,
-		current_time: audio.currentTime || 0,
-		playing: !audio.paused,
+		current_time: currentTime(),
+		playing: isPlaying(),
 		repeat: state.repeat,
 	};
 }
 
 /** Stop and forget everything, for disconnect. */
 export function resetPlayback() {
+	releaseNative();
+	playRequests += 1;
 	audio.pause();
 	audio.removeAttribute('src');
 	audio.load();
@@ -920,7 +1101,8 @@ export async function applyRemoteVerb(message) {
 
 	switch (String(message.action || '')) {
 		case 'play':
-			if (audio.paused && state.currentTrack) await audio.play().catch(reportError);
+			if (nativeOwns()) await play();
+			else if (audio.paused && state.currentTrack) await audio.play().catch(reportError);
 			return;
 		case 'pause':
 			pauseLocal();

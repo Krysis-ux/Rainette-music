@@ -373,6 +373,8 @@ h2 {
 /* ── Pairing ──────────────────────────────────────────────────────────── */
 
 .setup { padding-top: 22px; }
+/* Native app only: the way back from the optional pairing screen. */
+.setup-back { margin-bottom: 8px; }
 
 /* ── Reconnect ────────────────────────────────────────────────────────────
    Computers this phone already knows, offered above the pairing form because

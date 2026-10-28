@@ -67,6 +67,19 @@ export function applyTheme(theme) {
 	root.style.colorScheme = id === 'light' ? 'light' : 'dark';
 	const meta = document.querySelector('meta[name="theme-color"]');
 	if (meta) meta.setAttribute('content', THEME_COLOR[id] || THEME_COLOR.midnight);
+	// In the Android app the status bar sits over the page (newer WebViews) or
+	// over the window behind it (older ones). Both, and the icons on them, follow
+	// the theme, or the clock vanishes into the background. Through the bridge
+	// directly: this module stays a leaf, and in a browser nothing happens.
+	try {
+		const cap = globalThis.Capacitor;
+		if (cap?.isPluginAvailable?.('SystemBars')) {
+			cap.nativePromise('SystemBars', 'setStyle', { style: id === 'light' ? 'LIGHT' : 'DARK' }).catch(() => {});
+		}
+		if (cap?.isPluginAvailable?.('RainettePlayer')) {
+			cap.nativePromise('RainettePlayer', 'setSystemBarColor', { color: THEME_COLOR[id] || THEME_COLOR.midnight }).catch(() => {});
+		}
+	} catch { /* not the app */ }
 	return id;
 }
 

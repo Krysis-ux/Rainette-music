@@ -21,6 +21,7 @@
 
 import { state, STORAGE, persist } from './state.js';
 import { audioElement, reloadCurrent, remoteSetVolume, isLinked, notifyPlayerChanged } from './player.js';
+import { nativeAvailable, nativeSetVolume } from './native-engine.js';
 
 /* Matches web/miniplayer.js EQ_BANDS exactly — a preset named "Bass Boost" has
  * to mean the same thing on both devices or it is a different feature wearing
@@ -411,6 +412,10 @@ export async function setVolume(value) {
 		notifyPlayerChanged();
 		return wanted;
 	}
+
+	// The native service plays at most unity; the element path below still
+	// carries the change for anything the element plays.
+	if (nativeAvailable()) nativeSetVolume(wanted).catch(() => { /* service not running yet */ });
 
 	// Not just "past unity" any more: on a platform that ignores the element's
 	// own volume, the graph is the only thing that can carry the change at all.
