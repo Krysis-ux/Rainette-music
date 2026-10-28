@@ -107,6 +107,10 @@ PWA_CONFIG_FILENAME = "pwa-config.json"
 # The production PWA. The operator can point Rainette at their own deployment
 # (a fork, or a Vercel preview) from Settings → Mobile; this is only the default.
 DEFAULT_PWA_URL = "https://music-pwa-web.vercel.app"
+# The Android app's own WebView origin (mobile/capacitor.config.json). Exact, like
+# every origin here; a phone using it still needs a pairing approved on this
+# computer before it can do anything.
+NATIVE_APP_ORIGIN = "https://rainette.localhost"
 
 # The /audio proxy only relays these hosts (googlevideo serves the actual audio;
 # youtube/ytimg for redirects/art). Keeps the local proxy from being a general
@@ -1445,7 +1449,7 @@ def write_pwa_config(pwa_url: str, public_url: str) -> dict:
 
 def configured_pwa_origins() -> frozenset[str]:
     """Exact origins the gateway will answer, never a wildcard."""
-    origins = {normalize_origin(DEFAULT_PWA_URL)}
+    origins = {normalize_origin(DEFAULT_PWA_URL), NATIVE_APP_ORIGIN}
     configured = read_pwa_config().get("pwa_url") or ""
     if configured:
         try:
