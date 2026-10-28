@@ -788,7 +788,10 @@ h2 {
 	transition: background var(--fast) var(--ease);
 }
 
-.settings-list button + button::before {
+/* A divider above every row that has a visible row before it. `button + button`
+ * counted hidden rows too, so a card whose first rows are hidden (the app's
+ * pairing rows, a hidden Connect row in the browser) drew a line above its top. */
+.settings-list button:not([hidden]) ~ button::before {
 	position: absolute;
 	top: 0;
 	right: 0;
