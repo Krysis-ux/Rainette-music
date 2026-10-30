@@ -78,6 +78,9 @@ export function trackRow(track, { onPlay, onHold = null, swipe = true, showDurat
 	const row = el('div', 'track');
 
 	const art = document.createElement('img');
+	// The class is what lets a tap on the cover fall through to the play button
+	// (styles.css: .track-art). Without it the cover swallowed the tap.
+	art.className = 'track-art';
 	// A file on this phone carries its cover inside itself rather than at a URL,
 	// so the row is tagged and filled in once the blob has been read.
 	if (isLocalTrack(track)) {

@@ -350,6 +350,22 @@ class TestArtistLinks:
         page.close()
 
 
+class TestTrackRowTaps:
+    def test_tapping_the_artwork_plays_the_song(self, browser, static_server):
+        """Found on a Galaxy Note 8: the cover sat above the row's play button and
+        swallowed the tap, because the img never carried the class the CSS
+        rule letting taps through was written for."""
+        computer = FakeComputer()
+        page, errors = open_phone(browser, static_server, computer)
+        row = page.locator("#recentList .track").first
+        row.wait_for()
+        box = row.locator("img").first.bounding_box()
+        page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.wait_for_function("() => document.querySelector('#playPauseButton').dataset.state === 'playing'")
+        assert not errors, errors
+        page.close()
+
+
 class TestTransport:
     def test_play_pause_answers_the_first_tap(self, browser, static_server):
         computer = FakeComputer()

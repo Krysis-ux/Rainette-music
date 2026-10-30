@@ -57,7 +57,9 @@ def session() -> dict:
     """The app's media session as Android reports it. Android stamps the position
     only on state changes, so it is carried forward with the reported speed."""
     dump = adb("shell", "dumpsys", "media_session")
-    start = dump.find(f"package={PACKAGE}")
+    # Exact package: com.krysisux.rainette is a prefix of the old dev app's id.
+    found = re.search(rf"package={re.escape(PACKAGE)}\s", dump)
+    start = found.start() if found else -1
     block = dump[start:start + 4000] if start >= 0 else ""
     state = re.search(r"state=PlaybackState \{state=(?:\w+\()?(\d+)\)?, position=(\d+), buffered position=\d+, "
                       r"speed=([\d.]+), updated=(\d+)", block)
@@ -93,7 +95,8 @@ def wait_for_unlock() -> None:
 
 def audio_started() -> bool:
     """Is an AudioTrack owned by this app actually started? Stronger than any UI state."""
-    uid = re.search(r"uid:(\d+)", adb("shell", "pm", "list", "packages", "-U", PACKAGE))
+    listed = adb("shell", "pm", "list", "packages", "-U", PACKAGE)
+    uid = re.search(rf"^package:{re.escape(PACKAGE)} uid:(\d+)", listed, re.MULTILINE)
     if not uid:
         return False
     players = adb("shell", "dumpsys", "audio")

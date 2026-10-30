@@ -52,9 +52,12 @@ uninstalls it by hand. Debug builds add `.dev`.
 
 ## Releasing
 
-The release key is `~/Library/Application Support/Rainette Music/signing/rainette-android-release.p12`,
-with its password in the file beside it. It is RSA 4096, valid to 2054. Its
-certificate fingerprint is committed in `android/release-cert.sha256`.
+The release key is `rainette-android-release.p12`, with its password in
+`rainette-android-release.password`. The maintainer keeps both, outside the
+repository. It is RSA 4096, valid to 2054. Its certificate fingerprint is
+committed in `android/release-cert.sha256`. A local release build points
+`RAINETTE_ANDROID_KEYSTORE` at the `.p12` and reads the password into
+`RAINETTE_ANDROID_KEYSTORE_PASSWORD`.
 
 **Back both files up somewhere safe.** If they are lost, no future build can
 update an installed copy: every user would have to uninstall first.
@@ -147,6 +150,19 @@ By hand on the same phone, with a 1-second state recorder watching:
   element. Android still advanced that queue in the background on this phone,
   but there were no lock-screen controls and no native network recovery.
   Queues are now one kind of track: the tapped track's kind decides.
+
+The **signed release build** (0.5.2, `com.krysisux.rainette`, not
+debuggable) passes `scripts/release_smoke.py` on the same phone, through its
+real UI:
+
+- It opens into music.
+- On-device search works.
+- Tapping a song's artwork starts it on the native player in 3.5 s.
+- It keeps playing with the screen off.
+
+That run found a bug in the shared interface: tapping a song's cover did
+nothing, in the browser too. Fixed: the cover `<img>` lacked the `track-art`
+class that lets taps through.
 
 **AVG antivirus on this phone flagged the debug build as "Suspicious app
 activity".** Expect the same from some antivirus apps for any public APK:

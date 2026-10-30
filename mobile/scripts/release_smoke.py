@@ -31,14 +31,40 @@ def nodes() -> list[dict]:
     return [node.attrib for node in root.iter("node")]
 
 
-def find(pattern: str, attribute: str = "text") -> dict | None:
+def find(pattern: str, attribute: str | None = None) -> dict | None:
+    """A node whose label matches. WebViews put an element's accessible name in
+    `text` on some versions and `content-desc` on others, so both are checked."""
     regex = re.compile(pattern)
-    return next((n for n in nodes() if regex.search(n.get(attribute, ""))), None)
+    attributes = (attribute,) if attribute else ("text", "content-desc")
+    return next((n for n in nodes() if any(regex.search(n.get(a, "")) for a in attributes)), None)
 
 
-def tap(node: dict) -> None:
+def bounds(node: dict) -> tuple[int, int, int, int]:
     x1, y1, x2, y2 = map(int, re.findall(r"\d+", node["bounds"]))
-    device.adb("shell", "input", "tap", str((x1 + x2) // 2), str((y1 + y2) // 2))
+    return x1, y1, x2, y2
+
+
+def tap(node: dict, at_left: bool = False) -> None:
+    """Tap a node's centre, or near its left edge: on a track row that is the
+    artwork, which nothing else (the artist link) overlaps."""
+    x1, y1, x2, y2 = bounds(node)
+    x = x1 + min(60, (x2 - x1) // 4) if at_left else (x1 + x2) // 2
+    device.adb("shell", "input", "tap", str(x), str((y1 + y2) // 2))
+
+
+def visible_play_button() -> dict | None:
+    """The first song's play button that is fully on screen: above the tab bar,
+    not scrolled away (zero-size) or under the keyboard."""
+    all_nodes = nodes()
+    tab_bar = next((n for n in all_nodes if (n.get("text") or n.get("content-desc")) == "Home"), None)
+    limit = bounds(tab_bar)[1] if tab_bar else 10_000
+    for node in all_nodes:
+        label = node.get("text", "") or node.get("content-desc", "")
+        if re.match(r"^Play .+", label):
+            _, y1, _, y2 = bounds(node)
+            if 0 < y1 and y2 <= limit:
+                return node
+    return None
 
 
 def main() -> int:
@@ -60,18 +86,34 @@ def main() -> int:
     device.adb("shell", "input", "text", "daft%spunk%sone%smore%stime")
     device.adb("shell", "input", "keyevent", "KEYCODE_ENTER")
     started = time.time()
-    play_button = device.wait_for(lambda: find(r"^Play .+", "content-desc"), 40)
+    found = device.wait_for(lambda: find(r"^Play .+"), 40)
+    # The keyboard stays up after Enter and covers the results.
+    device.adb("shell", "input", "keyevent", "KEYCODE_BACK")
+    time.sleep(1)
+    # Songs come after the artists; bring a row up above the tab bar.
+    play_button = None
+    for _ in range(4):
+        play_button = visible_play_button() if found else None
+        if play_button:
+            break
+        # A slow drag, so the list does not coast: a tap on a coasting list only
+        # stops it, and never reaches the song.
+        device.adb("shell", "input", "swipe", "540", "1500", "540", "900", "1500")
+        time.sleep(2)
     device.check(bool(play_button), "on-device search returns songs", f"{time.time() - started:.1f}s")
     device.screenshot("01-search")
     if not play_button:
         return device.failures
 
-    tap(play_button)
+    time.sleep(1)
+    tap(play_button, at_left=True)
     started = time.time()
     playing = device.wait_for(lambda: device.session()["state"] == "PLAYING", 45)
     device.check(bool(playing) and device.audio_started(), "a song plays on the native player",
                  f"{time.time() - started:.1f}s, {device.session()}")
     device.screenshot("02-playing")
+    if not playing:
+        return device.failures  # leave the screen on, and the phone unlocked, to look
 
     first = device.session()
     device.adb("shell", "input", "keyevent", "KEYCODE_SLEEP")
