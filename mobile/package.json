@@ -1,0 +1,16 @@
+{
+  "name": "rainette-mobile",
+  "private": true,
+  "license": "GPL-3.0-only",
+  "description": "Native shell for Rainette Music: the pwa/ interface over an on-device player.",
+  "scripts": {
+    "sync": "cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.3",
+    "@capacitor/core": "8.5.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3"
+  }
+}

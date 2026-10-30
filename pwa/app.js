@@ -6,7 +6,7 @@ import { state, STORAGE, artworkUrl, artistName, formatTime, rememberRecent, tra
 import { fetchDesktopRecent, mergeRecent, fetchPlaylists, fetchPlaylistTracks, playlistSubtitle } from './src/collections.js';
 import { $, el, icon, iconButton, toast, stagger } from './src/dom.js';
 import { configureBridge, isUnsupportedCommand } from './src/bridge.js';
-import { configurePlayer, subscribe, playTrack, toggle, skip, currentTrack, isPlaying, isLoading, currentTime, duration, resetPlayback, isLinked, isGestureRequired } from './src/player.js';
+import { configurePlayer, subscribe, playTrack, toggle, skip, currentTrack, isPlaying, isLoading, currentTime, duration, resetPlayback, isLinked, isGestureRequired, restoreNative } from './src/player.js';
 import { renderTracks, markPlayingRows, configureTracks } from './src/tracks.js';
 import { configureSync, startEventLoop, stopEventLoop, restartEventLoop } from './src/sync.js';
 import { configureConnection, startConnectionWatch } from './src/connection.js';
@@ -32,6 +32,8 @@ import {
 	listLocalTracks, localTrackCount, localBytes, formatBytes, clearLocalTracks,
 } from './src/local.js';
 import { refreshDownloaded, onDownloadsChanged } from './src/downloads.js';
+import { nativeAvailable, nativeSearch } from './src/native-engine.js';
+import { describeError } from './src/source-provider.js';
 import { graphState, graphCostsBackgroundPlayback } from './src/audio.js';
 import { runListDownload } from './src/downloadmenu.js';
 import { localPlaylists, isLocalPlaylist, localPlaylistTracks, openPlaylistEditor, openPlaylistMenu } from './src/playlists.js';
@@ -249,6 +251,43 @@ function showSetup(message = '') {
 	renderRecentSessions();
 	renderOfflineLibrary();
 	setStatus('', 'Not connected');
+	paintSetupForApp();
+}
+
+/* In the native app this screen is an optional detour, not the front door:
+ * the copy says so, and there is a way back to the music. */
+function paintSetupForApp() {
+	if (!nativeAvailable()) return;
+	$('#setupView .eyebrow').textContent = 'Optional';
+	$('#setupTitle').textContent = 'Connect to a computer.';
+	$('#setupView .lede').textContent =
+		'Pair with Rainette on your computer to bring its library and playlists here. Music keeps playing on this phone either way.';
+	$('#setupBack').hidden = false;
+}
+
+/* The native app's front door. Search and playback run on this phone, so it
+ * opens straight into the app with or without a computer; a paired one adds
+ * its library on top once it answers. */
+function openOnDevice() {
+	closeAllSheets();
+	setupView.hidden = true;
+	appView.hidden = false;
+	tabBar.hidden = false;
+	if (!state.connected) {
+		computerLabel.textContent = 'Playing on this phone';
+		setStatus('', 'On this phone');
+	}
+	switchTab(pref('landingTab') || 'home');
+}
+
+/* A paired computer went away (revoked, or disconnected here). The browser
+ * needs it to do anything and shows pairing; the app just carries on. */
+function leaveComputer(message) {
+	if (!nativeAvailable()) { showSetup(message); return; }
+	state.connected = false;
+	stopEventLoop();
+	openOnDevice();
+	if (message) toast(message, { icon: 'phone' });
 }
 
 /* Downloaded tracks need no computer, so the pairing screen offers them.
@@ -318,7 +357,11 @@ function showApp(status) {
 }
 
 async function api(path, options = {}) {
-	if (!state.endpoint || !state.token) throw new Error('Rainette is not connected to a computer.');
+	if (!state.endpoint || !state.token) {
+		throw new Error(nativeAvailable()
+			? 'Connect a computer in Settings to see what it holds.'
+			: 'Rainette is not connected to a computer.');
+	}
 	const headers = new Headers(options.headers || {});
 	headers.set('Authorization', `Bearer ${state.token}`);
 	if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
@@ -507,7 +550,7 @@ async function testConnection({ reveal = true } = {}) {
 		if (reveal) switchTab(pref('landingTab') || 'home');
 		return true;
 	} catch (error) {
-		setStatus('', 'Offline');
+		setStatus('', nativeAvailable() ? 'On this phone' : 'Offline');
 		if (reveal) showSetup(connectionError(error));
 		return false;
 	}
@@ -535,7 +578,9 @@ function sameTracks(a, b) {
 	return a.length === b.length && a.every((track, index) => trackKey(track) === trackKey(b[index]));
 }
 
-let shownRecent = [];
+// null until the first paint, so an empty history still paints its empty
+// message rather than matching the initial empty list and drawing nothing.
+let shownRecent = null;
 // The computer's last answer. Every render merges it in, so playing a song
 // from the list redraws the same history instead of shrinking it to the few
 // tracks this phone has played itself.
@@ -543,10 +588,12 @@ let desktopRecent = [];
 
 function renderRecent() {
 	const list = mergeRecent(desktopRecent).slice(0, 12);
-	if (sameTracks(list, shownRecent)) return;
+	if (shownRecent && sameTracks(list, shownRecent)) return;
 	shownRecent = list;
 	renderTracks($('#recentList'), list, {
-		emptyMessage: 'Play something here or on your computer and it shows up.',
+		emptyMessage: nativeAvailable() && !state.token
+			? 'Search for a song to start. What you play shows up here.'
+			: 'Play something here or on your computer and it shows up.',
 		onPlay: playFromList(list),
 	});
 }
@@ -924,14 +971,27 @@ const searchArtistSort = sortControl({
 });
 searchSortHost.append(searchArtistSort.node);
 
+let searchRequests = 0;
+
 async function search(query) {
-	searchMessage.textContent = 'Searching on your computer…';
+	// Only the newest search may paint: an older one answering late would
+	// otherwise replace what was asked for since.
+	const request = ++searchRequests;
+	searchMessage.textContent = nativeAvailable() ? 'Searching…' : 'Searching on your computer…';
 	$('#searchResults').replaceChildren();
 	searchFilter.hidden = true;
 	searchSortHost.hidden = true;
 
 	let result;
-	try {
+	if (nativeAvailable()) {
+		try {
+			result = { songs: await nativeSearch(query), artists: [], albums: [] };
+		} catch (error) {
+			if (request === searchRequests) searchMessage.textContent = describeError(error);
+			return;
+		}
+		if (request !== searchRequests) return;
+	} else try {
 		result = await command('music_catalog_search', { query }, 45000);
 	} catch (error) {
 		// A computer whose allow-list predates catalog search still answers the
@@ -946,6 +1006,7 @@ async function search(query) {
 			return;
 		}
 	}
+	if (request !== searchRequests) return;
 
 	searchState.songs = Array.isArray(result.songs) ? result.songs : (result.items || result.tracks || []);
 	// A computer that answers with songs but no artists — an older Rainette, or
@@ -1159,6 +1220,13 @@ function renderSettings() {
 	// Each row says what it is currently set to, so the panel answers "is the
 	// EQ on?" without having to be opened first.
 	$('#equalizerState').textContent = eqSummary();
+	// The app: with nothing paired, pairing-only rows give way to one way in.
+	// The equaliser shapes the page's own audio, which the native service's
+	// is not, so it is not offered there rather than offered and inert.
+	const unpairedApp = nativeAvailable() && !state.token;
+	$('#connectComputerButton').hidden = !unpairedApp;
+	for (const id of ['#linkToggle', '#testConnectionButton', '#disconnectButton']) $(id).hidden = unpairedApp;
+	$('#equalizerButton').hidden = nativeAvailable();
 	$('#sleepState').textContent = sleepLabel() === 'Sleep' ? 'Off' : sleepLabel();
 	$('#outputState').textContent = isLinked() ? (state.computerName || 'Your computer') : 'This phone';
 	paintSettingsValues().catch(() => { /* a value that will not load is not worth a failure */ });
@@ -1192,7 +1260,7 @@ configureSync({
 		if (activeTab === 'library') renderLibraryPanel().catch(() => {});
 		if (activeTab === 'home') refreshRecent().catch(() => {});
 	},
-	onAuthLost: error => showSetup(connectionError(error)),
+	onAuthLost: error => leaveComputer(connectionError(error)),
 });
 /* Ownership can move because of something that happened on another device
  * entirely, so the label repaints from the broadcast rather than only from
@@ -1290,9 +1358,11 @@ window.addEventListener('popstate', () => {
 });
 
 $('#connectionButton').addEventListener('click', () => {
-	if (state.connected) switchTab('settings');
+	if (state.connected || nativeAvailable()) switchTab('settings');
 	else showSetup();
 });
+$('#connectComputerButton').addEventListener('click', () => showSetup());
+$('#setupBack').addEventListener('click', () => openOnDevice());
 
 $('#openDownloads').addEventListener('click', () => { openLocalOnly(); });
 
@@ -1355,7 +1425,7 @@ function paintInstallButton() {
 	if (!button) return;
 	// Already installed: the row is an instruction to do something that has
 	// been done, so it goes away rather than sitting there being wrong.
-	button.hidden = isStandalone();
+	button.hidden = isStandalone() || nativeAvailable();
 	const label = button.querySelector('b');
 	if (label) label.textContent = installPrompt ? 'Install Rainette' : 'Add to Home Screen';
 }
@@ -1403,7 +1473,7 @@ $('#disconnectButton').addEventListener('click', () => {
 	// from.
 	forgetAllSessions();
 	resetPlayback();
-	showSetup('This phone is disconnected. Your computer still has it listed until you revoke it there.');
+	leaveComputer('This phone is disconnected. Your computer still has it listed until you revoke it there.');
 });
 
 for (const button of document.querySelectorAll('[data-tab]')) {
@@ -1424,6 +1494,10 @@ subscribe(() => {
 });
 
 window.addEventListener('offline', () => setStatus('', 'Phone offline'));
+// The app has no computer poll to repaint this when the network returns.
+window.addEventListener('online', () => {
+	if (nativeAvailable() && !state.connected) setStatus('', 'On this phone');
+});
 
 /* Waking the phone up. The `online` case is folded in here rather than left as
  * its own listener, so every way a session can come back runs the same two
@@ -1438,7 +1512,8 @@ configureConnection({
 });
 startConnectionWatch();
 
-if ('serviceWorker' in navigator) {
+// The app ships its own copy of these files; a worker would only cache them twice.
+if ('serviceWorker' in navigator && !nativeAvailable()) {
 	window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
 }
 
@@ -1502,6 +1577,13 @@ if (scanned) {
 		pairWaiting.hidden = true;
 		setupError.textContent = error?.message || 'Pairing failed.';
 	});
+} else if (nativeAvailable()) {
+	// The app never opens on pairing: the music is here whether or not a
+	// computer answers, and one that does is joined quietly in the background.
+	openOnDevice();
+	// The service may still be playing from before the app was swiped away.
+	restoreNative();
+	if (state.endpoint && state.token) testConnection({ reveal: false }).then(ok => { if (ok) refreshLibrary(); });
 } else if (state.endpoint && state.token) {
 	testConnection().then(ok => { if (ok) refreshLibrary(); });
 } else {

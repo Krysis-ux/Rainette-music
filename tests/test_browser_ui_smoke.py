@@ -133,6 +133,11 @@ class QuietStaticHandler(SimpleHTTPRequestHandler):
 
 class QuietThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
+    # The page opens ~40 ES modules at once. socketserver's default backlog of
+    # 5 overflows, macOS resets a connection, and a module that never arrives
+    # leaves the app unbooted with no page error -- a timeout in whichever test
+    # drew it. That was this suite's intermittent failure, not the app.
+    request_queue_size = 128
 
 
 def emit(page, payload):

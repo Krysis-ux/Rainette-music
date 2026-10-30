@@ -1,0 +1,66 @@
+[search] 20 songs in 1005 ms
+PASS search returned songs
+[  result] One More Time (Radio Edit) | Daft Punk | 321s | https://music.youtube.com/watch?v=wU26xVT_vBU
+[  result] One more time (feat. Inkos’yamagcokama) | IGEZA LAKWAMGUBE | 367s | https://music.youtube.com/watch?v=cwISQxgSv38
+[  result] One More Time | Daft Punk | 321s | https://music.youtube.com/watch?v=fa5IWHDbftI
+[  result] One More Time (feat. ilysmoke) | Mqx | 182s | https://music.youtube.com/watch?v=cfH0T46sjRk
+[  result] One More Time | 遲木 | 225s | https://music.youtube.com/watch?v=puph62NgDVM
+[resolve] One More Time (Radio Edit) (Daft Punk - Topic) in 2035 ms, duration 320s
+[  stream] itag=139 M4A mp4a.40.5 48kbps delivery=PROGRESSIVE_HTTP
+[  stream] itag=140 M4A mp4a.40.2 128kbps delivery=PROGRESSIVE_HTTP
+[  stream] itag=249 WEBMA_OPUS opus 50kbps delivery=PROGRESSIVE_HTTP
+[  stream] itag=250 WEBMA_OPUS opus 70kbps delivery=PROGRESSIVE_HTTP
+[  stream] itag=251 WEBMA_OPUS opus 160kbps delivery=PROGRESSIVE_HTTP
+PASS m4a progressive stream present for wU26xVT_vBU
+[  expiry] expire=1793129372
+[  fetch] HTTP 206 audio/mp4 262144 bytes in 210 ms (1248 KB/s, itag 140)
+PASS audio fetch status for wU26xVT_vBU
+PASS audio content-type for wU26xVT_vBU
+PASS MP4 'ftyp' box at start for wU26xVT_vBU
+PASS chunk 1 is 206
+PASS chunk 2 is 206
+PASS chunk 3 is 206
+PASS chunk 4 is 206
+PASS chunk 5 is 206
+[  chunked] 5185422 bytes in 5 requests, 1263 ms (4105 KB/s, itag 140)
+[resolve] One more time (feat. Inkos’yamagcokama) (IGEZA LAKWAMGUBE - Topic) in 1263 ms, duration 366s
+[  stream] itag=139 M4A mp4a.40.5 48kbps delivery=PROGRESSIVE_HTTP
+[  stream] itag=140 M4A mp4a.40.2 128kbps delivery=PROGRESSIVE_HTTP
+[  stream] itag=249 WEBMA_OPUS opus 50kbps delivery=PROGRESSIVE_HTTP
+[  stream] itag=250 WEBMA_OPUS opus 70kbps delivery=PROGRESSIVE_HTTP
+[  stream] itag=251 WEBMA_OPUS opus 160kbps delivery=PROGRESSIVE_HTTP
+PASS m4a progressive stream present for cwISQxgSv38
+[  expiry] expire=1793129375
+[  fetch] HTTP 206 audio/mp4 262144 bytes in 251 ms (1044 KB/s, itag 140)
+PASS audio fetch status for cwISQxgSv38
+PASS audio content-type for cwISQxgSv38
+PASS MP4 'ftyp' box at start for cwISQxgSv38
+PASS chunk 1 is 206
+PASS chunk 2 is 206
+PASS chunk 3 is 206
+PASS chunk 4 is 206
+PASS chunk 5 is 206
+PASS chunk 6 is 206
+[  chunked] 5928177 bytes in 6 requests, 1375 ms (4311 KB/s, itag 140)
+[resolve] One More Time (Daft Punk - Topic) in 1448 ms, duration 320s
+[  stream] itag=139 M4A mp4a.40.5 48kbps delivery=PROGRESSIVE_HTTP
+[  stream] itag=140 M4A mp4a.40.2 128kbps delivery=PROGRESSIVE_HTTP
+[  stream] itag=249 WEBMA_OPUS opus 50kbps delivery=PROGRESSIVE_HTTP
+[  stream] itag=250 WEBMA_OPUS opus 70kbps delivery=PROGRESSIVE_HTTP
+[  stream] itag=251 WEBMA_OPUS opus 160kbps delivery=PROGRESSIVE_HTTP
+PASS m4a progressive stream present for fa5IWHDbftI
+[  expiry] expire=1793129378
+[  fetch] HTTP 206 audio/mp4 262144 bytes in 244 ms (1074 KB/s, itag 140)
+PASS audio fetch status for fa5IWHDbftI
+PASS audio content-type for fa5IWHDbftI
+PASS MP4 'ftyp' box at start for fa5IWHDbftI
+PASS chunk 1 is 206
+PASS chunk 2 is 206
+PASS chunk 3 is 206
+PASS chunk 4 is 206
+PASS chunk 5 is 206
+[  chunked] 5186561 bytes in 5 requests, 1326 ms (3911 KB/s, itag 140)
+[expected-failure] unavailable id -> ParsingException: JSON response is too short
+[tampered-expiry] HTTP 403
+PASS tampered expiry is refused with 403
+[done] 0 failed check(s)

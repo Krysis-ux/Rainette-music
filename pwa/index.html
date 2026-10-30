@@ -30,6 +30,9 @@
 
   <main class="shell">
     <section id="setupView" class="setup" aria-labelledby="setupTitle">
+      <!-- The native app plays without a computer, so there this screen is an
+           optional detour and needs a way back. Hidden in the browser. -->
+      <button id="setupBack" class="ghost small setup-back" type="button" hidden>Back to music</button>
       <p class="eyebrow">Step one</p>
       <h1 id="setupTitle">Point this phone at your&nbsp;computer.</h1>
       <p class="lede">
@@ -212,6 +215,9 @@
 
         <h2 class="settings-group">This phone</h2>
         <div class="settings-list">
+          <button id="connectComputerButton" type="button" hidden>
+            <span><b>Connect to a computer</b><small>Bring the library and playlists from Rainette on your computer</small></span>
+          </button>
           <button id="linkToggle" type="button" aria-pressed="false">
             <span><b>Link to my computer</b><small>This phone runs its own session, separate from the computer</small></span>
             <span id="linkState" class="settings-state" aria-hidden="true"></span>

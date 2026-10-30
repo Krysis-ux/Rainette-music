@@ -1,0 +1,94 @@
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+// A release is built from a vMAJOR.MINOR.PATCH tag, passed as RAINETTE_VERSION.
+// versionCode is derived from it, so it only ever rises: 0.5.2 -> 502. Anything
+// else (a local or CI debug build) is a dev build.
+def rainetteVersion = System.getenv('RAINETTE_VERSION') ?: ''
+def versionParts = (rainetteVersion =~ /^(\d+)\.(\d+)\.(\d+)$/)
+def isRelease = versionParts.matches()
+if (isRelease && (versionParts[0][2].toInteger() > 99 || versionParts[0][3].toInteger() > 99)) {
+    throw new GradleException("RAINETTE_VERSION ${rainetteVersion}: minor and patch must be below 100")
+}
+
+// The release key never touches the repository: its path and password come from
+// the environment (GitHub secrets in CI). Without them a release build is
+// unsigned, cannot be installed, and CI refuses to publish it.
+def releaseKeystore = System.getenv('RAINETTE_ANDROID_KEYSTORE') ?: ''
+
+android {
+    namespace = "com.krysisux.rainettemusic"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        // Not the 0.2.6 app's com.krysisux.rainettemusic: that one is signed with a
+        // key that is not available, so this installs beside it rather than
+        // pretending to be an update (see mobile/AUDIT.md section 2).
+        applicationId "com.krysisux.rainette"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        // Dev builds are 100; a release's code comes from its tag (top of this file).
+        versionCode isRelease ? versionParts[0][1].toInteger() * 10000 + versionParts[0][2].toInteger() * 100 + versionParts[0][3].toInteger() : 100
+        versionName isRelease ? rainetteVersion : "0.6.0-dev"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    compileOptions {
+        // NewPipeExtractor uses java.time and java.nio APIs below minSdk.
+        coreLibraryDesugaringEnabled true
+    }
+    kotlinOptions { jvmTarget = '21' }
+    testOptions { unitTests.returnDefaultValues = true }
+    signingConfigs {
+        release {
+            if (releaseKeystore) {
+                storeFile file(releaseKeystore)
+                storeType 'pkcs12'
+                storePassword System.getenv('RAINETTE_ANDROID_KEYSTORE_PASSWORD')
+                keyAlias 'rainette'
+                keyPassword System.getenv('RAINETTE_ANDROID_KEYSTORE_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            // Installs beside any existing 0.2.6 rather than failing to replace it.
+            applicationIdSuffix '.dev'
+        }
+        release {
+            if (releaseKeystore) signingConfig signingConfigs.release
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+
+    implementation 'com.github.TeamNewPipe:NewPipeExtractor:v0.26.5'
+    implementation 'androidx.media3:media3-exoplayer:1.11.1'
+    implementation 'androidx.media3:media3-session:1.11.1'
+    implementation 'androidx.media3:media3-datasource:1.11.1'
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs_nio:2.1.5'
+    testImplementation 'org.robolectric:robolectric:4.16.1'
+}
+
+apply from: 'capacitor.build.gradle'
