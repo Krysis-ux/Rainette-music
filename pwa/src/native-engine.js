@@ -72,10 +72,26 @@ function absorbAndTell(snapshot) {
 	return snapshot;
 }
 
-if (present) {
-	cap.addListener(PLUGIN, 'state', absorbAndTell);
-	cap.addListener(PLUGIN, 'error', raw => {
-		if (Number(raw?.generation) === generation) handlers.onError(failure(raw));
+/* Events arrive through the plugin's own `watch` channel, not Capacitor's
+ * addListener. Capacitor clears every plugin listener when the WebView reports
+ * the page has started (`bridge.reset()`), and on a real phone (Galaxy Note 8,
+ * Android 9) that report arrived after these modules had registered theirs, so
+ * the page silently stopped hearing the service. The plugin holds the watch
+ * call itself, out of the reset's reach; the page id lets a reloaded page
+ * replace the old one's channel rather than add to it. */
+const PAGE = Math.random().toString(36).slice(2);
+let listening = false;
+
+function listen() {
+	if (listening || !present) return;
+	listening = true;
+	cap.nativeCallback(PLUGIN, 'watch', { page: PAGE }, (data, error) => {
+		if (error || !data) return;
+		if (data.event === 'error') {
+			if (Number(data.generation) === generation) handlers.onError(failure(data));
+			return;
+		}
+		absorbAndTell(data);
 	});
 }
 
@@ -115,6 +131,7 @@ function checkProtocol() {
  * track has loaded, false if a newer request superseded this one meanwhile.
  */
 export async function nativeLoad(queue, index, { resumeAt = 0, startPaused = false, repeat = 'off' } = {}) {
+	listen();
 	generation += 1;
 	const mine = generation;
 	Object.assign(nativeState, { playing: !startPaused, loading: true, ended: false, index, sourceId: String(queue[index]?.source_id || ''), position: resumeAt, duration: 0, at: Date.now() });
@@ -159,7 +176,23 @@ export const nativeSeek = seconds => call('seek', { position_s: Math.max(0, Numb
 export const nativeSkip = offset => call('skip', { offset: offset > 0 ? 1 : -1 }).then(absorbAndTell);
 export const nativeRepeat = mode => call('setRepeat', { mode });
 export const nativeSetVolume = volume => call('setVolume', { volume: Math.max(0, Math.min(1, Number(volume) || 0)) });
-export const nativeSync = () => call('getState').then(absorbAndTell);
+export const nativeSync = () => { listen(); return call('getState').then(absorbAndTell); };
+
+/**
+ * What the service is already playing, for a page that has just opened over it
+ * (the app was swiped away and reopened while music played). Adopts the
+ * service's generation, since this page never asked for anything, and returns
+ * its queue and position, or null when it holds nothing.
+ */
+export async function nativeRestore() {
+	if (!present) return null;
+	listen();
+	const snapshot = await call('getState', { with_queue: true });
+	if (!Array.isArray(snapshot?.queue) || !snapshot.queue.length || snapshot.index < 0) return null;
+	generation = Number(snapshot.generation) || 0;
+	absorb(snapshot);
+	return { queue: snapshot.queue, index: snapshot.index };
+}
 
 /** Song search on this phone. Results are shaped like the computer's. */
 export async function nativeSearch(query) {

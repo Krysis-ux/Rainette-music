@@ -38,9 +38,10 @@ object PlaybackEvents {
  * same way the notification and a Bluetooth headset do. Nothing here accepts a
  * URL to play: the page names a track, the service derives where it comes from.
  *
- * Events: `state` (on every change, and each second while playing) and `error`
- * (a failure the service has given up on). Both carry the `generation` of the
- * play request they belong to, so the page can drop anything stale.
+ * Events go through [watch], not Capacitor's addListener: `state` (on every
+ * change, and each second while playing) and `error` (a failure the service
+ * has given up on). Both carry the `generation` of the play request they
+ * belong to, so the page can drop anything stale.
  */
 @UnstableApi
 @CapacitorPlugin(name = "RainettePlayer")
@@ -51,6 +52,9 @@ class RainettePlayerPlugin : Plugin() {
     private val main = Handler(Looper.getMainLooper())
     private var generation = 0
     private var pending: Pending? = null
+    /** The page's event channel, and which page instance owns it. Main thread only. */
+    private val watchers = mutableListOf<PluginCall>()
+    private var watchingPage = ""
 
     private class Pending(val call: PluginCall, val sourceId: String, val generation: Int)
 
@@ -70,6 +74,34 @@ class RainettePlayerPlugin : Plugin() {
 
     /* A page that was asleep missed events; give it the truth on return. */
     override fun handleOnResume() = withController { emitState(it) }
+
+    /**
+     * Subscribe the page to `state` and `error` events. Capacitor's own
+     * listeners are wiped by `bridge.reset()` when the WebView reports the page
+     * started, and on a Galaxy Note 8 that report arrived after the page had
+     * registered them, so the page silently stopped hearing the service. A call
+     * this plugin holds itself is untouched by the reset. One page at a time:
+     * a new page id (a reload) replaces the old page's callbacks.
+     */
+    @PluginMethod(returnType = PluginMethod.RETURN_CALLBACK)
+    fun watch(call: PluginCall) {
+        val page = call.getString("page").orEmpty()
+        call.setKeepAlive(true)
+        main.post {
+            if (page != watchingPage) {
+                watchers.forEach { bridge.releaseCall(it) }
+                watchers.clear()
+                watchingPage = page
+            }
+            watchers += call
+            withController { emitState(it) }
+        }
+    }
+
+    private fun send(event: String, data: JSObject) {
+        data.put("event", event)
+        watchers.forEach { it.resolve(data) }
+    }
 
     @PluginMethod
     fun capabilities(call: PluginCall) {
@@ -210,8 +242,23 @@ class RainettePlayerPlugin : Plugin() {
         withController { c -> c.volume = volume; call.resolve(state(c)) }
     }
 
+    /** The current state; with `with_queue`, also the tracks it holds, for a page that just opened. */
     @PluginMethod
-    fun getState(call: PluginCall) = withController { c -> call.resolve(state(c)) }
+    fun getState(call: PluginCall) = withController { c ->
+        val snapshot = state(c)
+        if (call.getBoolean("with_queue", false) == true) {
+            snapshot.put("queue", JSArray((0 until c.mediaItemCount).map { i ->
+                val item = c.getMediaItemAt(i)
+                JSObject()
+                    .put("source", "youtube")
+                    .put("source_id", item.mediaId)
+                    .put("title", item.mediaMetadata.title?.toString().orEmpty())
+                    .put("artist", item.mediaMetadata.artist?.toString().orEmpty())
+                    .put("thumbnail_url", item.mediaMetadata.artworkUri?.toString().orEmpty())
+            }))
+        }
+        call.resolve(snapshot)
+    }
 
     /**
      * Paint the window behind the system bars in the page's theme colour. Where
@@ -264,13 +311,13 @@ class RainettePlayerPlugin : Plugin() {
             return
         }
         withController { c ->
-            notifyListeners("error", JSObject().put("generation", generation).put("code", code)
+            send("error", JSObject().put("generation", generation).put("code", code)
                 .put("message", message(code)).put("index", c.currentMediaItemIndex)
                 .put("source_id", c.currentMediaItem?.mediaId.orEmpty()))
         }
     }
 
-    private fun emitState(c: MediaController) = notifyListeners("state", state(c))
+    private fun emitState(c: MediaController) = send("state", state(c))
 
     private fun state(c: MediaController): JSObject {
         val duration = c.duration.takeIf { it > 0 } ?: 0L
@@ -319,7 +366,7 @@ class RainettePlayerPlugin : Plugin() {
             } catch (e: Exception) {
                 null
             }
-            if (c == null) notifyListeners("error", JSObject().put("code", SERVICE_FAILED).put("message", message(SERVICE_FAILED)))
+            if (c == null) send("error", JSObject().put("code", SERVICE_FAILED).put("message", message(SERVICE_FAILED)))
             else block(c)
         }, ContextCompat.getMainExecutor(context))
     }

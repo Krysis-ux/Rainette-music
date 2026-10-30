@@ -59,18 +59,36 @@ def session() -> dict:
     dump = adb("shell", "dumpsys", "media_session")
     start = dump.find(f"package={PACKAGE}")
     block = dump[start:start + 4000] if start >= 0 else ""
-    state = re.search(r"state=PlaybackState \{state=(\w+)\((\d+)\), position=(\d+), buffered position=\d+, "
+    state = re.search(r"state=PlaybackState \{state=(?:\w+\()?(\d+)\)?, position=(\d+), buffered position=\d+, "
                       r"speed=([\d.]+), updated=(\d+)", block)
     title = re.search(r"description=([^,\n]+)", block)
     item = re.search(r"active item id=(-?\d+)", block)
     if not state:
         return {"state": "NONE", "position_ms": -1, "title": "", "item": -1}
     now_ms = int(float(adb("shell", "cat", "/proc/uptime").split()[0]) * 1000)
-    position = int(state.group(3)) + int(max(0, now_ms - int(state.group(5))) * float(state.group(4)))
+    position = int(state.group(2)) + int(max(0, now_ms - int(state.group(4))) * float(state.group(3)))
     # Titles repeat across recordings ("One More Time" x4), so queue position is
     # what proves a track changed.
-    return {"state": state.group(1), "position_ms": position,
+    return {"state": STATES.get(int(state.group(1)), state.group(1)), "position_ms": position,
             "title": title.group(1).strip() if title else "", "item": int(item.group(1)) if item else -1}
+
+
+STATES = {0: "NONE", 1: "STOPPED", 2: "PAUSED", 3: "PLAYING", 6: "BUFFERING", 7: "ERROR", 8: "CONNECTING"}
+
+
+def keyguard_up() -> bool:
+    """The lock screen is up. Android 9 reports it as `showing=true` inside the
+    KeyguardServiceDelegate block; newer versions use the named flags."""
+    policy = adb("shell", "dumpsys", "window", "policy", check=False)
+    delegate = policy[policy.find("KeyguardServiceDelegate"):][:400]
+    return bool(re.search(r"(mShowingLockscreen|isKeyguardShowing|mKeyguardShowing)=true", policy)
+                or re.search(r"\bshowing=true", delegate))
+
+
+def wait_for_unlock() -> None:
+    if keyguard_up():
+        print("  >>> unlock the phone to continue (waiting up to 2 minutes)", flush=True)
+        wait_for(lambda: not keyguard_up(), 120, step=1)
 
 
 def audio_started() -> bool:
@@ -122,7 +140,9 @@ def status_bar_contrast(path: Path) -> int:
     """Brightest minus darkest pixel in the status bar strip: near 0 means the
     clock and icons are drawn in the background's own colour, i.e. invisible."""
     from PIL import Image
-    strip = Image.open(path).convert("L").crop((0, 20, 1080, 110))
+    image = Image.open(path).convert("L")
+    width, height = image.size
+    strip = image.crop((0, int(height * 0.008), width, int(height * 0.03)))
     low, high = strip.getextrema()
     return high - low
 
@@ -131,6 +151,17 @@ PLAYER = "(await import('./src/player.js'))"
 
 
 def main() -> int:
+    wifi = adb("shell", "settings", "get", "global", "wifi_on").strip()
+    data = adb("shell", "settings", "get", "global", "mobile_data").strip()
+    try:
+        return run()
+    finally:
+        # Whatever happened, leave the phone's network exactly as it was found.
+        adb("shell", "svc", "wifi", "enable" if wifi == "1" else "disable", check=False)
+        adb("shell", "svc", "data", "enable" if data == "1" else "disable", check=False)
+
+
+def run() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     adb("shell", "am", "force-stop", PACKAGE)
     adb("shell", "am", "start", "-W", "-n", ACTIVITY)
@@ -222,6 +253,8 @@ def main() -> int:
     check("rainettemusic" in adb("shell", "dumpsys", "notification", "--noredact"), "a media notification is posted")
     adb("shell", "input", "keyevent", "KEYCODE_WAKEUP")
     adb("shell", "wm", "dismiss-keyguard", check=False)
+    time.sleep(1)
+    wait_for_unlock()
 
     # Lose the network, skip into a track that has to be resolved, then get the
     # network back: playback must recover by itself, within the bounded backoff.
@@ -238,15 +271,37 @@ def main() -> int:
     print(f"  recovered {time.time() - started_offline:.1f}s after the network returned", flush=True)
     check(bool(recovered), "playback recovers once the network returns", str(session()))
 
-    # Back to the app: it must show what the service is playing.
+    # Back to the app: it must show what the service is playing. It has to be on
+    # screen for that -- a hidden page paints nothing -- so the phone must be unlocked.
+    wait_for_unlock()
     adb("shell", "am", "start", "-n", ACTIVITY)
     forward()
+    wait_for(lambda: js("!document.hidden"), 15)
     time.sleep(2)
-    shown = wait_for(lambda: js("document.querySelector('#playerTitle').textContent"), 10) or ""
-    playing_title = session()["title"]
-    check(bool(shown and playing_title and (shown in playing_title or playing_title in shown)),
-          "returning to the app shows what the service is playing", f"{shown!r} vs {playing_title!r}")
+    # By queue position, not title: four recordings here are all "One More Time".
+    playing = session()
+    followed = wait_for(lambda: js("(async () => (await import('./src/state.js')).state.queueIndex)()") == playing["item"], 10)
+    shown = js("document.querySelector('#playerTitle').textContent")
+    check(bool(followed) and shown == playing["title"],
+          "returning to the app shows what the service is playing",
+          f"page {shown!r} vs service item {playing['item']} {playing['title']!r}")
     screenshot("04-returned")
+
+    # Swiped away and reopened while music plays: the activity and page are new,
+    # the media service is not. The new page must show what is playing, not
+    # "Nothing playing", and must not restart it.
+    # `am start -W` blocks for good behind a secure lock screen, so unlock first.
+    wait_for_unlock()
+    before = session()
+    adb("shell", "am", "start", "-W", "--activity-clear-task", "-n", ACTIVITY)
+    forward()
+    wait_for(lambda: js("!document.querySelector('#appView').hidden && !document.hidden"), 20)
+    shown = wait_for(lambda: (t := js("document.querySelector('#playerTitle').textContent")) != "Nothing playing" and t, 10) or ""
+    after = session()
+    check(shown == after["title"] and after["item"] == before["item"] and after["state"] == "PLAYING",
+          "a reopened app shows the music that kept playing, without restarting it",
+          f"page {shown!r}, service {before['item']}->{after['item']} {after['state']}")
+    screenshot("05-reopened")
 
     print(f"{failures} failed check(s)", flush=True)
     return failures

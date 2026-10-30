@@ -6,7 +6,7 @@ import { state, STORAGE, artworkUrl, artistName, formatTime, rememberRecent, tra
 import { fetchDesktopRecent, mergeRecent, fetchPlaylists, fetchPlaylistTracks, playlistSubtitle } from './src/collections.js';
 import { $, el, icon, iconButton, toast, stagger } from './src/dom.js';
 import { configureBridge, isUnsupportedCommand } from './src/bridge.js';
-import { configurePlayer, subscribe, playTrack, toggle, skip, currentTrack, isPlaying, isLoading, currentTime, duration, resetPlayback, isLinked, isGestureRequired } from './src/player.js';
+import { configurePlayer, subscribe, playTrack, toggle, skip, currentTrack, isPlaying, isLoading, currentTime, duration, resetPlayback, isLinked, isGestureRequired, restoreNative } from './src/player.js';
 import { renderTracks, markPlayingRows, configureTracks } from './src/tracks.js';
 import { configureSync, startEventLoop, stopEventLoop, restartEventLoop } from './src/sync.js';
 import { configureConnection, startConnectionWatch } from './src/connection.js';
@@ -1581,6 +1581,8 @@ if (scanned) {
 	// The app never opens on pairing: the music is here whether or not a
 	// computer answers, and one that does is joined quietly in the background.
 	openOnDevice();
+	// The service may still be playing from before the app was swiped away.
+	restoreNative();
 	if (state.endpoint && state.token) testConnection({ reveal: false }).then(ok => { if (ok) refreshLibrary(); });
 } else if (state.endpoint && state.token) {
 	testConnection().then(ok => { if (ok) refreshLibrary(); });

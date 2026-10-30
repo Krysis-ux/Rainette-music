@@ -80,11 +80,46 @@ all 20 checks pass:
 python mobile/scripts/emulator_check.py out/
 ```
 
+## Verified on a physical phone
+
+A Samsung Galaxy Note 8 (SM-N950U, Android 9 / API 28), with Chrome 103 as
+its WebView provider. The same script passes every automated check:
+
+- The app boots into music.
+- Status bar icons are visible on dark and light themes.
+- On-device search in 1.7–1.9 s; playback starts in about 4 s.
+- Android reports the AudioTrack started; the `<audio>` element stays silent.
+- A play request resolves only once its track has loaded.
+- Repeated PLAY and PAUSE keys stay absolute.
+- The next track starts with the app backgrounded and the screen off.
+- The media notification is posted.
+- Recovery takes 0.2–9.5 s after Wi-Fi and data return.
+- Coming back to the app shows the service's current track. This was checked
+  by hand after unlocking: the automated step needs the secure lock screen
+  dismissed, and the script waits for that.
+
+The phone found a bug the emulator and the fake bridge both missed:
+
+- **Symptom:** the page never heard the service's events.
+- **Cause:** Capacitor wipes its plugin listeners on `onPageStarted`. On this
+  phone that callback arrived after the page had registered its listeners.
+- **Fix:** events now travel through a plugin-owned `watch` channel.
+- **Guard:** the fake bridge simulates the reset.
+
+**AVG antivirus on this phone flagged the debug build as "Suspicious app
+activity".** Expect the same from some antivirus apps for any public APK:
+YouTube-extraction apps, NewPipe included, are commonly flagged.
+
 ## Not done yet
 
-- **Real-device verification.** Everything above is emulator evidence:
-  nothing yet on a physical phone, real Bluetooth, an OEM battery manager, a
-  real cellular handover, or a release-signed build.
+- **On the phone, by hand:**
+  - Lock-screen buttons.
+  - A Bluetooth headset or car.
+  - Unplugging wired headphones.
+  - A phone call interruption.
+  - Long background periods under Samsung's battery manager.
+  - A local file played offline.
+- **Release:** release-signed build; upgrade from 0.2.6.
 - Pairing from the app needs a computer running a Rainette release that
   accepts the app's origin, `https://rainette.localhost` (added in
   `server.py`, unreleased). Not yet verified end to end.

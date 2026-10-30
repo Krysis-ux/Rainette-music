@@ -7,7 +7,7 @@ import { command, mediaUrl } from './bridge.js';
 import { isLocalTrack, localStreamUrl } from './local.js';
 import {
 	nativeAvailable, nativeState, nativePosition, nativeLoad, nativeQueue, nativeStop, nativeResume,
-	nativePause, nativeSeek, nativeSkip, nativeRepeat, nativeResolve, configureNative,
+	nativePause, nativeSeek, nativeSkip, nativeRepeat, nativeResolve, nativeRestore, configureNative,
 } from './native-engine.js';
 import { engineFor, isCatalogTrack, describeError, isCanceled } from './source-provider.js';
 
@@ -431,6 +431,21 @@ function syncNativeQueue() {
 		const next = state.queue[index];
 		if (next) playTrack(next, state.queue, index, { startPaused: !nativeState.playing }).catch(reportError);
 	}).catch(error => reportError(nativeFailure(error)));
+}
+
+/** The app reopened over a service that kept playing: show what it is playing,
+ *  rather than "Nothing playing" over music the phone is making. */
+export async function restoreNative() {
+	const restored = await nativeRestore().catch(() => null);
+	// Something was started while this asked; that is the truth now.
+	if (!restored || state.currentTrack) return;
+	const track = restored.queue[restored.index];
+	if (!track) return;
+	claimNative();
+	state.queue = restored.queue;
+	state.queueIndex = restored.index;
+	state.currentTrack = track;
+	emit();
 }
 
 /** A phone file cannot join a queue the service is streaming; say so, once. */
