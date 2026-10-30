@@ -106,19 +106,30 @@ The phone found a bug the emulator and the fake bridge both missed:
 - **Fix:** events now travel through a plugin-owned `watch` channel.
 - **Guard:** the fake bridge simulates the reset.
 
+By hand on the same phone, with a 1-second state recorder watching:
+
+- **Lock-screen controls:** Pause, Play and Next all work while locked.
+- **Offline phone file:** with airplane mode on, an imported file (a generated
+  test tone) played. The native player was stopped first, then the element
+  played the file.
+- **Mixed lists (bug found and fixed):** after one imported file, Recently
+  Played was a mixed list, and tapping a streamed song in it went to the
+  element. Android still advanced that queue in the background on this phone,
+  but there were no lock-screen controls and no native network recovery.
+  Queues are now one kind of track: the tapped track's kind decides.
+
 **AVG antivirus on this phone flagged the debug build as "Suspicious app
 activity".** Expect the same from some antivirus apps for any public APK:
 YouTube-extraction apps, NewPipe included, are commonly flagged.
 
 ## Not done yet
 
-- **On the phone, by hand:**
-  - Lock-screen buttons.
+- **On the phone, not run yet:**
   - A Bluetooth headset or car.
   - Unplugging wired headphones.
   - A phone call interruption.
-  - Long background periods under Samsung's battery manager.
-  - A local file played offline.
+- A mixed list no longer plays straight through from a phone file into a
+  streamed song. Each tap plays one kind of track.
 - **Release:** release-signed build; upgrade from 0.2.6.
 - Pairing from the app needs a computer running a Rainette release that
   accepts the app's origin, `https://rainette.localhost` (added in

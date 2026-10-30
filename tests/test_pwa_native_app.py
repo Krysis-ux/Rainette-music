@@ -332,6 +332,30 @@ class TestOneAudioOwner:
         assert not errors, errors
         page.close()
 
+    def test_a_mixed_list_keeps_streamed_songs_on_the_service(self, browser, static_server):
+        """The Note 8 finding: one imported file in Recently Played sent every
+        streamed song in that list to the element, with no lock-screen controls."""
+        page, errors, _ = open_app(browser, static_server)
+        page.locator("#appView").wait_for(state="visible")
+        result = page.evaluate("""async songs => {
+            const local = await import('./src/local.js');
+            const player = await import('./src/player.js');
+            const { state } = await import('./src/state.js');
+            await local.importOne(new File([new Uint8Array(4096)], 'Mine.mp3', { type: 'audio/mpeg' }));
+            const [file] = await local.listLocalTracks();
+            const mixed = [songs[0], file, songs[1], songs[2]];
+            await player.playTrack(mixed[2], mixed, 2);
+            const streamed = { owner: player.nativeOwns(), queue: state.queue.map(t => t.source_id), index: state.queueIndex };
+            await player.playTrack(mixed[1], mixed, 1);
+            const filed = { owner: player.nativeOwns(), queue: state.queue.map(t => t.source_id), index: state.queueIndex };
+            return { streamed, filed, fileId: file.source_id };
+        }""", SONGS)
+        assert result["streamed"] == {"owner": True, "queue": [s["source_id"] for s in SONGS[:3]], "index": 1}
+        assert [t["source_id"] for t in native_calls(page, "play")[-1]["options"]["queue"]] == [s["source_id"] for s in SONGS[:3]]
+        assert result["filed"] == {"owner": False, "queue": [result["fileId"]], "index": 0}
+        assert not errors, errors
+        page.close()
+
     def test_a_slow_load_cannot_replace_a_newer_song(self, browser, static_server):
         page, errors, _ = open_app(browser, static_server)
         page.click('#tabBar [data-tab="search"]')

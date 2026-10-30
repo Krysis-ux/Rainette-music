@@ -448,6 +448,21 @@ export async function restoreNative() {
 	emit();
 }
 
+/* In the app, a queue holds one kind of track: streamed songs (the native
+ * service) or files on this phone (the element). A mixed list -- Recently
+ * Played after one imported file -- used to hand every streamed song in it to
+ * the element, which on a real phone meant no lock-screen controls and a queue
+ * that only advanced while Android let the page run. Now the tapped track's
+ * kind decides, and the queue keeps only tracks of that kind. */
+function queueOfOneKind(track, queue, index) {
+	if (!nativeAvailable() || !Array.isArray(queue)) return { queue, index };
+	const streamed = isCatalogTrack(track);
+	const kept = queue.filter(item => isCatalogTrack(item) === streamed);
+	if (kept.length === queue.length) return { queue, index };
+	const at = kept.indexOf(track);
+	return at >= 0 ? { queue: kept, index: at } : { queue: [track], index: 0 };
+}
+
 /** A phone file cannot join a queue the service is streaming; say so, once. */
 function refuseForNative(track) {
 	if (!nativeOwns() || isCatalogTrack(track)) return false;
@@ -469,6 +484,7 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 	// over, so it needs no handshake, which is why pressing play here works
 	// without performing a transfer first.
 	if (!isLinked() && !options.forceRefresh) claimPlaybackHere();
+	if (!options.forceRefresh) ({ queue, index } = queueOfOneKind(track, queue, index));
 	state.queue = queue.slice();
 	state.queueIndex = Math.max(0, Math.min(index, state.queue.length - 1));
 	state.currentTrack = track;
