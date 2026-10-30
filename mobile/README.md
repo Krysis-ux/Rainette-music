@@ -109,6 +109,8 @@ The phone found a bug the emulator and the fake bridge both missed:
 By hand on the same phone, with a 1-second state recorder watching:
 
 - **Lock-screen controls:** Pause, Play and Next all work while locked.
+- **Long background:** locked for 11 minutes on the native player, the queue
+  advanced through three songs by itself and was still playing at the end.
 - **Offline phone file:** with airplane mode on, an imported file (a generated
   test tone) played. The native player was stopped first, then the element
   played the file.
