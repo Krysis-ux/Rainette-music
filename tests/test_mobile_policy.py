@@ -112,11 +112,13 @@ class TestDistribution(unittest.TestCase):
         for pattern in ("*.jks", "*.keystore", "*.p12", "*.pem"):
             self.assertEqual(list(MOBILE.glob(f"android/**/{pattern}")), [], pattern)
 
-    def test_a_build_can_never_downgrade_the_old_app(self):
-        """0.2.6 shipped as versionCode 3; Android refuses an update with a lower one."""
+    def test_version_codes_only_ever_rise_with_the_version(self):
+        """Android refuses an update whose versionCode is not higher than the installed one."""
         build = (APP / "build.gradle").read_text(encoding="utf-8")
-        code = int(re.search(r"^\s*versionCode\s+(\d+)", build, re.MULTILINE).group(1))
-        self.assertGreater(code, 3)
+        line = next(l for l in build.splitlines() if l.strip().startswith("versionCode"))
+        self.assertIn("* 10000", line)
+        self.assertIn("* 100 +", line)
+        self.assertIn("minor and patch must be below 100", build)
 
     def test_debug_builds_install_beside_a_released_app(self):
         build = (APP / "build.gradle").read_text(encoding="utf-8")
@@ -130,6 +132,39 @@ class TestDistribution(unittest.TestCase):
         service = (SOURCES / "java" / "com" / "krysisux" / "rainettemusic" / "PlaybackService.kt").read_text(encoding="utf-8")
         self.assertIn("controller.isTrusted", service)
         self.assertIn("MediaSession.ConnectionResult.reject()", service)
+
+
+class TestReleaseSigning(unittest.TestCase):
+    BUILD = APP / "build.gradle"
+    WORKFLOW = ROOT / ".github" / "workflows" / "android.yml"
+
+    def test_the_app_id_is_new_not_the_unrecoverable_one(self):
+        """0.2.6's key is gone; reusing its id would promise an update Android refuses."""
+        build = self.BUILD.read_text(encoding="utf-8")
+        self.assertRegex(build, r'applicationId "com\.krysisux\.rainette"')
+        self.assertNotRegex(build, r'applicationId "com\.krysisux\.rainettemusic"')
+
+    def test_the_expected_signer_is_committed_and_well_formed(self):
+        fingerprint = (MOBILE / "android" / "release-cert.sha256").read_text(encoding="utf-8").strip()
+        self.assertRegex(fingerprint, r"^[0-9a-f]{64}$")
+
+    def test_no_key_material_or_password_is_in_the_build(self):
+        build = self.BUILD.read_text(encoding="utf-8")
+        for line in build.splitlines():
+            if re.match(r"\s*(storePassword|keyPassword)\b", line):
+                self.assertIn("System.getenv(", line, f"secret not from the environment: {line.strip()}")
+        self.assertIn("System.getenv('RAINETTE_ANDROID_KEYSTORE')", build)
+
+    def test_ci_verifies_the_signer_and_never_publishes_a_tag_build_by_itself(self):
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("secrets.ANDROID_RELEASE_KEYSTORE_BASE64", workflow)
+        self.assertIn("release-cert.sha256", workflow)
+        self.assertIn("application-debuggable", workflow)
+        # Uploading to a release happens only in the manual publish job.
+        publish = workflow[workflow.index("  publish:"):]
+        self.assertEqual(workflow.count("gh release upload"), publish.count("gh release upload"))
+        self.assertIn("github.event_name == 'workflow_dispatch'", publish)
+        self.assertIn("sha256sum --check", publish)
 
 
 class TestPairingFromTheApp(unittest.TestCase):

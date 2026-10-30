@@ -1,0 +1,217 @@
+name: Android app
+
+# Separate from release.yml on purpose: the Windows and macOS release must never
+# wait on, or be broken by, the Android build.
+#
+# - Pull requests and main: native unit tests, a debug build, and the policy and
+#   shared-interface tests.
+# - A vMAJOR.MINOR.PATCH tag: also a signed release APK, verified (signer,
+#   package, version, not debuggable) and kept as a workflow artifact. Nothing
+#   is published.
+# - Manual run with a run id and a tag: attaches that exact artifact to the
+#   GitHub release, after re-verifying it. Run it only once that APK has passed
+#   the device checks (mobile/scripts/emulator_check.py and by hand): what was
+#   tested is what ships.
+
+on:
+  pull_request:
+    paths:
+      - "mobile/**"
+      - "pwa/**"
+      - "server.py"
+      - "tests/test_mobile_policy.py"
+      - "tests/test_pwa_native_app.py"
+      - ".github/workflows/android.yml"
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run id of the tag build whose APK passed the device checks"
+        required: true
+      tag:
+        description: "Release tag to attach it to, e.g. v0.5.2"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+env:
+  BUILD_TOOLS: "36.0.0"
+
+jobs:
+  check:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Android SDK platform 36
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-36" "build-tools;${BUILD_TOOLS}" > /dev/null
+
+      - name: Package the phone interface into the app
+        working-directory: mobile
+        run: |
+          npm ci
+          npx cap sync android
+
+      - name: Native unit tests and debug build
+        working-directory: mobile/android
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+      - name: Policy and shared-interface tests
+        run: |
+          python -m pip install -r requirements.txt pytest playwright
+          python -m playwright install --with-deps chromium
+          python -m pytest -q tests/test_mobile_policy.py tests/test_pwa_native_app.py \
+            tests/test_output_and_phone_sync.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rainette-android-debug
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Version from the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH"; exit 1; }
+          echo "RAINETTE_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Android SDK platform 36
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-36" "build-tools;${BUILD_TOOLS}" > /dev/null
+
+      - name: Release key from secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          [ -n "$KEYSTORE_BASE64" ] || { echo "::error::ANDROID_RELEASE_KEYSTORE_BASE64 is not set"; exit 1; }
+          [ -n "$KEYSTORE_PASSWORD" ] || { echo "::error::ANDROID_RELEASE_KEYSTORE_PASSWORD is not set"; exit 1; }
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.p12"
+
+      - name: Signed release build
+        working-directory: mobile
+        env:
+          RAINETTE_ANDROID_KEYSTORE: ${{ runner.temp }}/release.p12
+          RAINETTE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          npm ci
+          npx cap sync android
+          cd android && ./gradlew --no-daemon assembleRelease
+
+      - name: Remove the release key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.p12"
+
+      - name: Verify signer, package and version
+        run: |
+          apk=mobile/android/app/build/outputs/apk/release/app-release.apk
+          tools="$ANDROID_HOME/build-tools/$BUILD_TOOLS"
+          expected="$(tr -d '[:space:]' < mobile/android/release-cert.sha256)"
+          "$tools/apksigner" verify --print-certs "$apk" | tee signer.txt
+          grep -q "Signer #1 certificate SHA-256 digest: $expected" signer.txt \
+            || { echo "::error::APK is not signed by the release key in mobile/android/release-cert.sha256"; exit 1; }
+          IFS=. read -r major minor patch <<< "$RAINETTE_VERSION"
+          code=$(( major * 10000 + minor * 100 + patch ))
+          badging="$("$tools/aapt2" dump badging "$apk")"
+          grep -q "package: name='com.krysisux.rainette' versionCode='$code' versionName='$RAINETTE_VERSION'" <<< "$badging" \
+            || { echo "::error::Unexpected package or version"; echo "$badging" | head -1; exit 1; }
+          ! grep -q "application-debuggable" <<< "$badging" || { echo "::error::Release APK is debuggable"; exit 1; }
+          mkdir -p out
+          cp "$apk" out/rainette-music-android.apk
+          (cd out && sha256sum rainette-music-android.apk > rainette-music-android.apk.sha256 && cat rainette-music-android.apk.sha256)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rainette-android-release
+          path: out/
+          retention-days: 30
+
+  publish:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the inputs
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::run_id must be a number"; exit 1; }
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag must be vMAJOR.MINOR.PATCH"; exit 1; }
+
+      - name: Fetch the tested APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name rainette-android-release --dir out
+
+      - name: Re-verify before publishing
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          cd out && sha256sum --check rainette-music-android.apk.sha256 && cd ..
+          tools="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          expected="$(tr -d '[:space:]' < mobile/android/release-cert.sha256)"
+          "$tools/apksigner" verify --print-certs out/rainette-music-android.apk \
+            | grep -q "Signer #1 certificate SHA-256 digest: $expected" \
+            || { echo "::error::APK is not signed by the release key"; exit 1; }
+          "$tools/aapt2" dump badging out/rainette-music-android.apk \
+            | grep -q "versionName='${TAG#v}'" || { echo "::error::APK version does not match $TAG"; exit 1; }
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null \
+            || { echo "::error::Release $TAG does not exist yet"; exit 1; }
+          gh release upload "$TAG" out/rainette-music-android.apk out/rainette-music-android.apk.sha256 \
+            --repo "$GITHUB_REPOSITORY" --clobber

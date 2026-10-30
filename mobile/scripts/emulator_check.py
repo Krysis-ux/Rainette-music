@@ -22,7 +22,7 @@ from pathlib import Path
 
 import aiohttp
 
-PACKAGE = "com.krysisux.rainettemusic.dev"
+PACKAGE = "com.krysisux.rainette.dev"
 ACTIVITY = f"{PACKAGE}/com.krysisux.rainettemusic.MainActivity"
 PORT = 9333
 OUT = Path(sys.argv[1] if len(sys.argv) > 1 else "emulator-out")

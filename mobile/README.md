@@ -45,9 +45,37 @@ cd mobile && npm ci && npx cap sync android
 cd mobile/android && ./gradlew assembleDebug testDebugUnitTest
 ```
 
-The debug build installs as `com.krysisux.rainettemusic.dev`, beside any
-existing install. No release signing is configured yet: see `AUDIT.md` §2 for
-the old app's key and the upgrade question it raises.
+The app ID is `com.krysisux.rainette`, deliberately not the 0.2.6 app's
+`com.krysisux.rainettemusic`. That app's signing key is not available, so this
+installs beside it rather than claiming to be an update. Anyone with 0.2.6
+uninstalls it by hand. Debug builds add `.dev`.
+
+## Releasing
+
+The release key is `~/Library/Application Support/Rainette Music/signing/rainette-android-release.p12`,
+with its password in the file beside it. It is RSA 4096, valid to 2054. Its
+certificate fingerprint is committed in `android/release-cert.sha256`.
+
+**Back both files up somewhere safe.** If they are lost, no future build can
+update an installed copy: every user would have to uninstall first.
+
+CI signs with two repository secrets made from those files:
+`ANDROID_RELEASE_KEYSTORE_BASE64` and `ANDROID_RELEASE_KEYSTORE_PASSWORD`.
+
+1. Push a `vMAJOR.MINOR.PATCH` tag. The *Android app* workflow
+   (`.github/workflows/android.yml`) builds the signed APK and verifies it: the
+   signer against the committed fingerprint, package
+   `com.krysisux.rainette`, the version from the tag, not debuggable. It keeps
+   the APK and its SHA-256 as the `rainette-android-release` artifact. Nothing
+   is published.
+2. Download that artifact and install it on a phone. Run
+   `python mobile/scripts/release_smoke.py rainette-music-android.apk out/`
+   (this one needs the phone unlocked), then the hands-on checks below.
+3. Only then, run the workflow manually with that run's id and the tag. It
+   re-verifies the same file and attaches it, with its checksum, to the GitHub
+   release.
+4. Only after the asset exists: show the Android download on the website (a
+   separate change).
 
 ## Tests
 

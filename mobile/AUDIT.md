@@ -54,6 +54,8 @@ Only if it is signed with that same key. Android refuses an update whose certifi
 2. **New key, new package ID** (e.g. `com.krysisux.rainette`). This installs side by side with the old app, and users remove 0.2.6 themselves. Nothing is misrepresented.
 3. **New key, same package ID.** Installs fail over 0.2.6 with a confusing error. Not recommended.
 
+**Decision (2026-10-30): option 2.** The app is `com.krysisux.rainette`, signed by a new release key (certificate SHA-256 in `mobile/android/release-cert.sha256`). It installs beside 0.2.6 and never claims to update it.
+
 The old app held only desktop-pairing state (it was a remote), so there is little user data to migrate out of it. Whatever the choice, the new app must never be described as an in-place update unless option 1 is verified on a device that has 0.2.6 installed.
 
 ## 3. Website state
