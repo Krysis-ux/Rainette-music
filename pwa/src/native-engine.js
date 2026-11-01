@@ -13,7 +13,7 @@
  * for the song you skipped past can never repaint, or restart, the one you
  * chose instead. */
 
-import { artistName, trackDuration } from './state.js';
+import { artistName, artworkAt, trackDuration } from './state.js';
 
 const PLUGIN = 'RainettePlayer';
 /* Must match RainettePlayerPlugin.PROTOCOL. A mismatch means an app whose page
@@ -109,10 +109,13 @@ function wire(track) {
 		source_id: String(track?.source_id || ''),
 		title: String(track?.title || ''),
 		artist: artistName(track),
-		thumbnail_url: String(track?.thumbnail_url || ''),
+		// Large enough for a lock screen; a missing cover stays missing.
+		thumbnail_url: track?.thumbnail_url ? artworkAt(track, LOCK_SCREEN_ART_PX) : '',
 		duration_s: trackDuration(track),
 	};
 }
+
+const LOCK_SCREEN_ART_PX = 544;
 
 let checked = null;
 

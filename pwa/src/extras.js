@@ -3,13 +3,14 @@
  * rather than replacing it. */
 
 import { el, toast, tap, motionOff } from './dom.js';
-import { state, STORAGE, persist, artistName, trackKey } from './state.js';
+import { state, STORAGE, persist, artistName, trackKey, hasComputer } from './state.js';
 import { openSheet, actionSheet } from './sheets.js';
 import { command, commandError } from './bridge.js';
 import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
 import { playlistChoices, addTrackToPlaylist, isLocalPlaylist, createLocalPlaylist } from './playlists.js';
 import { isLocalTrack } from './local.js';
 import { trackDownloadItems } from './downloadmenu.js';
+import { nativeAvailable } from './native-engine.js';
 import {
 	queueAddNext, queueAddEnd, isPlaying, toggle, playTrack, pauseLocal, localSession,
 	currentTrack, currentTime, seekTo, subscribe,
@@ -458,9 +459,18 @@ export function setLinked(linked) {
  * which is what makes an artist reachable from every list in the app rather
  * than only from a search result. */
 
+/** The app with no computer paired, where lyrics and downloads (both fetched
+ *  through the computer) are not offered rather than offered and broken. */
+export function phoneOnly() {
+	return !hasComputer() && nativeAvailable();
+}
+
 export async function openTrackMenu(track, list = []) {
 	const artist = trackArtist(track);
 	const album = trackAlbum(track);
+	const needsComputer = phoneOnly() && !isLocalTrack(track);
+	const downloads = trackDownloadItems(track)
+		.filter(item => !needsComputer || item.id === 'remove-download');
 
 	await actionSheet({
 		title: track.title || 'Track',
@@ -470,11 +480,11 @@ export async function openTrackMenu(track, list = []) {
 			artist ? { id: 'artist', label: `Go to ${artist.name}`, icon: 'artist', run: () => openArtist(artist) } : null,
 			album ? { id: 'album', label: `Go to ${album.title}`, icon: 'album', run: () => openAlbum(album) } : null,
 			{ id: 'playlist', label: 'Add to playlist', icon: 'plus', run: () => openAddToPlaylist(track) },
-			{ id: 'lyrics', label: 'Lyrics', icon: 'mic', run: () => openLyrics(track) },
+			needsComputer ? null : { id: 'lyrics', label: 'Lyrics', icon: 'mic', run: () => openLyrics(track) },
 			// Keeping-it and going-somewhere are different kinds of action, so
 			// the download rows sit below the navigation ones rather than among
 			// them. `trackDownloadItems` decides which of them apply.
-			...trackDownloadItems(track),
+			...downloads,
 			list.length > 1 ? { id: 'queue-all', label: `Queue all ${list.length}`, icon: 'listAdd', run: () => { for (const item of list) queueAddEnd(item); toast(`Queued ${list.length} tracks`, { icon: 'listAdd' }); } } : null,
 		].filter(Boolean),
 	});

@@ -465,3 +465,166 @@ class TestFailures:
         assert native_calls(page, "play") == []
         assert not errors, errors
         page.close()
+
+
+# A finger drag, as the phone's WebView delivers it: touch pointer events on
+# the surface, moving in steps. Synthetic events arrive in the same instant,
+# so the gesture sees distance and no speed, which is the stricter case.
+SWIPE = """([selector, dx, dy]) => {
+    const surface = document.querySelector(selector);
+    const box = surface.getBoundingClientRect();
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    const fire = (type, f) => surface.dispatchEvent(new PointerEvent(type, {
+        pointerId: 41, pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true,
+        clientX: x + dx * f, clientY: y + dy * f }));
+    fire('pointerdown', 0);
+    for (const f of [0.1, 0.3, 0.6, 1]) fire('pointermove', f);
+    fire('pointerup', 1);
+}"""
+
+
+def title_is(page, title):
+    page.wait_for_function("t => document.querySelector('#playerTitle').textContent === t", arg=title)
+
+
+class TestSwipesOnWhatIsPlaying:
+    def test_swiping_the_mini_bar_left_plays_the_next_song(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        search_and_play(page)
+        page.evaluate(SWIPE, [".player-open", -160, 0])
+        title_is(page, "Song 2")
+        assert [call["options"] for call in native_calls(page, "skip")] == [{"offset": 1}]
+        page.wait_for_timeout(300)
+        assert page.locator(".sheet-now").count() == 0, "a swipe is not also a tap on the bar"
+        assert not errors, errors
+        page.close()
+
+    def test_swiping_it_right_asks_for_the_previous_song(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        search_and_play(page, row=1)
+        page.evaluate(SWIPE, [".player-open", 160, 0])
+        title_is(page, "Song 1")
+        assert [call["options"] for call in native_calls(page, "skip")] == [{"offset": -1}]
+        assert not errors, errors
+        page.close()
+
+    def test_a_short_sideways_drag_changes_nothing(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        search_and_play(page)
+        page.evaluate(SWIPE, [".player-open", -30, 0])
+        page.wait_for_timeout(600)
+        assert native_calls(page, "skip") == []
+        assert page.locator("#playerTitle").inner_text() == "Song 1"
+        # It springs back to where it was rather than staying displaced.
+        assert page.evaluate("() => document.querySelector('#playerArt').style.transform") == ""
+        assert not errors, errors
+        page.close()
+
+    def test_pulling_the_mini_bar_up_opens_now_playing(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        search_and_play(page)
+        page.evaluate(SWIPE, [".player-open", 0, -90])
+        page.locator(".sheet-now").wait_for(state="visible")
+        assert native_calls(page, "skip") == []
+        assert not errors, errors
+        page.close()
+
+    def test_swiping_the_cover_changes_the_song_and_keeps_the_card_open(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        search_and_play(page)
+        page.click("#playerOpen")
+        page.locator(".sheet-now .now-art-shell").wait_for(state="visible")
+        page.evaluate(SWIPE, [".sheet-now .now-art-shell", -160, 0])
+        page.wait_for_function("() => document.querySelector('.sheet-now .now-title').textContent === 'Song 2'")
+        assert page.locator(".sheet-now").is_visible()
+        assert not errors, errors
+        page.close()
+
+
+class TestWithNoComputer:
+    """The app plays with nothing paired, so nothing in it may lead to a screen
+    that only says to go and pair."""
+
+    def test_an_artist_page_is_made_from_the_phones_own_search(self, browser, static_server):
+        page, errors, requests = open_app(browser, static_server)
+        page.click('#tabBar [data-tab="search"]')
+        page.fill("#searchInput", "song")
+        page.press("#searchInput", "Enter")
+        page.locator("#searchResults .collection-row").first.click()
+        page.locator(".sheet-catalog .track").first.wait_for()
+        assert page.locator(".sheet-catalog .track").count() == len(SONGS)
+        assert native_calls(page, "search")[-1]["options"] == {"query": "Phone Artist"}
+        # Following is kept on a computer, so it is not offered here.
+        assert page.locator(".sheet-catalog .catalog-follow").count() == 0
+        assert "Connect a computer" not in page.locator(".sheet-catalog").inner_text()
+        assert requests == []
+        assert not errors, errors
+        page.close()
+
+    def test_the_song_menu_offers_only_what_works_here(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        page.click('#tabBar [data-tab="search"]')
+        page.fill("#searchInput", "song")
+        page.press("#searchInput", "Enter")
+        page.locator("#searchResults .track-more").first.click()
+        menu = page.locator(".sheet").last
+        menu.get_by_text("Play next").wait_for()
+        text = menu.inner_text()
+        assert "Add to playlist" in text
+        for missing in ("Lyrics", "Download", "Save a copy"):
+            assert missing not in text, f"{missing} needs a computer"
+        assert native_calls(page, "play") == [], "the menu button must not also play the row"
+        assert not errors, errors
+        page.close()
+
+    def test_now_playing_leaves_out_lyrics_and_fits_the_screen(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        search_and_play(page)
+        page.click("#playerOpen")
+        page.locator(".sheet-now .now-actions").wait_for(state="visible")
+        assert "Lyrics" not in page.locator(".sheet-now .now-actions").inner_text()
+        # Everything on the card is reachable without scrolling it.
+        assert page.evaluate("""() => {
+            const body = document.querySelector('.sheet-now .sheet-body');
+            return body.scrollHeight <= body.clientHeight + 1;
+        }""")
+        assert not errors, errors
+        page.close()
+
+    def test_the_library_holds_what_this_phone_has_played(self, browser, static_server):
+        page, errors, requests = open_app(browser, static_server)
+        search_and_play(page)
+        page.click('#tabBar [data-tab="library"]')
+        page.locator("#libraryList .track").first.wait_for()
+        assert "Song 1" in page.locator("#libraryList").inner_text()
+        page.click("#libraryModeArtists")
+        page.locator("#libraryList .collection-row").first.wait_for()
+        assert "Phone Artist" in page.locator("#libraryList").inner_text()
+        assert requests == []
+        assert not errors, errors
+        page.close()
+
+
+class TestSearchFollowsTyping:
+    def test_results_arrive_once_typing_pauses(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        page.click('#tabBar [data-tab="search"]')
+        page.locator("#searchInput").press_sequentially("song", delay=40)
+        page.locator("#searchResults .track").first.wait_for()
+        # One search for the word, not one per letter.
+        assert [call["options"] for call in native_calls(page, "search")] == [{"query": "song"}]
+        assert not errors, errors
+        page.close()
+
+    def test_coming_back_to_results_does_not_raise_the_keyboard(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        page.click('#tabBar [data-tab="search"]')
+        page.fill("#searchInput", "song")
+        page.press("#searchInput", "Enter")
+        page.locator("#searchResults .track").first.wait_for()
+        page.click('#tabBar [data-tab="home"]')
+        page.click('#tabBar [data-tab="search"]')
+        assert page.evaluate("() => document.activeElement?.id") != "searchInput"
+        assert not errors, errors
+        page.close()

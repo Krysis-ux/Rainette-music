@@ -15,8 +15,9 @@ import { command, commandError } from './bridge.js';
 import { renderTracks } from './tracks.js';
 import { sortTracks, sortControl, RELEASE_SORTS, sortReleases } from './sorting.js';
 import { playTrack, queueAddEnd } from './player.js';
-import { rememberRecent, artistName } from './state.js';
+import { hasComputer, rememberRecent, artistName } from './state.js';
 import { artistRef, knownArtist, resolveArtistImages } from './artists.js';
+import { nativeAvailable, nativeSearch } from './native-engine.js';
 
 /* What to do once a track starts from inside a browse sheet. `nowplaying.js`
  * already imports this module, so it is handed in rather than imported back. */
@@ -184,12 +185,15 @@ export function openArtist(seed) {
 			head.append(el('p', 'empty', `Loading ${artist.name}…`));
 			body.append(head);
 
+			const phoneOnly = !hasComputer() && nativeAvailable();
 			let payload;
 			try {
-				[payload] = await Promise.all([
-					command('music_artist_catalog', { artist_id: artist.id, name: artist.name }, 45000),
-					loadFollowed(),
-				]);
+				payload = phoneOnly
+					? await phoneArtistCatalog(artist)
+					: (await Promise.all([
+						command('music_artist_catalog', { artist_id: artist.id, name: artist.name }, 45000),
+						loadFollowed(),
+					]))[0];
 			} catch (error) {
 				head.replaceChildren(el('p', 'empty', catalogError(error)));
 				return;
@@ -212,7 +216,7 @@ export function openArtist(seed) {
 			};
 			const available = ARTIST_SECTIONS.filter(section => counts[section.id] > 0);
 
-			head.replaceChildren(renderArtistHeader(resolved, songs, handle));
+			head.replaceChildren(renderArtistHeader(resolved, songs, handle, { canFollow: !phoneOnly }));
 			if (payload?.msg) body.append(el('p', 'catalog-note', payload.msg));
 
 			if (!available.length) {
@@ -254,7 +258,29 @@ export function openArtist(seed) {
 	});
 }
 
-function renderArtistHeader(artist, songs, handle) {
+/* With no computer, the artist's page is their songs, found by the phone's own
+ * search. Following, albums and videos all live on the computer, so they are
+ * simply not offered rather than offered and broken. */
+async function phoneArtistCatalog(artist) {
+	const wanted = artist.name.toLowerCase();
+	const found = await nativeSearch(artist.name);
+	const songs = found.filter(track => artistName(track).toLowerCase().includes(wanted));
+	return { artist, songs: songs.length ? songs : found };
+}
+
+/* A placeholder about the artist rather than the app: their initial on a
+ * neutral disc that reads in both themes. */
+function monogram(name) {
+	const letter = (String(name || '').trim()[0] || '?').toUpperCase()
+		.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
+	const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 88 88">'
+		+ '<rect width="88" height="88" fill="#636366"/>'
+		+ '<text x="44" y="44" dy=".35em" text-anchor="middle" fill="#fff" font-size="40" font-weight="600"'
+		+ ` font-family="-apple-system,system-ui,sans-serif">${letter}</text></svg>`;
+	return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+function renderArtistHeader(artist, songs, handle, { canFollow = true } = {}) {
 	const head = el('div', 'catalog-hero');
 
 	const close = iconButton('chevronDown', {
@@ -265,7 +291,7 @@ function renderArtistHeader(artist, songs, handle) {
 
 	const art = document.createElement('img');
 	art.className = 'catalog-art round';
-	art.src = artist.art || './icon.svg';
+	art.src = artist.art || monogram(artist.name);
 	art.alt = '';
 	art.width = 104;
 	art.height = 104;
@@ -292,7 +318,8 @@ function renderArtistHeader(artist, songs, handle) {
 	paintFollow(follow, artist);
 	follow.addEventListener('click', () => toggleFollow(artist, follow));
 
-	actions.append(play, shuffle, follow);
+	actions.append(play, shuffle);
+	if (canFollow) actions.append(follow);
 	head.append(close, art, meta, actions);
 	return head;
 }
@@ -545,7 +572,7 @@ export function artistRow(seed) {
 	const cached = artist.art ? null : knownArtist(artist.name);
 	const art = document.createElement('img');
 	art.className = 'collection-art round';
-	art.src = artist.art || cached?.art || './icon.svg';
+	art.src = artist.art || cached?.art || monogram(artist.name);
 	art.alt = '';
 	art.width = 44;
 	art.height = 44;
