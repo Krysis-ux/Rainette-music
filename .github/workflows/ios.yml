@@ -1,0 +1,164 @@
+name: iPhone app
+
+# Separate from release.yml and android.yml on purpose: neither the desktop
+# release nor the APK may wait on, or be broken by, the iPhone build.
+#
+# The iPhone app is sideloaded (AltStore, SideStore, Sideloadly), not sold on
+# the App Store, so CI builds it unsigned: the sideloading tool signs it with
+# the user's own Apple ID when it installs it.
+#
+# - Pull requests and main: the player's tests and an unsigned Release build,
+#   verified and packaged as an .ipa artifact.
+# - A vMAJOR.MINOR.PATCH or ios-vMAJOR.MINOR.PATCH tag: the same, stamped with
+#   that version. Nothing is published.
+# - Manual run with a run id and a tag: attaches that exact .ipa to the GitHub
+#   release, after re-verifying it.
+
+on:
+  pull_request:
+    paths:
+      - "mobile/**"
+      - "pwa/**"
+      - ".github/workflows/ios.yml"
+  push:
+    branches: [main]
+    tags: ["v*", "ios-v*"]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run id of the tag build to publish"
+        required: true
+      tag:
+        description: "Release tag to attach it to, e.g. ios-v0.1.0 or v0.5.3"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Select the newest Xcode
+        run: |
+          set -euo pipefail
+          newest="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -n "$newest" ]; then sudo xcode-select -s "$newest"; fi
+          xcodebuild -version
+
+      - name: Version from the tag
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/ios-v*) version="${GITHUB_REF_NAME#ios-v}" ;;
+            refs/tags/v*) version="${GITHUB_REF_NAME#v}" ;;
+            *) exit 0 ;;
+          esac
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Tag $GITHUB_REF_NAME is not [ios-]vMAJOR.MINOR.PATCH"; exit 1; }
+          IFS=. read -r major minor patch <<< "$version"
+          echo "RAINETTE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "VERSION_ARGS=MARKETING_VERSION=$version CURRENT_PROJECT_VERSION=$(( major * 10000 + minor * 100 + patch ))" >> "$GITHUB_ENV"
+
+      - name: Package the phone interface into the app
+        working-directory: mobile
+        run: |
+          npm ci
+          npx cap sync ios
+
+      - name: Player tests
+        working-directory: mobile/ios/RainettePlayer
+        run: swift test
+
+      - name: Unsigned Release build
+        working-directory: mobile/ios/App
+        run: |
+          xcodebuild -project App.xcodeproj -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO $VERSION_ARGS build
+
+      - name: Verify and package
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/App.app"
+          key() { /usr/libexec/PlistBuddy -c "Print :$1" "$app/Info.plist"; }
+          [ "$(key CFBundleIdentifier)" = "com.krysisux.rainette" ] || { echo "::error::Unexpected bundle id"; exit 1; }
+          key UIBackgroundModes | grep -qw audio || { echo "::error::UIBackgroundModes lacks audio"; exit 1; }
+          lipo -archs "$app/App" | grep -qw arm64 || { echo "::error::Not built for iPhone"; exit 1; }
+          if [ -n "${RAINETTE_VERSION:-}" ]; then
+            [ "$(key CFBundleShortVersionString)" = "$RAINETTE_VERSION" ] || { echo "::error::Version is not $RAINETTE_VERSION"; exit 1; }
+          fi
+          # The pages inside are the ones in this commit.
+          cache="$(grep -o "rainette-pwa-v[0-9]*-[0-9a-f]*" pwa/sw.js)"
+          grep -q "$cache" "$app/public/sw.js" || { echo "::error::The app carries stale pages"; exit 1; }
+          echo "Rainette Music $(key CFBundleShortVersionString) ($(key CFBundleVersion)), pages $cache"
+          mkdir -p out/Payload
+          cp -R "$app" out/Payload/
+          (cd out && zip -qry rainette-music-ios.ipa Payload && rm -rf Payload \
+            && shasum -a 256 rainette-music-ios.ipa | tee rainette-music-ios.ipa.sha256)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rainette-ios
+          path: out/
+          retention-days: 30
+
+  publish:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Check the inputs
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::run_id must be a number"; exit 1; }
+          [[ "$TAG" =~ ^(ios-)?v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag must be [ios-]vMAJOR.MINOR.PATCH"; exit 1; }
+
+      - name: Fetch the tested app
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name rainette-ios --dir out
+
+      - name: Re-verify before publishing
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          (cd out && sha256sum --check rainette-music-ios.ipa.sha256)
+          version="${TAG#ios-}"
+          unzip -p out/rainette-music-ios.ipa Payload/App.app/Info.plist > Info.plist
+          python3 - "${version#v}" <<'PY'
+          import plistlib, sys
+          with open("Info.plist", "rb") as handle:
+              info = plistlib.load(handle)
+          assert info["CFBundleIdentifier"] == "com.krysisux.rainette", info["CFBundleIdentifier"]
+          assert info["CFBundleShortVersionString"] == sys.argv[1], f"app is {info['CFBundleShortVersionString']}, tag is {sys.argv[1]}"
+          assert "audio" in info.get("UIBackgroundModes", []), "no background audio"
+          print("Rainette Music", info["CFBundleShortVersionString"], "for iPhone")
+          PY
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null \
+            || { echo "::error::Release $TAG does not exist yet"; exit 1; }
+          gh release upload "$TAG" out/rainette-music-ios.ipa out/rainette-music-ios.ipa.sha256 \
+            --repo "$GITHUB_REPOSITORY" --clobber

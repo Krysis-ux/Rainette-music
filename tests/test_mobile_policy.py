@@ -167,6 +167,72 @@ class TestReleaseSigning(unittest.TestCase):
         self.assertIn("sha256sum --check", publish)
 
 
+IOS = MOBILE / "ios"
+IOS_CORE = IOS / "RainettePlayer"
+
+# Swift packages the iPhone app may depend on, and why.
+ALLOWED_SWIFT_PACKAGES = {
+    "https://github.com/alexeichhorn/YouTubeKit.git": "on-device stream resolution (MIT), local extractor only",
+    "https://github.com/ionic-team/capacitor-swift-pm.git": "Capacitor itself",
+}
+
+
+def swift_sources():
+    yield from (IOS_CORE / "Sources").rglob("*.swift")
+    yield from (IOS / "App" / "App").glob("*.swift")
+
+
+class TestTheIPhoneApp(unittest.TestCase):
+    def test_every_swift_package_is_allowed_and_pinned_exactly(self):
+        for manifest in (IOS_CORE / "Package.swift", IOS / "App" / "CapApp-SPM" / "Package.swift"):
+            text = manifest.read_text(encoding="utf-8")
+            for url, rule in re.findall(r'\.package\(url:\s*"([^"]+)",\s*([a-z]+):', text):
+                with self.subTest(package=url):
+                    self.assertIn(url, ALLOWED_SWIFT_PACKAGES, f"{url} is not on the allowed list in this test")
+                    self.assertEqual(rule, "exact", f"{url} must be pinned to one version")
+
+    def test_youtubekits_remote_fallback_is_never_enabled(self):
+        # Its remote method sends every song to somebody else's server.
+        uses = []
+        for path in swift_sources():
+            text = path.read_text(encoding="utf-8")
+            self.assertNotRegex(text, r"\.remote\b", f"{path.name} reaches for the remote extractor")
+            uses += re.findall(r"YouTube\(videoID:[^)]*\)", text)
+        self.assertTrue(uses, "the resolver no longer calls YouTubeKit")
+        self.assertTrue(all("methods: [.local]" in use for use in uses), uses)
+
+    def test_no_advertising_or_analytics_sdk_is_referenced(self):
+        for path in [*swift_sources(), IOS_CORE / "Package.swift"]:
+            with self.subTest(path=path.name):
+                self.assertIsNone(FORBIDDEN.search(path.read_text(encoding="utf-8")))
+
+    def test_it_keeps_playing_with_the_screen_off(self):
+        import plistlib
+
+        info = plistlib.loads((IOS / "App" / "App" / "Info.plist").read_bytes())
+        self.assertIn("audio", info.get("UIBackgroundModes", []))
+
+    def test_it_speaks_the_same_protocol_as_the_page(self):
+        page = (ROOT / "pwa" / "src" / "native-engine.js").read_text(encoding="utf-8")
+        plugin = (IOS / "App" / "App" / "RainettePlayerPlugin.swift").read_text(encoding="utf-8")
+        self.assertEqual(re.search(r"const PROTOCOL = (\d+);", page).group(1),
+                         re.search(r"static let protocolVersion = (\d+)", plugin).group(1))
+        # Every method the page calls is one the plugin offers.
+        offered = set(re.findall(r'CAPPluginMethod\(name: "(\w+)"', plugin))
+        called = set(re.findall(r"call\('(\w+)'", page)) | {"watch", "setSystemBarColor"}
+        self.assertLessEqual(called, offered, called - offered)
+
+
+    def test_ci_builds_it_and_only_the_manual_job_publishes(self):
+        workflow = (ROOT / ".github" / "workflows" / "ios.yml").read_text(encoding="utf-8")
+        self.assertIn("CODE_SIGNING_ALLOWED=NO", workflow)
+        self.assertIn("UIBackgroundModes", workflow)
+        publish = workflow[workflow.index("  publish:"):]
+        self.assertEqual(workflow.count("gh release upload"), publish.count("gh release upload"))
+        self.assertIn("github.event_name == 'workflow_dispatch'", publish)
+        self.assertIn("sha256sum --check", publish)
+
+
 class TestPairingFromTheApp(unittest.TestCase):
     def test_the_computer_answers_the_apps_exact_origin_and_still_no_wildcard(self):
         import server
@@ -174,8 +240,16 @@ class TestPairingFromTheApp(unittest.TestCase):
         config = json.loads((MOBILE / "capacitor.config.json").read_text(encoding="utf-8"))
         origin = f"{config['server']['androidScheme']}://{config['server']['hostname']}"
         self.assertEqual(origin, server.NATIVE_APP_ORIGIN)
+        # Capacitor's iOS scheme, since iOS reserves https for the network.
+        self.assertNotIn("iosScheme", config["server"])
+        self.assertEqual(f"capacitor://{config['server']['hostname']}", server.NATIVE_IOS_ORIGIN)
         origins = server.configured_pwa_origins()
         self.assertIn(server.NATIVE_APP_ORIGIN, origins)
+        self.assertIn(server.NATIVE_IOS_ORIGIN, origins)
+        # Its scheme is allowed for that one origin only.
+        for lookalike in ("capacitor://evil.example", "capacitor://rainette.localhost.evil.example"):
+            with self.assertRaises(ValueError):
+                server.normalize_origin(lookalike)
         self.assertIn(server.normalize_origin(server.DEFAULT_PWA_URL), origins)
         self.assertFalse(any("*" in o for o in origins))
         # Plain localhost stays refused: any local web server could claim that one.

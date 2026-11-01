@@ -111,6 +111,9 @@ DEFAULT_PWA_URL = "https://music-pwa-web.vercel.app"
 # every origin here; a phone using it still needs a pairing approved on this
 # computer before it can do anything.
 NATIVE_APP_ORIGIN = "https://rainette.localhost"
+# The iPhone app's. iOS will not let an app serve its own pages over https, so
+# Capacitor uses its own scheme there; the same pairing rule applies.
+NATIVE_IOS_ORIGIN = "capacitor://rainette.localhost"
 
 # The /audio proxy only relays these hosts (googlevideo serves the actual audio;
 # youtube/ytimg for redirects/art). Keeps the local proxy from being a general
@@ -1391,7 +1394,11 @@ def start(preferred: int | None = None) -> int:
 
 def normalize_origin(value: str) -> str:
     """Reduce a URL to a bare scheme://host[:port] origin, or reject it."""
-    parsed = urlparse(str(value or "").strip())
+    text = str(value or "").strip()
+    # The iPhone app's own scheme is the one non-web origin, and only exactly.
+    if text == NATIVE_IOS_ORIGIN:
+        return text
+    parsed = urlparse(text)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError(f"invalid origin: {value}")
     return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
@@ -1449,7 +1456,7 @@ def write_pwa_config(pwa_url: str, public_url: str) -> dict:
 
 def configured_pwa_origins() -> frozenset[str]:
     """Exact origins the gateway will answer, never a wildcard."""
-    origins = {normalize_origin(DEFAULT_PWA_URL), NATIVE_APP_ORIGIN}
+    origins = {normalize_origin(DEFAULT_PWA_URL), NATIVE_APP_ORIGIN, NATIVE_IOS_ORIGIN}
     configured = read_pwa_config().get("pwa_url") or ""
     if configured:
         try:

@@ -1031,9 +1031,15 @@ h2 {
 }
 
 @media (min-width: 380px) {
+	.player-controls .icon { width: 40px; height: 40px; }
+}
+
+/* The elapsed time only where there is room to spare. On a phone it took the
+   song's own title down to three words, and the hairline along the top of the
+   bar already says how far in it is. */
+@media (min-width: 520px) {
 	.player { grid-template-columns: minmax(0, 1fr) auto auto; }
 	.player-time { display: flex; }
-	.player-controls .icon { width: 40px; height: 40px; }
 }
 
 /* Linked to the computer: the bar is showing something it is not itself
@@ -1219,6 +1225,17 @@ dialog .primary { margin-top: 10px; }
 .track-art, .track-copy, .track-bars, .track-time { pointer-events: none; }
 .track-copy .link-inline { pointer-events: auto; }
 
+/* The row's menu, visible. Quiet until pressed, so a list of thirty songs is
+   not thirty loud buttons. */
+.track.has-more { grid-template-columns: 48px minmax(0, 1fr) auto auto; padding-right: 0; }
+.track-more {
+	grid-column: 4;
+	width: 36px;
+	height: 40px;
+	margin-left: -6px;
+	color: var(--text-muted);
+}
+
 .track-actions {
 	position: absolute;
 	inset: 0;
@@ -1264,6 +1281,12 @@ dialog .primary { margin-top: 10px; }
 
 .track.swiping { transition: none; }
 .track:active { background: var(--bg-lift); }
+
+/* A row covers its swipe actions with its own background, which inside a sheet
+   has to be the sheet's colour rather than the page's, or every song on an
+   artist's page sat on a black slab. */
+.sheet-panel .track { background: var(--bg-lift); }
+.sheet-panel .track:active { background: var(--surface); }
 
 .track img {
 	width: 48px;
@@ -1519,6 +1542,9 @@ body.sheet-open { overflow: hidden; }
 }
 
 .sheet-panel.full { height: 92vh; }
+/* Now Playing takes the whole screen but a sliver, so the page it opened over
+   still shows at the top and the card reads as something to pull back down. */
+.sheet-now .sheet-panel.full { height: calc(100vh - var(--safe-top) - 14px); max-height: none; }
 /* During a drag the panel must track the finger exactly; a transition here is
    the difference between "attached to my thumb" and "laggy". */
 .sheet-panel.dragging { transition: none; }
@@ -1645,14 +1671,14 @@ img { -webkit-user-drag: none; }
 	transition: background 600ms var(--ease), transform var(--med) var(--ease), opacity var(--med) var(--ease);
 }
 
-/* The artwork itself, blurred to colour, behind everything. Oversized so the
-   blur's soft edge falls outside the card. */
+/* The artwork itself, blurred to colour, behind everything. */
 .sheet-now .sheet-panel::before {
 	position: absolute;
-	inset: -25%;
+	inset: 0;
 	z-index: -1;
+	/* Already blurred, at 40px (nowplaying.js); stretching it is the rest. */
 	background: var(--now-art, none) center / cover no-repeat;
-	filter: blur(56px) saturate(1.6) brightness(0.62);
+	filter: saturate(1.6) brightness(0.62);
 	pointer-events: none;
 	content: "";
 }
@@ -1673,7 +1699,7 @@ img { -webkit-user-drag: none; }
 	align-items: center;
 	justify-content: space-between;
 	gap: 12px;
-	margin-bottom: 18px;
+	margin-bottom: 12px;
 }
 
 .now-eyebrow {
@@ -1689,13 +1715,22 @@ img { -webkit-user-drag: none; }
 
 .now-close { color: var(--text-soft); }
 
-/* Sized against the viewport height, not just its width. A square that fills a
-   narrow screen edge-to-edge pushes the transport and the action row off the
-   bottom on a short phone, which is exactly where they are needed. */
+/* The cover takes whatever height the controls leave, so the whole card fits
+   on one screen with nothing to scroll for. A fixed allowance for "everything
+   else" fitted only the fonts it was measured with: taller text elsewhere
+   pushed the action row off the bottom. Now Playing is always full height, so
+   the body's height is known and its second row is what is left over. */
+.sheet-now .sheet-body {
+	display: grid;
+	grid-template-rows: auto minmax(140px, 1fr);
+}
+
 .now-art-shell {
 	position: relative;
-	width: min(100%, 340px, 42vh);
-	margin: 0 auto 24px;
+	justify-self: center;
+	align-self: center;
+	height: min(100% - 20px, 340px, 100vw - 40px);
+	margin-bottom: 20px;
 	aspect-ratio: 1;
 }
 
@@ -1727,7 +1762,7 @@ img { -webkit-user-drag: none; }
    buttons, and a stretched button around a 90px name is a target that spans the
    card while looking like it spans the name. Shrink-to-fit makes the hit area
    tell the truth. */
-.now-meta { display: grid; justify-items: center; gap: 4px; margin-bottom: 20px; text-align: center; }
+.now-meta { display: grid; justify-items: center; gap: 4px; margin-bottom: 14px; text-align: center; }
 
 /* The global h2 is a small uppercase muted label; a track title is the opposite
    of that in every respect, so each inherited property is answered explicitly. */
@@ -1751,7 +1786,7 @@ img { -webkit-user-drag: none; }
 .now-times {
 	display: flex;
 	justify-content: space-between;
-	margin: 4px 2px 20px;
+	margin: 4px 2px 10px;
 	color: var(--text-muted);
 	font-size: 11.5px;
 	font-variant-numeric: tabular-nums;
@@ -1764,7 +1799,7 @@ img { -webkit-user-drag: none; }
 	align-items: center;
 	justify-content: space-between;
 	gap: 6px;
-	margin-bottom: 26px;
+	margin-bottom: 16px;
 }
 
 .now-btn {
@@ -1817,21 +1852,20 @@ img { -webkit-user-drag: none; }
 	grid-template-columns: auto minmax(0, 1fr) auto;
 	align-items: center;
 	gap: 12px;
-	margin-bottom: 18px;
+	margin-bottom: 12px;
 }
 
 .now-volume-icon { display: inline-flex; color: var(--text-muted); }
 
 /* ── Play on, and the action row ──────────────────────────────────────── */
 
-.now-output { display: flex; justify-content: center; margin-bottom: 22px; }
-
 .now-output-btn {
 	display: inline-flex;
 	align-items: center;
 	gap: 8px;
 	max-width: 100%;
-	padding: 9px 16px;
+	min-width: 0;
+	padding: 7px 13px;
 	border: 0.5px solid var(--line);
 	border-radius: 999px;
 	background: var(--surface);
@@ -1848,7 +1882,10 @@ img { -webkit-user-drag: none; }
 
 .now-actions {
 	display: grid;
-	grid-template-columns: repeat(5, 1fr);
+	/* As many columns as there are actions: with no computer paired, Lyrics
+	   is not offered and the other four share the row. */
+	grid-auto-columns: 1fr;
+	grid-auto-flow: column;
 	gap: 4px;
 }
 
@@ -1973,6 +2010,16 @@ img { -webkit-user-drag: none; }
 .queue-row-tap > :not(.queue-row-play) { position: relative; z-index: 1; }
 .queue-row-tap img, .queue-row-copy { pointer-events: none; }
 .queue-row-copy .link-inline { pointer-events: auto; }
+
+/* On a touchscreen the artist line is half of a small target, and taps meant
+   for the song kept opening the artist instead. There the whole row plays and
+   the whole bar opens Now Playing; the artist is one step away in the row's
+   ⋯ menu and under the title in Now Playing, as in other music apps. */
+@media (pointer: coarse) {
+	.player-copy .link-inline,
+	.track-copy .link-inline,
+	.queue-row-copy .link-inline { pointer-events: none; text-decoration: none; }
+}
 
 .queue-row-tap img { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; background: var(--surface); }
 .queue-row-copy { display: grid; gap: 2px; min-width: 0; }
@@ -3033,3 +3080,23 @@ body.now-playing-open .player { display: none; }
 
 .local-head-clear:active { transform: scale(0.96); background: var(--surface); }
 .local-head-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ── Swipes on what is playing ────────────────────────────────────────────
+   The mini bar and the cover follow the finger sideways to change the song,
+   and the bar lifts as it is pulled up into the card. During a drag the
+   finger is the only animation; the CSS transitions come back for the
+   release. */
+.player-open {
+	overflow: clip;
+	overflow-clip-margin: 10px;
+	touch-action: none;
+}
+.player-open.is-swiping { transform: none; opacity: 1; }
+.player-open.is-swiping > * { transition: none; will-change: transform, opacity; }
+.player.is-lifting { transition: none; }
+.player { transition: transform var(--base) var(--ease-spring); }
+.now-art-shell.is-swiping .now-art { transition: none; will-change: transform, opacity; }
+/* The card covers the page it opens over, so blurring that page is paint
+   nobody sees, and on an older phone it is paint that delays the opening. */
+.sheet-now .sheet-scrim { -webkit-backdrop-filter: none; backdrop-filter: none; }
+.home-start { justify-self: start; width: auto; margin: 2px 2px 0; padding: 0 20px; }

@@ -105,8 +105,23 @@ export function trackKey(track) {
 	);
 }
 
+/** True once a computer is paired. The app plays without one; the browser
+ *  copy does not. */
+export function hasComputer() {
+	return Boolean(state.endpoint && state.token);
+}
+
 export function artworkUrl(track) {
 	return track?.thumbnail_url || track?.artwork_url || './icon.svg';
+}
+
+/* YouTube Music covers carry their size in the address (`=w120-h120-…`), and
+ * search hands out the 120px one. A cover shown large asks for a large one
+ * rather than stretching a thumbnail across the screen. */
+export function artworkAt(track, px) {
+	const url = artworkUrl(track);
+	if (!/^https:\/\/[a-z0-9]+\.googleusercontent\.com\//.test(url)) return url;
+	return url.replace(/=w\d+-h\d+(?=-|$)/, `=w${px}-h${px}`);
 }
 
 export function artistName(track) {

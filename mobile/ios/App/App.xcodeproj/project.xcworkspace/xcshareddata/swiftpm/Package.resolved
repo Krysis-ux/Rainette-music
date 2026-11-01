@@ -1,0 +1,24 @@
+{
+  "originHash" : "2ed9dcd316432c8ec38ac5cc68b90199599e3f516a2b3db2125775505cb5e6c1",
+  "pins" : [
+    {
+      "identity" : "capacitor-swift-pm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ionic-team/capacitor-swift-pm.git",
+      "state" : {
+        "revision" : "4c7f346d16196e21fbe23d4a7a6fc7af62af6742",
+        "version" : "8.5.3"
+      }
+    },
+    {
+      "identity" : "youtubekit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/alexeichhorn/YouTubeKit.git",
+      "state" : {
+        "revision" : "89854c93207ad0d2b3d78d6f1aea24595ca66552",
+        "version" : "0.4.10"
+      }
+    }
+  ],
+  "version" : 3
+}

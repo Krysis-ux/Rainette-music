@@ -4,7 +4,7 @@
  * slightly-diagonal scroll catches a row and drags it sideways.
  */
 
-import { el, icon, tap, toast, stagger } from './dom.js';
+import { el, icon, iconButton, tap, toast, stagger } from './dom.js';
 import { dragGesture } from './gesture.js';
 /* catalog.js imports this module for renderTracks, so this closes a cycle.
  * It resolves because both directions are call-time only: nothing here runs
@@ -117,6 +117,17 @@ export function trackRow(track, { onPlay, onHold = null, swipe = true, showDurat
 	const length = trackDuration(track);
 	if (showDuration && length) row.append(el('span', 'track-time', formatTime(length)));
 	if (trailing) row.append(trailing);
+	// The menu a long press opens, also as a button you can see: a gesture
+	// nobody is told about is a feature most people never find.
+	if (onHold && !trailing) {
+		row.classList.add('has-more');
+		row.append(iconButton('more', {
+			label: `More for ${track.title || 'this song'}`,
+			className: 'track-more',
+			size: 18,
+			onClick: event => { event.stopPropagation(); tap(8); onHold(); },
+		}));
+	}
 
 	shell.append(row);
 	wireGestures(shell, row, track, { swipe, onHold });
@@ -138,10 +149,10 @@ function wireGestures(shell, row, track, { swipe, onHold }) {
 		axis: 'x',
 		threshold: AXIS_PX,
 		holdMs: onHold ? HOLD_MS : 0,
-		// The artist name is its own control. A press that lands on it must not
-		// arm the row's swipe or its long-press menu, or tapping the name would
-		// queue the track instead of opening the artist.
-		canStart: event => !event.target?.closest?.('.link-inline'),
+		// The artist name and the menu button are their own controls. A press
+		// that lands on one must not arm the row's swipe or its long-press
+		// menu, or tapping the name would queue the track instead.
+		canStart: event => !event.target?.closest?.('.link-inline, .track-more'),
 		onStart: ({ event }) => {
 			offset = 0;
 			held = false;

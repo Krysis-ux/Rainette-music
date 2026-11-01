@@ -283,6 +283,17 @@ class RainettePlayerPlugin : Plugin() {
     /* ── Internals ──────────────────────────────────────────────────────── */
 
     private inner class Events : Player.Listener {
+        /* A skip, from the page or the notification, before the requested song
+         * started: that play is over. Left waiting, it would settle only with
+         * the next song's failure or the timeout, and the page would show it
+         * loading until then. The play's own new queue is not a skip. */
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            val waiting = pending ?: return
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED || mediaItem?.mediaId == waiting.sourceId) return
+            pending = null
+            waiting.call.reject("Skipped before it started.", CANCELED)
+        }
+
         override fun onEvents(player: Player, events: Player.Events) {
             val c = player as MediaController
             val waiting = pending

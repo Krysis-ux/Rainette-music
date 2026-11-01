@@ -2,7 +2,7 @@
  * it, so pairing has a real waiting state. This file owns transport, pairing
  * and connection; everything visual lives in ./src. */
 
-import { state, STORAGE, artworkUrl, artistName, formatTime, rememberRecent, trackKey } from './src/state.js';
+import { state, STORAGE, artworkUrl, artistName, formatTime, rememberRecent, readRecent, trackKey, hasComputer } from './src/state.js';
 import { fetchDesktopRecent, mergeRecent, fetchPlaylists, fetchPlaylistTracks, playlistSubtitle } from './src/collections.js';
 import { $, el, icon, iconButton, toast, stagger } from './src/dom.js';
 import { configureBridge, isUnsupportedCommand } from './src/bridge.js';
@@ -596,6 +596,13 @@ function renderRecent() {
 			: 'Play something here or on your computer and it shows up.',
 		onPlay: playFromList(list),
 	});
+	// An empty Home says where to start, and is also the way there.
+	if (!list.length) {
+		const start = el('button', 'primary compact home-start', 'Search for music');
+		start.type = 'button';
+		start.addEventListener('click', () => switchTab('search'));
+		$('#recentList').append(start);
+	}
 }
 
 /* The computer's history and this phone's are one list. Rendering the local
@@ -650,7 +657,8 @@ const LIBRARY_MODES = [
 const librarySort = sortControl({
 	scope: 'library',
 	onChange: () => {
-		if (library.mode === 'songs') showLibraryTracks(state.library);
+		if (library.mode === 'songs' && phoneOnly()) refreshLibrary();
+		else if (library.mode === 'songs') showLibraryTracks(state.library);
 		else if (library.playlistId) renderPlaylistTracks(library.playlistId, library.playlistName);
 	},
 });
@@ -701,9 +709,23 @@ function showLibraryTracks(tracks) {
 	});
 }
 
+/* The app with no computer paired: the library is what this phone has
+ * played, rather than a screen that only says to go and pair. */
+function phoneOnly() {
+	return !hasComputer() && nativeAvailable();
+}
+
 async function refreshLibrary() {
 	const token = claimLibrary();
 	const target = $('#libraryList');
+	if (phoneOnly()) {
+		const sorted = sortTracks(readRecent(), librarySort.current());
+		renderTracks(target, sorted, {
+			emptyMessage: 'Songs you play on this phone show up here. Search for one to start.',
+			onPlay: playFromList(sorted),
+		});
+		return;
+	}
 	// Only blank the panel when there is nothing to keep. Re-syncing over a list
 	// the user is already reading should not take it away from them.
 	if (!state.library.length) target.replaceChildren(el('p', 'empty', 'Syncing your library…'));
@@ -731,19 +753,22 @@ async function renderLibraryArtists() {
 	const target = $('#libraryList');
 	target.replaceChildren(el('p', 'empty', 'Gathering artists…'));
 
-	if (!state.library.length) {
+	const phone = phoneOnly();
+	if (!phone && !state.library.length) {
 		try {
 			const result = await command('music_library_index', { limit: 250 });
 			if (!libraryOwns(token)) return;
 			state.library = result.tracks || result.items || [];
 		} catch { /* followed artists alone are still a useful list */ }
 	}
-	const followedArtists = await loadFollowed();
+	const followedArtists = phone ? [] : await loadFollowed();
 	if (!libraryOwns(token)) return;
 
-	const artists = artistsFromTracks(state.library, followedArtists);
+	const artists = artistsFromTracks(phone ? readRecent() : state.library, followedArtists);
 	if (!artists.length) {
-		target.replaceChildren(el('p', 'empty', 'Save some music on your computer, or follow an artist, and they show up here.'));
+		target.replaceChildren(el('p', 'empty', phone
+			? 'Artists you play on this phone show up here.'
+			: 'Save some music on your computer, or follow an artist, and they show up here.'));
 		return;
 	}
 
@@ -926,6 +951,8 @@ async function renderPlaylistTracks(playlistId, name = '') {
 		download.type = 'button';
 		download.disabled = !tracks.length;
 		download.addEventListener('click', () => runListDownload(tracks, { title: name || 'Playlist' }));
+		// Downloads come through the computer, so with none paired there is none.
+		download.hidden = phoneOnly();
 		head.append(edit, download);
 		target.append(head);
 
@@ -973,14 +1000,18 @@ searchSortHost.append(searchArtistSort.node);
 
 let searchRequests = 0;
 
-async function search(query) {
+async function search(query, { typing = false } = {}) {
 	// Only the newest search may paint: an older one answering late would
 	// otherwise replace what was asked for since.
 	const request = ++searchRequests;
 	searchMessage.textContent = nativeAvailable() ? 'Searching…' : 'Searching on your computer…';
-	$('#searchResults').replaceChildren();
-	searchFilter.hidden = true;
-	searchSortHost.hidden = true;
+	// While typing, the last answer stays up until the next one lands, so the
+	// list does not blink empty at every pause.
+	if (!typing) {
+		$('#searchResults').replaceChildren();
+		searchFilter.hidden = true;
+		searchSortHost.hidden = true;
+	}
 
 	let result;
 	if (nativeAvailable()) {
@@ -988,7 +1019,7 @@ async function search(query) {
 			result = { songs: await nativeSearch(query), artists: [], albums: [] };
 		} catch (error) {
 			if (request === searchRequests) searchMessage.textContent = describeError(error);
-			return;
+			return false;
 		}
 		if (request !== searchRequests) return;
 	} else try {
@@ -997,13 +1028,13 @@ async function search(query) {
 		// A computer whose allow-list predates catalog search still answers the
 		// flat one, and songs are most of what a search is for. Anything else —
 		// a timeout, a dead tunnel — would only fail again more slowly.
-		if (!isUnsupportedCommand(error)) { searchMessage.textContent = connectionError(error); return; }
+		if (!isUnsupportedCommand(error)) { searchMessage.textContent = connectionError(error); return false; }
 		try {
 			const flat = await command('music_search', { query }, 45000);
 			result = { songs: flat.items || flat.tracks || [], artists: [], albums: [] };
 		} catch (fallbackError) {
 			searchMessage.textContent = connectionError(fallbackError);
-			return;
+			return false;
 		}
 	}
 	if (request !== searchRequests) return;
@@ -1033,8 +1064,7 @@ async function search(query) {
 	if (counts[searchState.filter] === 0) searchState.filter = 'all';
 	searchFilter.hidden = false;
 
-	searchMessage.textContent = result.msg
-		|| `${total} result${total === 1 ? '' : 's'} · hold a row for more, swipe it to queue`;
+	searchMessage.textContent = result.msg || `${total} result${total === 1 ? '' : 's'}`;
 	paintSearchFilter();
 	renderSearchResults();
 }
@@ -1147,8 +1177,9 @@ function renderMiniBar() {
 	// message, and in linked mode it may be the computer's name — neither is
 	// somewhere to navigate to, and drawing them as tappable would be a lie.
 	const who = loading ? null : trackArtist(track);
+	// The native app fetches a song itself unless the computer is the one playing.
 	const artist = loading
-		? 'Preparing on your computer…'
+		? (linked || !nativeAvailable() ? 'Preparing on your computer…' : 'Loading…')
 		: (artistName(track) || (linked ? state.computerName : 'Unknown artist'));
 	if (artist !== shownMini.artist || Boolean(who) !== shownMini.artistIsLink) {
 		shownMini.artist = artist;
@@ -1202,7 +1233,9 @@ function switchTab(name) {
 	}
 	if (name === 'library' && !state.library.length) renderLibraryPanel();
 	if (name === 'home') refreshRecent();
-	if (name === 'search') $('#searchInput').focus();
+	// The keyboard only when there is nothing to look at yet: coming back to
+	// the results you left should show them, not cover half of them.
+	if (name === 'search' && !$('#searchInput').value) $('#searchInput').focus();
 	if (name === 'settings') renderSettings();
 }
 
@@ -1335,10 +1368,34 @@ $('#cancelPairing').addEventListener('click', () => {
 	setStatus('', 'Not connected');
 });
 
+/* Results follow the typing once it pauses; Enter still searches at once. */
+const SEARCH_PAUSE_MS = 650;
+const SEARCH_MIN_CHARS = 2;
+let searchTimer = 0;
+let lastSearched = '';
+
+function searchNow(query, options) {
+	clearTimeout(searchTimer);
+	lastSearched = query;
+	// A failed search is forgotten, so Enter on the same words tries again.
+	search(query, options).then(found => { if (found === false && lastSearched === query) lastSearched = ''; });
+}
+
 $('#searchForm').addEventListener('submit', event => {
 	event.preventDefault();
 	const query = $('#searchInput').value.trim();
-	if (query) search(query);
+	// Typing already searched these words. Asking again only reshuffles the
+	// list under a finger about to tap it: the source answers in a new order.
+	if (query && query !== lastSearched) searchNow(query);
+	// Done typing: put the keyboard away so the results can be seen.
+	$('#searchInput').blur();
+});
+
+$('#searchInput').addEventListener('input', () => {
+	clearTimeout(searchTimer);
+	const query = $('#searchInput').value.trim();
+	if (query.length < SEARCH_MIN_CHARS || query === lastSearched) return;
+	searchTimer = setTimeout(() => searchNow(query, { typing: true }), SEARCH_PAUSE_MS);
 });
 
 for (const button of searchFilter.querySelectorAll('button')) {

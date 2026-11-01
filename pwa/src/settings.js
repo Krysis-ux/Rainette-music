@@ -12,7 +12,7 @@ import {
 	THEMES, ACCENTS, DEFAULTS, currentTheme, currentAccent,
 	applyTheme, applyAccent, pref, setPref, resetPrefs,
 } from './prefs.js';
-import { setVolume, volume as currentVolume, boostAvailable, resumeContext, VOLUME_MAX } from './audio.js';
+import { setVolume, volume as currentVolume, boostAvailable, resumeContext, volumeMax } from './audio.js';
 import { createSlider } from './slider.js';
 import { isLinked } from './player.js';
 import {
@@ -146,7 +146,7 @@ export function openPlaybackSettings({ onChanged } = {}) {
 
 			const slider = createSlider({
 				min: 0,
-				max: Math.round(VOLUME_MAX * 100),
+				max: Math.round(volumeMax() * 100),
 				step: 1,
 				value: Math.round(currentVolume() * 100),
 				variant: 'volume',

@@ -223,6 +223,18 @@ def run() -> int:
         return {{ ms: Date.now() - t0, loading: s.loading, id: s.source_id, want: list[4].source_id }};
     }})()""")
     check(ack["id"] == ack["want"] and not ack["loading"], "a play request resolves only once its track has loaded", str(ack))
+
+    # Skipping before the requested song starts ends that request at once. It
+    # used to wait out the 60 s timeout, with the page showing it loading.
+    skipped = js(f"""(async () => {{
+        const p = {PLAYER}; const {{ state }} = await import('./src/state.js');
+        const list = state.searchResults; const t0 = Date.now();
+        const play = p.playTrack(list[2], list, 2);
+        await Capacitor.nativePromise('RainettePlayer', 'skip', {{ offset: 1 }});
+        await play;
+        return {{ ms: Date.now() - t0, loading: state.loading }};
+    }})()""")
+    check(skipped["ms"] < 15000 and not skipped["loading"], "a skip while a song loads ends that request at once", str(skipped))
     time.sleep(1)
     screenshot("03-playing")
 
