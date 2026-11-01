@@ -247,6 +247,12 @@ public final class PlayerEngine {
     // MARK: - The song in the player
 
     private func load(_ at: Int, from position: Double = 0) {
+        // A play still waiting on another song is over: the queue moved on.
+        // Left waiting, it would only ever settle with the new song's failure
+        // or the timeout, and the page would show it loading until then.
+        if let waiting = pending, waiting.sourceId != queue[at].sourceId {
+            settlePending(.failure(PlayerError(PlayerError.canceled, "Skipped before it started.")))
+        }
         dropItem()
         index = at
         ended = false

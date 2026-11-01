@@ -143,4 +143,17 @@ struct EngineRules {
         engine.stop()
         _ = await second.result
     }
+
+    @Test func skippingAwayCancelsAPlayStillLoading() async throws {
+        let engine = PlayerEngine()
+        engine.setVolume(0)
+        let first = Task { try await engine.play(songs, at: 0, startPaused: true, generation: 1) }
+        await Task.yield()
+        engine.skip(1)
+        // Settled at once as canceled, not after the 60 s timeout: the page
+        // treats canceled as "moved on" and stops showing it as loading.
+        await #expect(throws: PlayerError(PlayerError.canceled, "Skipped before it started.")) { _ = try await first.value }
+        #expect(engine.snapshot().sourceId == "song0000002")
+        engine.stop()
+    }
 }
