@@ -260,6 +260,12 @@ export function dragGesture(element, {
 	 * Before it engaged there is nothing to judge, and abandoning is right. */
 	listen('lostpointercapture', event => {
 		if (event.pointerId !== pointerId) return;
+		/* A touch starts captured by whatever is under the finger — the cover
+		 * image, a row's title. When the drag engages and claims it for
+		 * `element`, that child loses it and the event bubbles here. That is
+		 * the drag taking hold, not losing it; ending on it cut every touch
+		 * swipe off a few pixels in, so only a fast flick ever committed. */
+		if (event.target !== element && element.hasPointerCapture?.(event.pointerId)) return;
 		if (engaged) { finish(); return; }
 		abandon();
 	});

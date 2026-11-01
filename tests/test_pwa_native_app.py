@@ -542,6 +542,38 @@ class TestSwipesOnWhatIsPlaying:
         page.close()
 
 
+def touch_drag(page, selector, dx, steps=12):
+    """A real touch drag through Chromium's input pipeline, not dispatched
+    events: only real touches get the implicit pointer capture a phone does."""
+    box = page.locator(selector).first.bounding_box()
+    x, y = box["x"] + box["width"] * 0.8, box["y"] + box["height"] / 2
+    cdp = page.context.new_cdp_session(page)
+    point = lambda px: [{"x": px, "y": y}]
+    cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": point(x)})
+    for i in range(1, steps + 1):
+        cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": point(x + dx * i / steps)})
+        page.wait_for_timeout(16)
+    cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+
+
+class TestRealTouches:
+    def test_a_finger_swiping_the_cover_changes_the_song(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server, touch=True)
+        search_and_play(page)
+        page.click("#playerOpen")
+        page.locator(".sheet-now .now-art-shell").wait_for(state="visible")
+        # Measured once the card has finished sliding up, or the finger lands
+        # where the cover was mid-slide.
+        page.wait_for_function("() => !document.querySelector('.sheet-now .sheet-panel').getAnimations().length")
+        # A touch is first captured by the cover image under the finger; when
+        # the swipe claims it for the cover's frame, the image reports losing
+        # it. That is the swipe taking hold, and it must not end the swipe.
+        touch_drag(page, ".sheet-now .now-art-shell", -200)
+        page.wait_for_function("() => document.querySelector('.sheet-now .now-title').textContent === 'Song 2'")
+        assert not errors, errors
+        page.close()
+
+
 class TestWithNoComputer:
     """The app plays with nothing paired, so nothing in it may lead to a screen
     that only says to go and pair."""
