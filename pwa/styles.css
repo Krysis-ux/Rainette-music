@@ -1715,15 +1715,22 @@ img { -webkit-user-drag: none; }
 
 .now-close { color: var(--text-soft); }
 
-/* Sized against the viewport height, not just its width. A square that fills a
-   narrow screen edge-to-edge pushes the transport and the action row off the
-   bottom on a short phone, which is exactly where they are needed. */
+/* The cover takes whatever height the controls leave, so the whole card fits
+   on one screen with nothing to scroll for. A fixed allowance for "everything
+   else" fitted only the fonts it was measured with: taller text elsewhere
+   pushed the action row off the bottom. Now Playing is always full height, so
+   the body's height is known and its second row is what is left over. */
+.sheet-now .sheet-body {
+	display: grid;
+	grid-template-rows: auto minmax(140px, 1fr);
+}
+
 .now-art-shell {
 	position: relative;
-	/* Whatever height the controls below leave over, so the whole card fits
-	   on one screen with nothing to scroll for. */
-	width: min(100%, 340px, max(180px, calc(100vh - 506px - var(--safe-top) - var(--safe-bottom))));
-	margin: 0 auto 20px;
+	justify-self: center;
+	align-self: center;
+	height: min(100% - 20px, 340px, 100vw - 40px);
+	margin-bottom: 20px;
 	aspect-ratio: 1;
 }
 

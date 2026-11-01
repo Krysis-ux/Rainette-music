@@ -592,6 +592,23 @@ class TestWithNoComputer:
         assert not errors, errors
         page.close()
 
+    def test_now_playing_still_fits_with_taller_text(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        # Another platform's fonts, or a larger text setting, make every line
+        # taller; the cover is what gives way, and it stays square.
+        page.add_style_tag(content=".sheet-now * { line-height: 1.7 !important; }")
+        search_and_play(page)
+        page.click("#playerOpen")
+        page.locator(".sheet-now .now-actions").wait_for(state="visible")
+        assert page.evaluate("""() => {
+            const body = document.querySelector('.sheet-now .sheet-body');
+            return body.scrollHeight <= body.clientHeight + 1;
+        }""")
+        art = page.locator(".sheet-now .now-art-shell").bounding_box()
+        assert art["height"] >= 140 and abs(art["width"] - art["height"]) < 1, art
+        assert not errors, errors
+        page.close()
+
     def test_the_library_holds_what_this_phone_has_played(self, browser, static_server):
         page, errors, requests = open_app(browser, static_server)
         search_and_play(page)
