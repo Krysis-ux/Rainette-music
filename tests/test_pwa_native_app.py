@@ -131,8 +131,8 @@ ELEMENT_LOG = """
 """
 
 
-def open_app(browser, base_url, *, paired=False, bridge=True, preset=None):
-    page = browser.new_page(viewport={"width": 390, "height": 844})
+def open_app(browser, base_url, *, paired=False, bridge=True, preset=None, touch=False):
+    page = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=touch)
     page.set_default_timeout(8_000)
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
@@ -617,6 +617,32 @@ class TestSearchFollowsTyping:
         assert not errors, errors
         page.close()
 
+    def test_enter_after_typing_does_not_search_again(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        page.click('#tabBar [data-tab="search"]')
+        page.locator("#searchInput").press_sequentially("song", delay=40)
+        page.locator("#searchResults .track").first.wait_for()
+        # The source answers the same words in a new order, so a second search
+        # would reshuffle the list under the finger about to tap it.
+        page.press("#searchInput", "Enter")
+        page.wait_for_timeout(300)
+        assert len(native_calls(page, "search")) == 1
+        assert not errors, errors
+        page.close()
+
+    def test_enter_retries_a_search_that_failed(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        page.evaluate("() => { window.__native.failures.search = { code: 'offline', message: 'x' }; }")
+        page.click('#tabBar [data-tab="search"]')
+        page.fill("#searchInput", "song")
+        page.press("#searchInput", "Enter")
+        page.wait_for_function("() => document.querySelector('#searchMessage').textContent.includes('No internet')")
+        page.press("#searchInput", "Enter")
+        page.locator("#searchResults .track").first.wait_for()
+        assert len(native_calls(page, "search")) == 2
+        assert not errors, errors
+        page.close()
+
     def test_coming_back_to_results_does_not_raise_the_keyboard(self, browser, static_server):
         page, errors, _ = open_app(browser, static_server)
         page.click('#tabBar [data-tab="search"]')
@@ -626,5 +652,46 @@ class TestSearchFollowsTyping:
         page.click('#tabBar [data-tab="home"]')
         page.click('#tabBar [data-tab="search"]')
         assert page.evaluate("() => document.activeElement?.id") != "searchInput"
+        assert not errors, errors
+        page.close()
+
+
+def tap_middle(page, selector):
+    box = page.locator(selector).first.bounding_box()
+    page.touchscreen.tap(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+
+
+class TestOnATouchscreen:
+    """A finger is wide and the artist line is half of a row, so on a phone
+    the row is one target. The artist is in the row's menu and Now Playing."""
+
+    def test_a_tap_on_the_artist_line_plays_the_song(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server, touch=True)
+        page.click('#tabBar [data-tab="search"]')
+        page.fill("#searchInput", "song")
+        page.press("#searchInput", "Enter")
+        tap_middle(page, "#searchResults .track .link-inline")
+        page.wait_for_function("() => document.querySelector('#playPauseButton').dataset.state === 'playing'")
+        assert page.locator(".sheet-catalog").count() == 0
+        assert not errors, errors
+        page.close()
+
+    def test_a_tap_on_the_mini_bars_artist_opens_now_playing(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server, touch=True)
+        search_and_play(page)
+        tap_middle(page, "#playerArtist")
+        page.locator(".sheet-now").wait_for(state="visible")
+        assert page.locator(".sheet-catalog").count() == 0
+        assert not errors, errors
+        page.close()
+
+    def test_the_volume_slider_ends_where_the_phone_can_play(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server, touch=True)
+        search_and_play(page)
+        page.click("#playerOpen")
+        # The app's own player stops at 100%; a slider running to 200% put
+        # full volume in the middle and sprang back from everything above it.
+        slider = page.locator('.sheet-now [role="slider"][aria-label="Volume"]')
+        assert slider.get_attribute("aria-valuemax") == "100"
         assert not errors, errors
         page.close()

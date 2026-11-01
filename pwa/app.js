@@ -1019,7 +1019,7 @@ async function search(query, { typing = false } = {}) {
 			result = { songs: await nativeSearch(query), artists: [], albums: [] };
 		} catch (error) {
 			if (request === searchRequests) searchMessage.textContent = describeError(error);
-			return;
+			return false;
 		}
 		if (request !== searchRequests) return;
 	} else try {
@@ -1028,13 +1028,13 @@ async function search(query, { typing = false } = {}) {
 		// A computer whose allow-list predates catalog search still answers the
 		// flat one, and songs are most of what a search is for. Anything else —
 		// a timeout, a dead tunnel — would only fail again more slowly.
-		if (!isUnsupportedCommand(error)) { searchMessage.textContent = connectionError(error); return; }
+		if (!isUnsupportedCommand(error)) { searchMessage.textContent = connectionError(error); return false; }
 		try {
 			const flat = await command('music_search', { query }, 45000);
 			result = { songs: flat.items || flat.tracks || [], artists: [], albums: [] };
 		} catch (fallbackError) {
 			searchMessage.textContent = connectionError(fallbackError);
-			return;
+			return false;
 		}
 	}
 	if (request !== searchRequests) return;
@@ -1177,8 +1177,9 @@ function renderMiniBar() {
 	// message, and in linked mode it may be the computer's name — neither is
 	// somewhere to navigate to, and drawing them as tappable would be a lie.
 	const who = loading ? null : trackArtist(track);
+	// The native app fetches a song itself unless the computer is the one playing.
 	const artist = loading
-		? 'Preparing on your computer…'
+		? (linked || !nativeAvailable() ? 'Preparing on your computer…' : 'Loading…')
 		: (artistName(track) || (linked ? state.computerName : 'Unknown artist'));
 	if (artist !== shownMini.artist || Boolean(who) !== shownMini.artistIsLink) {
 		shownMini.artist = artist;
@@ -1376,13 +1377,16 @@ let lastSearched = '';
 function searchNow(query, options) {
 	clearTimeout(searchTimer);
 	lastSearched = query;
-	search(query, options);
+	// A failed search is forgotten, so Enter on the same words tries again.
+	search(query, options).then(found => { if (found === false && lastSearched === query) lastSearched = ''; });
 }
 
 $('#searchForm').addEventListener('submit', event => {
 	event.preventDefault();
 	const query = $('#searchInput').value.trim();
-	if (query) searchNow(query);
+	// Typing already searched these words. Asking again only reshuffles the
+	// list under a finger about to tap it: the source answers in a new order.
+	if (query && query !== lastSearched) searchNow(query);
 	// Done typing: put the keyboard away so the results can be seen.
 	$('#searchInput').blur();
 });

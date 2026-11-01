@@ -2004,6 +2004,16 @@ img { -webkit-user-drag: none; }
 .queue-row-tap img, .queue-row-copy { pointer-events: none; }
 .queue-row-copy .link-inline { pointer-events: auto; }
 
+/* On a touchscreen the artist line is half of a small target, and taps meant
+   for the song kept opening the artist instead. There the whole row plays and
+   the whole bar opens Now Playing; the artist is one step away in the row's
+   ⋯ menu and under the title in Now Playing, as in other music apps. */
+@media (pointer: coarse) {
+	.player-copy .link-inline,
+	.track-copy .link-inline,
+	.queue-row-copy .link-inline { pointer-events: none; text-decoration: none; }
+}
+
 .queue-row-tap img { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; background: var(--surface); }
 .queue-row-copy { display: grid; gap: 2px; min-width: 0; }
 

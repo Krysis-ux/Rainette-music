@@ -50,6 +50,12 @@ export const EQ_PRESETS = {
  * the gain is what makes 200% loud rather than distorted. */
 export const VOLUME_MAX = 2;
 
+/** Where the volume slider stops. The app's own player plays at most unity,
+ *  and a slider whose top half always springs back is a control that lies. */
+export function volumeMax() {
+	return nativeAvailable() && !isLinked() ? 1 : VOLUME_MAX;
+}
+
 /* Detected by the touch-capable-Mac test rather than by user agent, because
  * iPadOS has reported itself as "MacIntel" since iPadOS 13 and a plain
  * /iPad/ test misses every modern iPad. */

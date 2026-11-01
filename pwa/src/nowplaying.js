@@ -13,7 +13,7 @@ import { openQueueSheet } from './queue.js';
 import { openAddToPlaylist, openLyrics, openSleepTimer, openOutputPicker, openTrackMenu, sleepLabel, phoneOnly } from './extras.js';
 import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
 import {
-	setVolume, volume as currentVolume, boostAvailable, resumeContext, VOLUME_MAX, volumeIsAdjustable,
+	setVolume, volume as currentVolume, boostAvailable, resumeContext, volumeMax, volumeIsAdjustable,
 } from './audio.js';
 import { isLocalTrack, localArtworkUrl } from './local.js';
 import { nativeAvailable } from './native-engine.js';
@@ -166,7 +166,7 @@ export function openNowPlaying() {
 
 			const volume = createSlider({
 				min: 0,
-				max: Math.round(VOLUME_MAX * 100),
+				max: Math.round(volumeMax() * 100),
 				step: 1,
 				value: Math.round(currentVolume() * 100),
 				variant: 'volume',
