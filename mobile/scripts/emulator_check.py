@@ -226,15 +226,25 @@ def run() -> int:
 
     # Skipping before the requested song starts ends that request at once. It
     # used to wait out the 60 s timeout, with the page showing it loading.
+    # The skip waits until the service has the new queue and is still loading
+    # its song; a skip that arrives first would test nothing.
     skipped = js(f"""(async () => {{
         const p = {PLAYER}; const {{ state }} = await import('./src/state.js');
-        const list = state.searchResults; const t0 = Date.now();
+        const native = method => Capacitor.nativePromise('RainettePlayer', method, {{}});
+        const list = state.searchResults; const want = list[2].source_id; const t0 = Date.now();
         const play = p.playTrack(list[2], list, 2);
+        let s = await native('getState');
+        while (s.source_id !== want && Date.now() - t0 < 10000) {{
+            await new Promise(r => setTimeout(r, 40)); s = await native('getState');
+        }}
+        const loadingAtSkip = s.source_id === want && s.loading;
         await Capacitor.nativePromise('RainettePlayer', 'skip', {{ offset: 1 }});
         await play;
-        return {{ ms: Date.now() - t0, loading: state.loading }};
+        const after = await native('getState');
+        return {{ ms: Date.now() - t0, loadingAtSkip, loading: state.loading, index: after.index }};
     }})()""")
-    check(skipped["ms"] < 15000 and not skipped["loading"], "a skip while a song loads ends that request at once", str(skipped))
+    check(skipped["loadingAtSkip"] and skipped["ms"] < 15000 and not skipped["loading"] and skipped["index"] == 3,
+          "a skip while a song loads ends that request at once", str(skipped))
     time.sleep(1)
     screenshot("03-playing")
 
@@ -265,7 +275,10 @@ def run() -> int:
     s2 = session()
     check(s2["position_ms"] > s1["position_ms"] and audio_started(), "still playing with the screen off",
           f"{s1['position_ms']} -> {s2['position_ms']} ms")
-    check("rainettemusic" in adb("shell", "dumpsys", "notification", "--noredact"), "a media notification is posted")
+    # The app's own transport notification. Matched on the package and the
+    # media category: what else a NotificationRecord prints varies by Android.
+    notes = adb("shell", "dumpsys", "notification", "--noredact").splitlines()
+    check(any(f"pkg={PACKAGE} " in n and "category=transport" in n for n in notes), "a media notification is posted")
     adb("shell", "input", "keyevent", "KEYCODE_WAKEUP")
     adb("shell", "wm", "dismiss-keyguard", check=False)
     time.sleep(1)
