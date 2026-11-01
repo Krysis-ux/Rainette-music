@@ -87,8 +87,10 @@ def main() -> int:
     device.adb("shell", "input", "keyevent", "KEYCODE_ENTER")
     started = time.time()
     found = device.wait_for(lambda: find(r"^Play .+"), 40)
-    # The keyboard stays up after Enter and covers the results.
-    device.adb("shell", "input", "keyevent", "KEYCODE_BACK")
+    # Enter puts the keyboard away now; Back with nothing to close would leave
+    # the app. Older builds kept it up over the results, so Back only if shown.
+    if "mInputShown=true" in device.adb("shell", "dumpsys", "input_method", check=False):
+        device.adb("shell", "input", "keyevent", "KEYCODE_BACK")
     time.sleep(1)
     # Songs come after the artists; bring a row up above the tab bar.
     play_button = None
