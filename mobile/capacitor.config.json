@@ -14,5 +14,8 @@
     "SystemBars": {
       "style": "DARK"
     }
+  },
+  "ios": {
+    "backgroundColor": "#0A0D0B"
   }
 }
