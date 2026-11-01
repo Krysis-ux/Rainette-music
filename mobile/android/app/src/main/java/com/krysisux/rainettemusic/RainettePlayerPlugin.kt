@@ -1,10 +1,14 @@
 package com.krysisux.rainettemusic
 
+import android.app.Activity
 import android.content.ComponentName
+import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
+import androidx.activity.result.ActivityResult
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -17,9 +21,11 @@ import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
+import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.google.common.util.concurrent.ListenableFuture
 import org.json.JSONObject
+import java.io.File
 import java.util.concurrent.Executors
 
 /** Final errors from the service's own player, with the cause chain intact. */
@@ -131,8 +137,10 @@ class RainettePlayerPlugin : Plugin() {
         io.execute {
             try {
                 val stream = StreamResolver.resolve(id, force)
+                // The User-Agent the address was issued to: the page's own
+                // downloads have to present it, as the player does.
                 call.resolve(JSObject().put("url", stream.url).put("mime_type", stream.mimeType)
-                    .put("expires_at_ms", stream.expiresAtMs))
+                    .put("expires_at_ms", stream.expiresAtMs).put("user_agent", stream.userAgent))
             } catch (e: Exception) {
                 reject(call, StreamResolver.classify(e))
             }
@@ -280,6 +288,73 @@ class RainettePlayerPlugin : Plugin() {
         }
     }
 
+    /* A file waiting for the system save screen. On disk, not in memory or in
+     * the call: Capacitor keeps a pending call's data in the activity's saved
+     * state, and a song there is a 14 MB parcel that Android kills the app for
+     * the moment the save screen covers it. On disk it also outlives the
+     * process being reclaimed while the screen is open. */
+    private val staged get() = File(context.cacheDir, "staged")
+
+    /** Hold a file's bytes (base64) for `saveFile`, replacing any held before. */
+    @PluginMethod
+    fun stageFile(call: PluginCall) {
+        val bytes = try {
+            Base64.decode(call.getString("data").orEmpty(), Base64.DEFAULT)
+        } catch (e: IllegalArgumentException) {
+            null
+        }
+        if (bytes == null || bytes.isEmpty()) return call.reject("Nothing to save.", StreamResolver.INVALID)
+        io.execute {
+            try {
+                staged.deleteRecursively()
+                staged.mkdirs()
+                File(staged, STAGED_NAME).writeBytes(bytes)
+                call.resolve()
+            } catch (e: Exception) {
+                call.reject("That file could not be prepared.", "service_failed")
+            }
+        }
+    }
+
+    /**
+     * Save the staged file where the person chooses, through the system's own
+     * save screen. A WebView cannot save a page's file itself: a download link
+     * and the web's save picker both do nothing in one. Resolves `{ saved }`,
+     * false when the screen was dismissed.
+     */
+    @PluginMethod
+    fun saveFile(call: PluginCall) {
+        if (!File(staged, STAGED_NAME).exists()) return call.reject("Nothing to save.", StreamResolver.INVALID)
+        val name = call.getString("name").orEmpty().replace(Regex("[\\\\/:*?\"<>|]"), "_").take(120)
+            .ifBlank { "Rainette file" }
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType(call.getString("mime") ?: "application/octet-stream")
+            .putExtra(Intent.EXTRA_TITLE, name)
+        startActivityForResult(call, intent, "fileSaved")
+    }
+
+    @ActivityCallback
+    fun fileSaved(call: PluginCall?, result: ActivityResult) {
+        val file = File(staged, STAGED_NAME)
+        val uri = result.data?.data
+        if (call == null || result.resultCode != Activity.RESULT_OK || uri == null || !file.exists()) {
+            staged.deleteRecursively()
+            return call?.resolve(JSObject().put("saved", false)) ?: Unit
+        }
+        io.execute {
+            try {
+                val out = context.contentResolver.openOutputStream(uri) ?: throw java.io.IOException("No stream for $uri")
+                out.use { sink -> file.inputStream().use { it.copyTo(sink) } }
+                call.resolve(JSObject().put("saved", true))
+            } catch (e: Exception) {
+                call.reject("Couldn’t save that file there. Try another folder.", "service_failed")
+            } finally {
+                staged.deleteRecursively()
+            }
+        }
+    }
+
     /* ── Internals ──────────────────────────────────────────────────────── */
 
     private inner class Events : Player.Listener {
@@ -398,6 +473,7 @@ class RainettePlayerPlugin : Plugin() {
     companion object {
         /** Bumped when the page and the plugin must change together. */
         const val PROTOCOL = 1
+        private const val STAGED_NAME = "file"
         const val CANCELED = "canceled"
         const val MISMATCH = "mismatch"
         const val SERVICE_FAILED = "service_failed"

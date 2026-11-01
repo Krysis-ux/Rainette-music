@@ -75,7 +75,7 @@ export const ARTIST_SORTS = [
 const MAGNITUDE = { k: 1e3, m: 1e6, b: 1e9 };
 
 export function subscriberCount(artist) {
-	const raw = String(artist?.subscribers || '').trim().toLowerCase();
+	const raw = String(artist?.subscribers || artist?.audience || '').trim().toLowerCase();
 	const match = raw.match(/^([\d.,]+)\s*([kmb])?/);
 	if (!match) return 0;
 	const value = Number(match[1].replace(/,/g, ''));

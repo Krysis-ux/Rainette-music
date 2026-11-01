@@ -27,6 +27,9 @@ import { trackKey, artworkUrl, artistName, trackDuration } from './state.js';
 import {
 	isLocalTrack, saveDownloadedTrack, downloadedId, localTrackIds, removeLocalTrack, localRow,
 } from './local.js';
+import { nativeAvailable, nativeResolve, nativeSaveFile } from './native-engine.js';
+import { isCatalogTrack } from './source-provider.js';
+import { nativeRequest } from './ytmusic.js';
 
 /* How long to let the computer resolve one stream. The same 50s `player.js`
  * allows: it is a yt-dlp call on the far end, and a cold one is genuinely slow.
@@ -151,10 +154,10 @@ async function runDownload(track, { onProgress, signal }) {
 	 * whether or not anything is wrong. A phase costs nothing and is the
 	 * difference between "working" and "frozen". */
 	onProgress?.({ phase: 'preparing', received: 0, total: 0, ratio: 0 });
-	const url = await resolveUrl(track);
-	onProgress?.({ phase: 'connecting', received: 0, total: 0, ratio: 0 });
-
-	const { blob, contentType } = await fetchResumable(url, onProgress, signal);
+	// The app fetches a song itself, as it plays one: no computer involved.
+	const { blob, contentType } = nativeAvailable() && isCatalogTrack(track)
+		? await fetchOnPhone(track, onProgress, signal)
+		: await fetchResumable(await connect(track, onProgress), onProgress, signal);
 	if (!blob.size) throw new Error('That download arrived empty.');
 
 	const type = (contentType || '').split(';')[0].trim().toLowerCase();
@@ -175,6 +178,64 @@ async function runDownload(track, { onProgress, signal }) {
 	present.add(row.id);
 	loaded = true;
 	return row;
+}
+
+async function connect(track, onProgress) {
+	const url = await resolveUrl(track);
+	onProgress?.({ phase: 'connecting', received: 0, total: 0, ratio: 0 });
+	return url;
+}
+
+/* In the app the stream is resolved on the phone and read in 1 MB ranges,
+ * the size its own player reads in: the audio host slows a long open-ended
+ * read to playback speed, and a range this size arrives in well under a
+ * second. Native HTTP, because the host does not allow a page's fetch. */
+const PHONE_CHUNK_BYTES = 1 << 20;
+const PHONE_CHUNK_TRIES = 3;
+
+async function fetchOnPhone(track, onProgress, signal) {
+	const stream = await nativeResolve(track);
+	const headers = stream?.user_agent ? { 'User-Agent': stream.user_agent } : {};
+	const parts = [];
+	let received = 0;
+	let total = 0;
+	while (!total || received < total) {
+		if (signal?.aborted) throw new Error('Download stopped.');
+		const range = `bytes=${received}-${received + PHONE_CHUNK_BYTES - 1}`;
+		const answer = await phoneChunk(stream.url, { ...headers, Range: range });
+		const bytes = Uint8Array.from(atob(answer.data || ''), c => c.charCodeAt(0));
+		if (!bytes.length) throw new Error('That download arrived empty.');
+		total = total || totalFrom(answer) || bytes.length;
+		parts.push(bytes);
+		received += bytes.length;
+		onProgress?.({ phase: 'downloading', received, total, ratio: received / total });
+		if (answer.status === 200) break;   // the whole file in one answer
+	}
+	const type = stream?.mime_type || 'audio/mp4';
+	return { blob: new Blob(parts, { type }), contentType: type };
+}
+
+async function phoneChunk(url, headers) {
+	let lastError = null;
+	for (let attempt = 0; attempt < PHONE_CHUNK_TRIES; attempt += 1) {
+		if (attempt) await sleep(RESUME_BACKOFF_MS[attempt]);
+		try {
+			const answer = await nativeRequest({ url, method: 'GET', headers, responseType: 'blob' });
+			if (answer?.status === 206 || answer?.status === 200) return answer;
+			lastError = new Error(`The audio source answered ${answer?.status || 'nothing'}. Try again.`);
+		} catch (error) {
+			lastError = error;
+		}
+	}
+	throw lastError;
+}
+
+/* "bytes 0-1048575/2747911": the size of the whole file. Header names come
+ * back in whichever case the platform's HTTP stack keeps them. */
+function totalFrom(answer) {
+	const headers = answer?.headers || {};
+	const name = Object.keys(headers).find(key => key.toLowerCase() === 'content-range');
+	return Number(String(headers[name] || '').split('/')[1]) || 0;
 }
 
 async function resolveUrl(track) {
@@ -406,7 +467,7 @@ export async function removeDownload(track) {
 /** Can this browser ask where to put a file? Chromium desktop can; Safari and
  *  Android Chrome cannot, and get the ordinary download instead. */
 export function canChooseLocation() {
-	return typeof window.showSaveFilePicker === 'function';
+	return nativeAvailable() || typeof window.showSaveFilePicker === 'function';
 }
 
 /**
@@ -430,6 +491,10 @@ export async function saveCopy(track) {
 	const blob = row?.blob;
 	if (!blob) throw new Error('That track is no longer on this phone.');
 	const name = row.file_name || 'track.m4a';
+
+	// Inside the app the web's picker exists but shows nothing; the phone's
+	// own save screen is the one that works.
+	if (nativeAvailable()) return (await nativeSaveFile(blob, name)) ? 'saved' : 'cancelled';
 
 	if (canChooseLocation()) {
 		let handle;

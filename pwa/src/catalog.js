@@ -15,9 +15,8 @@ import { command, commandError } from './bridge.js';
 import { renderTracks } from './tracks.js';
 import { sortTracks, sortControl, RELEASE_SORTS, sortReleases } from './sorting.js';
 import { playTrack, queueAddEnd } from './player.js';
-import { hasComputer, rememberRecent, artistName } from './state.js';
+import { rememberRecent, artistName, artworkFor } from './state.js';
 import { artistRef, knownArtist, resolveArtistImages } from './artists.js';
-import { nativeAvailable, nativeSearch } from './native-engine.js';
 
 /* What to do once a track starts from inside a browse sheet. `nowplaying.js`
  * already imports this module, so it is handed in rather than imported back. */
@@ -185,15 +184,18 @@ export function openArtist(seed) {
 			head.append(el('p', 'empty', `Loading ${artist.name}…`));
 			body.append(head);
 
-			const phoneOnly = !hasComputer() && nativeAvailable();
 			let payload;
 			try {
-				payload = phoneOnly
-					? await phoneArtistCatalog(artist)
-					: (await Promise.all([
-						command('music_artist_catalog', { artist_id: artist.id, name: artist.name }, 45000),
-						loadFollowed(),
-					]))[0];
+				[payload] = await Promise.all([
+					command('music_artist_catalog', {
+						artist_id: artist.id,
+						name: artist.name,
+						// A picture already on screen is the one the page keeps;
+						// the page's own is a wide banner.
+						thumbnail_url: /^https:/.test(artist.art) ? artist.art : '',
+					}, 45000),
+					loadFollowed(),
+				]);
 			} catch (error) {
 				head.replaceChildren(el('p', 'empty', catalogError(error)));
 				return;
@@ -216,7 +218,7 @@ export function openArtist(seed) {
 			};
 			const available = ARTIST_SECTIONS.filter(section => counts[section.id] > 0);
 
-			head.replaceChildren(renderArtistHeader(resolved, songs, handle, { canFollow: !phoneOnly }));
+			head.replaceChildren(renderArtistHeader(resolved, songs, handle));
 			if (payload?.msg) body.append(el('p', 'catalog-note', payload.msg));
 
 			if (!available.length) {
@@ -258,16 +260,6 @@ export function openArtist(seed) {
 	});
 }
 
-/* With no computer, the artist's page is their songs, found by the phone's own
- * search. Following, albums and videos all live on the computer, so they are
- * simply not offered rather than offered and broken. */
-async function phoneArtistCatalog(artist) {
-	const wanted = artist.name.toLowerCase();
-	const found = await nativeSearch(artist.name);
-	const songs = found.filter(track => artistName(track).toLowerCase().includes(wanted));
-	return { artist, songs: songs.length ? songs : found };
-}
-
 /* A placeholder about the artist rather than the app: their initial on a
  * neutral disc that reads in both themes. */
 function monogram(name) {
@@ -280,7 +272,7 @@ function monogram(name) {
 	return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
-function renderArtistHeader(artist, songs, handle, { canFollow = true } = {}) {
+function renderArtistHeader(artist, songs, handle) {
 	const head = el('div', 'catalog-hero');
 
 	const close = iconButton('chevronDown', {
@@ -291,10 +283,10 @@ function renderArtistHeader(artist, songs, handle, { canFollow = true } = {}) {
 
 	const art = document.createElement('img');
 	art.className = 'catalog-art round';
-	art.src = artist.art || monogram(artist.name);
+	art.src = artist.art ? artworkFor(artist.art, 132) : monogram(artist.name);
 	art.alt = '';
-	art.width = 104;
-	art.height = 104;
+	art.width = 132;
+	art.height = 132;
 	art.referrerPolicy = 'no-referrer';
 	art.decoding = 'async';
 
@@ -318,8 +310,7 @@ function renderArtistHeader(artist, songs, handle, { canFollow = true } = {}) {
 	paintFollow(follow, artist);
 	follow.addEventListener('click', () => toggleFollow(artist, follow));
 
-	actions.append(play, shuffle);
-	if (canFollow) actions.append(follow);
+	actions.append(play, shuffle, follow);
 	head.append(close, art, meta, actions);
 	return head;
 }
@@ -367,7 +358,7 @@ function releaseCard(album, artist) {
 	card.type = 'button';
 
 	const art = document.createElement('img');
-	art.src = album.art || './icon.svg';
+	art.src = album.art ? artworkFor(album.art, 200) : './icon.svg';
 	art.alt = '';
 	art.loading = 'lazy';
 	art.decoding = 'async';
@@ -455,17 +446,27 @@ function renderAlbumHeader(album, tracks, handle) {
 
 	const art = document.createElement('img');
 	art.className = 'catalog-art';
-	art.src = album.art || './icon.svg';
+	art.src = album.art ? artworkFor(album.art, 180) : './icon.svg';
 	art.alt = '';
-	art.width = 104;
-	art.height = 104;
+	art.width = 180;
+	art.height = 180;
 	art.referrerPolicy = 'no-referrer';
 	art.decoding = 'async';
 
 	const meta = el('div', 'catalog-meta');
 	meta.append(el('h2', 'catalog-title', album.title));
-	const line = [album.artist, album.year, tracks.length ? `${tracks.length} tracks` : ''].filter(Boolean).join(' · ');
-	if (line) meta.append(el('p', 'catalog-sub', line));
+	// The artist is the way out of an album, so their name is the link to
+	// them rather than a fifth button wrapping onto a line of its own.
+	const sub = el('p', 'catalog-sub');
+	if (album.artist) {
+		const link = el('button', 'catalog-artist', album.artist);
+		link.type = 'button';
+		link.addEventListener('click', () => openArtist({ id: album.artistId, name: album.artist }));
+		sub.append(link);
+	}
+	const rest = [album.year, tracks.length ? `${tracks.length} tracks` : ''].filter(Boolean).join(' · ');
+	if (rest) sub.append(document.createTextNode(album.artist ? ` · ${rest}` : rest));
+	if (sub.childNodes.length) meta.append(sub);
 
 	const actions = el('div', 'catalog-actions');
 	const play = el('button', 'primary compact', 'Play');
@@ -478,33 +479,26 @@ function renderAlbumHeader(album, tracks, handle) {
 	shuffle.disabled = !tracks.length;
 	shuffle.addEventListener('click', () => startList(tracks, { shuffle: true }));
 
-	const queue = el('button', 'chip', 'Add to queue');
-	queue.type = 'button';
-	queue.disabled = !tracks.length;
-	queue.addEventListener('click', () => {
-		for (const track of tracks) queueAddEnd(track);
-		toast(`Queued ${tracks.length} tracks`, { icon: 'listAdd' });
+	const queue = iconButton('listAdd', {
+		label: 'Add to queue',
+		className: 'catalog-round',
+		onClick: () => {
+			for (const track of tracks) queueAddEnd(track);
+			toast(`Queued ${tracks.length} tracks`, { icon: 'listAdd' });
+		},
 	});
+	queue.disabled = !tracks.length;
 
 	// "All of it" is a question the head of a release can ask, exactly as a
 	// playlist can. An EP opens this same sheet, so this covers both.
-	const download = el('button', 'chip', 'Download');
-	download.type = 'button';
+	const download = iconButton('download', {
+		label: 'Download',
+		className: 'catalog-round',
+		onClick: () => runListDownload(tracks, { title: album.title || releaseLabel(album.releaseType, 'Album') }),
+	});
 	download.disabled = !tracks.length;
-	download.addEventListener('click', () => runListDownload(tracks, {
-		title: album.title || releaseLabel(album.releaseType, 'Album'),
-	}));
 
-	// An album opened from search names its artist but cannot be navigated to
-	// one, so the link is only offered when there is genuinely somewhere to go.
-	if (album.artistId || album.artist) {
-		const link = el('button', 'chip', album.artist || 'Artist');
-		link.type = 'button';
-		link.addEventListener('click', () => openArtist({ id: album.artistId, name: album.artist }));
-		actions.append(play, shuffle, queue, download, link);
-	} else {
-		actions.append(play, shuffle, queue, download);
-	}
+	actions.append(play, shuffle, queue, download);
 
 	head.append(art, meta, actions);
 	return head;
@@ -572,10 +566,11 @@ export function artistRow(seed) {
 	const cached = artist.art ? null : knownArtist(artist.name);
 	const art = document.createElement('img');
 	art.className = 'collection-art round';
-	art.src = artist.art || cached?.art || monogram(artist.name);
+	const known = artist.art || cached?.art || '';
+	art.src = known ? artworkFor(known, 56) : monogram(artist.name);
 	art.alt = '';
-	art.width = 44;
-	art.height = 44;
+	art.width = 56;
+	art.height = 56;
 	art.loading = 'lazy';
 	art.decoding = 'async';
 	art.referrerPolicy = 'no-referrer';
@@ -585,16 +580,19 @@ export function artistRow(seed) {
 	row.type = 'button';
 
 	const copy = el('span', 'collection-copy');
-	const detail = artist.subscribers
-		? `Artist · ${artist.subscribers} subscribers`
-		: (seed?.count ? `Artist · ${seed.count} track${seed.count === 1 ? '' : 's'}` : 'Artist');
+	const detail = artist.audience
+		? `Artist · ${artist.audience}`
+		: artist.subscribers
+			? `Artist · ${artist.subscribers} subscribers`
+			: (seed?.count ? `Artist · ${seed.count} track${seed.count === 1 ? '' : 's'}` : 'Artist');
 	copy.append(el('b', '', artist.name), el('span', '', detail));
 
 	const chevron = el('span', 'collection-go');
 	chevron.innerHTML = icon('chevronDown', 16);
 
 	row.append(art, copy, chevron);
-	row.addEventListener('click', () => openArtist({ ...artist, art: art.src }));
+	// The picture may have arrived since the row was drawn; a monogram is not one.
+	row.addEventListener('click', () => openArtist({ ...artist, art: /^https:/.test(art.src) ? art.src : '' }));
 	return row;
 }
 
@@ -610,7 +608,7 @@ export function hydrateArtistArt(container) {
 		for (const image of pending) {
 			if (image.dataset.artistName?.trim().toLowerCase() !== resolvedKey) continue;
 			if (!image.isConnected) continue;
-			image.src = entry.art;
+			image.src = artworkFor(entry.art, 56);
 			delete image.dataset.artistName;
 		}
 	});
@@ -624,10 +622,10 @@ export function albumRow(seed) {
 
 	const art = document.createElement('img');
 	art.className = 'collection-art';
-	art.src = album.art || './icon.svg';
+	art.src = album.art ? artworkFor(album.art, 56) : './icon.svg';
 	art.alt = '';
-	art.width = 44;
-	art.height = 44;
+	art.width = 56;
+	art.height = 56;
 	art.loading = 'lazy';
 	art.decoding = 'async';
 	art.referrerPolicy = 'no-referrer';

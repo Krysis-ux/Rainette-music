@@ -275,7 +275,8 @@ class TestLibraryDoesNotThrash:
 
         page.locator("[data-tab='library']").click()
         page.locator("#libraryModePlaylists").click()
-        page.locator(".collection-row").first.click()
+        # The list opens with its "New playlist" row; the first playlist follows.
+        page.locator(".playlist-row").first.click()
         page.locator("#libraryList .collection-title").wait_for(state="visible")
 
         # The computer re-indexes on its own; the phone is reading a playlist.

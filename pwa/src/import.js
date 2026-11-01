@@ -16,6 +16,7 @@
 import { el, toast } from './dom.js';
 import { openSheet } from './sheets.js';
 import { command, commandError } from './bridge.js';
+import { hasComputer } from './state.js';
 import { createLocalPlaylist } from './playlists.js';
 
 /* ── Parsing what was pasted ──────────────────────────────────────────────*/
@@ -138,6 +139,9 @@ async function matchOne(entry) {
 	const query = [entry.artist, entry.title].filter(Boolean).join(' ');
 	let songs = [];
 	try {
+		// The phone looks songs up itself, and asks for songs alone: a catalog
+		// search is three lookups, and a long playlist would be rate-limited.
+		if (!hasComputer()) throw new Error('songs only');
 		const result = await command('music_catalog_search', { query }, 30000);
 		songs = Array.isArray(result?.songs) ? result.songs : [];
 	} catch {
@@ -194,7 +198,7 @@ export function openImportPlaylist({ onImported } = {}) {
 		build: ({ body }) => {
 			body.append(el('h2', 'sheet-title sheet-drag', 'Import a playlist'));
 			body.append(el('p', 'sheet-message',
-				'Paste a track list, or pick a CSV exported from Spotify. Rainette looks each one up on your computer and builds a playlist from what it finds. Nothing is sent to Spotify and no login is needed.'));
+				`Paste a track list, or pick a CSV exported from Spotify. Rainette looks each one up ${hasComputer() ? 'on your computer' : 'on YouTube Music'} and builds a playlist from what it finds. Nothing is sent to Spotify and no login is needed.`));
 
 			const nameField = el('label', 'field');
 			nameField.append(el('span', '', 'Playlist name'));
@@ -221,7 +225,7 @@ export function openImportPlaylist({ onImported } = {}) {
 			fileRow.append(fileButton);
 
 			const status = el('p', 'sheet-message', '');
-			const go = el('button', 'primary', 'Find these on my computer');
+			const go = el('button', 'primary', hasComputer() ? 'Find these on my computer' : 'Find these songs');
 			go.type = 'button';
 
 			go.addEventListener('click', async () => {
@@ -239,7 +243,7 @@ export function openImportPlaylist({ onImported } = {}) {
 						status.textContent = `Looked up ${done} of ${total}…`;
 					});
 					if (!found.length) {
-						status.textContent = 'None of those could be found on your computer.';
+						status.textContent = hasComputer() ? 'None of those could be found on your computer.' : 'None of those could be found.';
 						go.disabled = false;
 						fileButton.disabled = false;
 						return;

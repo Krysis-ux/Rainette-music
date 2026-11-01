@@ -203,6 +203,22 @@ export async function nativeSearch(query) {
 	return Array.isArray(result?.songs) ? result.songs : [];
 }
 
+/** Save a file where the person chooses, through the phone's own save screen
+ *  (a page cannot, inside the app). Resolves true when it was saved. */
+export async function nativeSaveFile(blob, name) {
+	const data = await new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+		reader.onerror = () => reject(reader.error);
+		reader.readAsDataURL(blob);
+	});
+	// The bytes go first and on their own: the call that opens the save
+	// screen has to stay small (RainettePlayerPlugin.stageFile).
+	await call('stageFile', { data });
+	const result = await call('saveFile', { name, mime: blob.type || 'application/octet-stream' });
+	return Boolean(result?.saved);
+}
+
 /** A stream URL for the <audio> element, for queues the service does not own. */
 export function nativeResolve(track, forceRefresh = false) {
 	return call('resolve', { source_id: String(track?.source_id || ''), force_refresh: Boolean(forceRefresh) });

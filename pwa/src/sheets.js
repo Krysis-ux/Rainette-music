@@ -136,6 +136,9 @@ export function openSheet({ title = '', className = '', full = false, build }) {
 	return handle;
 }
 
+/* How far a sheet dims as it is pulled down, toward the page behind it. */
+const DRAG_MIN_OPACITY = 0.35;
+
 /* Drag-to-dismiss, starting only from the grabber, the header, or a body already
  * scrolled to the top. Otherwise a swipe meant to scroll a long queue drags the
  * sheet away instead.
@@ -164,21 +167,25 @@ function wireDrag(panel, handle) {
 
 	const height = () => panel.offsetHeight || window.innerHeight || 1;
 
+	/* Opacity is written directly, never through a custom property: a custom
+	 * property is inherited, so setting one on the panel restyled every node in
+	 * it on every frame. On a Pixel 3a that held Now Playing's pull-down at
+	 * ~15fps; written straight, the drag is a compositor-only change at 60. */
 	const paint = y => {
 		paintedY = y;
 		panel.style.transform = `translateY(${y}px)`;
-		panel.style.setProperty('--drag-fade', String(Math.max(0, 1 - y / height())));
+		panel.style.opacity = String(DRAG_MIN_OPACITY + (1 - DRAG_MIN_OPACITY) * Math.max(0, 1 - y / height()));
 	};
 
 	const clear = () => {
 		paintedY = 0;
 		panel.classList.remove('dragging');
 		panel.style.transform = '';
-		panel.style.removeProperty('--drag-fade');
+		panel.style.opacity = '';
 	};
 
 	/* The panel is where the finger left it, so the close continues from there.
-	 * `--drag-fade` is driven all the way to 0 on the way out — the old dismiss
+	 * The fade is driven all the way to 0 on the way out — the old dismiss
 	 * path returned before clearing it and closed at whatever opacity the drag
 	 * happened to leave behind. */
 	/* Under reduced motion `spring()` delivers its single frame and its onDone

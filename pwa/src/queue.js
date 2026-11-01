@@ -4,7 +4,7 @@
 
 import { el, icon, iconButton, tap, toast, flip, collapseAway } from './dom.js';
 import { dragGesture } from './gesture.js';
-import { state, trackKey, artworkUrl, artistName, totalDuration } from './state.js';
+import { state, trackKey, artworkUrl, artworkFor, artistName, totalDuration } from './state.js';
 import { artistLink } from './catalog.js';
 import { openSheet, confirmSheet } from './sheets.js';
 import {
@@ -100,7 +100,7 @@ function queueRow(track, index, { current = false, render } = {}) {
 	grip.setAttribute('aria-hidden', 'true');
 
 	const art = document.createElement('img');
-	art.src = artworkUrl(track);
+	art.src = artworkFor(artworkUrl(track), 42);
 	art.alt = '';
 	art.width = 42;
 	art.height = 42;

@@ -12,7 +12,7 @@ import UIKit
 /// change and each second while playing, `error` for a failure the player has
 /// given up on. Both carry the page's `generation`.
 @objc(RainettePlayerPlugin)
-public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin {
+public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPickerDelegate {
     public let identifier = "RainettePlayerPlugin"
     public let jsName = "RainettePlayer"
     public let pluginMethods: [CAPPluginMethod] = [
@@ -31,6 +31,8 @@ public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setSystemBarColor", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "stageFile", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "saveFile", returnType: CAPPluginReturnPromise),
     ]
 
     /// Must match PROTOCOL in pwa/src/native-engine.js and RainettePlayerPlugin.kt.
@@ -49,6 +51,8 @@ public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin {
     /// The page's event channel, and which page instance owns it. Main thread only.
     private var watchers: [CAPPluginCall] = []
     private var watchingPage = ""
+    /// The save waiting on the Files sheet, and the copy it is exporting. Main thread only.
+    private var pendingSave: (call: CAPPluginCall, file: URL)?
 
     override public func load() {
         // A page that was asleep missed events; give it the truth on return.
@@ -106,8 +110,11 @@ public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin {
         Task {
             do {
                 let stream = try await StreamResolver.shared.resolve(id, force: force)
+                // The User-Agent the address was issued to: the page's own
+                // downloads have to present it, as the player does.
                 call.resolve(["url": stream.url.absoluteString, "mime_type": "audio/mp4",
-                              "expires_at_ms": Int(stream.expiresAt.timeIntervalSince1970 * 1000)])
+                              "expires_at_ms": Int(stream.expiresAt.timeIntervalSince1970 * 1000),
+                              "user_agent": stream.userAgent])
             } catch {
                 reject(call, PlayerError.classify(error))
             }
@@ -194,6 +201,65 @@ public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin {
             self?.bridge?.statusBarStyle = light ? .darkContent : .lightContent
             call.resolve()
         }
+    }
+
+    /// Hold a file's bytes (base64) for `saveFile`, replacing any held before.
+    /// Two calls, as on Android, where a song carried in the call that opens
+    /// the save screen is more than the system allows a waiting app to keep.
+    @objc func stageFile(_ call: CAPPluginCall) {
+        guard let data = Data(base64Encoded: call.getString("data") ?? ""), !data.isEmpty else {
+            return reject(call, PlayerError(PlayerError.invalid, "Nothing to save."))
+        }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("staged", isDirectory: true)
+        do {
+            try? FileManager.default.removeItem(at: folder)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try data.write(to: folder.appendingPathComponent("file"), options: .atomic)
+            call.resolve()
+        } catch {
+            reject(call, PlayerError(PlayerError.invalid, "That file could not be prepared."))
+        }
+    }
+
+    /// Save the staged file where the person chooses, through Files. A web
+    /// view cannot save a page's file itself: a download link does nothing in
+    /// one. Resolves `{ saved }`, false when the sheet was dismissed.
+    @objc func saveFile(_ call: CAPPluginCall) {
+        let staged = FileManager.default.temporaryDirectory.appendingPathComponent("staged/file")
+        let unsafe = CharacterSet(charactersIn: "/\\:*?\"<>|")
+        let cleaned = (call.getString("name") ?? "").components(separatedBy: unsafe).joined(separator: "_")
+        let name = cleaned.isEmpty ? "Rainette file" : String(cleaned.prefix(120))
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let file = folder.appendingPathComponent(name)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FileManager.default.moveItem(at: staged, to: file)
+        } catch {
+            return reject(call, PlayerError(PlayerError.invalid, "Nothing to save."))
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let host = self.bridge?.viewController else { return call.resolve(["saved": false]) }
+            self.finishSave(saved: false)
+            self.pendingSave = (call, file)
+            let picker = UIDocumentPickerViewController(forExporting: [file], asCopy: true)
+            picker.delegate = self
+            host.present(picker, animated: true)
+        }
+    }
+
+    public func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        finishSave(saved: true)
+    }
+
+    public func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        finishSave(saved: false)
+    }
+
+    private func finishSave(saved: Bool) {
+        guard let pending = pendingSave else { return }
+        pendingSave = nil
+        try? FileManager.default.removeItem(at: pending.file.deletingLastPathComponent())
+        pending.call.resolve(["saved": saved])
     }
 
     // MARK: - Internals

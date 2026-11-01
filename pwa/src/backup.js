@@ -15,6 +15,7 @@ import { toast } from './dom.js';
 import { STORAGE } from './state.js';
 import { exportPrefs, importPrefs } from './prefs.js';
 import { exportLocalPlaylists, importLocalPlaylists } from './playlists.js';
+import { nativeAvailable, nativeSaveFile } from './native-engine.js';
 
 const FORMAT = 'rainette-phone-backup';
 const VERSION = 1;
@@ -44,11 +45,23 @@ export function buildBackup() {
 	};
 }
 
-export function downloadBackup() {
+export async function downloadBackup() {
 	const payload = JSON.stringify(buildBackup(), null, '\t');
 	const blob = new Blob([payload], { type: 'application/json' });
-	const url = URL.createObjectURL(blob);
 	const stamp = new Date().toISOString().slice(0, 10);
+
+	// A download link does nothing inside the app, which used to report a
+	// backup saved that was not. The phone's own save screen is used instead.
+	if (nativeAvailable()) {
+		try {
+			if (await nativeSaveFile(blob, `rainette-backup-${stamp}.json`)) toast('Backup saved', { icon: 'check' });
+		} catch (error) {
+			toast(error?.message || 'Couldn’t save the backup.', { icon: 'close' });
+		}
+		return;
+	}
+
+	const url = URL.createObjectURL(blob);
 
 	const link = document.createElement('a');
 	link.href = url;

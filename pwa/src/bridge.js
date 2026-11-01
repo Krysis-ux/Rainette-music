@@ -4,6 +4,9 @@
  * keeps the import graph acyclic: UI modules send commands, app.js renders UI.
  */
 
+import { hasComputer } from './state.js';
+import { phoneCommand } from './ytmusic.js';
+
 let sendCommand = async () => { throw new Error('Rainette is not connected to a computer.'); };
 let resolveMedia = value => value;
 let readEvents = async () => { throw new Error('Rainette is not connected to a computer.'); };
@@ -19,9 +22,15 @@ export function events({ after, wait, follow }) {
 	return readEvents({ after, wait, follow });
 }
 
-/** Invoke one allow-listed music command on the computer. */
+/** Invoke one allow-listed music command on the computer. The app answers the
+ *  catalog ones itself when no computer is paired, and when a paired one
+ *  cannot (ytmusic.js), so search, artists, albums and lyrics never depend on a
+ *  computer being awake. */
 export function command(type, payload = {}, timeoutMs) {
-	return sendCommand(type, payload, timeoutMs);
+	const phone = phoneCommand(type);
+	if (phone && !hasComputer()) return phone.run(payload);
+	const asked = sendCommand(type, payload, timeoutMs);
+	return phone?.fallback ? asked.catch(() => phone.run(payload)) : asked;
 }
 
 /* This page updates itself the moment it is deployed; the computer it talks to

@@ -7,10 +7,10 @@ import { $, el, icon, iconButton, tap, toast } from './dom.js';
 import { createSlider } from './slider.js';
 import { dragGesture } from './gesture.js';
 import { spring } from './motion.js';
-import { state, artworkAt, artistName, formatTime, REPEAT_LABEL } from './state.js';
+import { state, artworkUrl, artworkFor, artistName, formatTime, REPEAT_LABEL } from './state.js';
 import { openSheet } from './sheets.js';
 import { openQueueSheet } from './queue.js';
-import { openAddToPlaylist, openLyrics, openSleepTimer, openOutputPicker, openTrackMenu, sleepLabel, phoneOnly } from './extras.js';
+import { openAddToPlaylist, openLyrics, openSleepTimer, openOutputPicker, openTrackMenu, sleepLabel } from './extras.js';
 import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
 import {
 	setVolume, volume as currentVolume, boostAvailable, resumeContext, volumeMax, volumeIsAdjustable,
@@ -24,13 +24,28 @@ import {
 
 let openHandle = null;
 
-/* The cover is up to 340px across, on screens of 2-3x density. */
-const NOW_ART_PX = 720;
+/* The cover is up to 340px across; artworkFor scales that by the screen's
+ * density, so a 3x phone gets 1080px rather than a 720px cover stretched. */
+const NOW_ART_CSS_PX = 340;
 
 /* If the audio clock lands within this of where we asked, it has caught up and
  * the slider's settle window is released early rather than sat out. The window
  * itself belongs to the component. */
 const SEEK_SETTLE_TOLERANCE_S = 1.5;
+
+/* The card's cover, fetched and decoded while the song is still only in the
+ * mini bar, so opening the card does not decode a 1080px image mid-slide. */
+let warmed = null;
+
+export function warmNowPlaying(track) {
+	if (!track || isLocalTrack(track)) return;
+	const url = artworkFor(artworkUrl(track), NOW_ART_CSS_PX);
+	if (warmed?.src === url) return;
+	warmed = new Image();
+	warmed.referrerPolicy = 'no-referrer';
+	warmed.src = url;
+	warmed.decode?.().catch(() => { /* the card loads it itself */ });
+}
 
 export function isNowPlayingOpen() {
 	return !!openHandle?.root?.isConnected;
@@ -224,8 +239,7 @@ export function openNowPlaying() {
 				// phone's width truncates every one of them, so the label is the
 				// noun and the full phrase stays as the accessible name.
 				labelledAction('listAdd', 'Playlist', () => { const track = currentTrack(); if (track) openAddToPlaylist(track); }, 'Add to playlist'),
-				// Lyrics come from the computer; with none paired the slot goes.
-				phoneOnly() ? null : labelledAction('mic', 'Lyrics', () => { const track = currentTrack(); if (track) openLyrics(track); }),
+				labelledAction('mic', 'Lyrics', () => { const track = currentTrack(); if (track) openLyrics(track); }),
 				sleepAction,
 				labelledAction('more', 'More', () => { const track = currentTrack(); if (track) openTrackMenu(track); }),
 			].filter(Boolean));
@@ -236,11 +250,11 @@ export function openNowPlaying() {
 				const track = currentTrack();
 				if (!track) { handle.close(); return; }
 
-				const cover = isLocalTrack(track) ? localArtworkUrl(track) : artworkAt(track, NOW_ART_PX);
+				const cover = isLocalTrack(track) ? localArtworkUrl(track) : artworkFor(artworkUrl(track), NOW_ART_CSS_PX);
 				if (art.src !== cover) {
 					art.dataset.localArt = isLocalTrack(track) ? track.source_id : '';
 					art.src = cover;
-					washFromArtwork(art, handle.root);
+					washFromArtwork(art, handle.root, track);
 				}
 				title.textContent = track.title || 'Untitled';
 
@@ -329,18 +343,27 @@ function labelledAction(glyph, label, onClick, accessibleName = label) {
  *
  * Artwork is cross-origin and the canvas would taint, so this only runs when
  * the image opts in via CORS (both YouTube image hosts do); when it does not,
- * the card keeps the default ground and nothing looks broken. */
+ * the card keeps the default ground and nothing looks broken.
+ *
+ * It is read from the small thumbnail the rows already loaded, decoded off the
+ * main thread first: drawing the 1080px cover into a canvas decoded it on the
+ * main thread, 28ms in the middle of the card's slide-up on a Pixel 3a, for a
+ * picture that ends up 40px wide. */
 const WASH_PX = 40;
+const WASH_SOURCE_CSS_PX = 48;
 
-function washFromArtwork(image, root) {
+function washFromArtwork(image, root, track) {
 	// The previous song's backdrop stays until this one's is ready, rather
 	// than blinking to plain grey between them.
+	const cover = image.src;
+	const current = () => image.src === cover;
 	const source = new Image();
-	source.onerror = () => { if (source.src === image.src) root.style.setProperty('--now-art', 'none'); };
+	source.onerror = () => { if (current()) root.style.setProperty('--now-art', 'none'); };
 	source.crossOrigin = 'anonymous';
 	source.referrerPolicy = 'no-referrer';
-	source.onload = () => {
-		if (source.src !== image.src) return;
+	source.onload = async () => {
+		try { await source.decode(); } catch { /* drawn below either way */ }
+		if (!current()) return;
 		try {
 			const dot = document.createElement('canvas');
 			dot.width = dot.height = 1;
@@ -365,7 +388,7 @@ function washFromArtwork(image, root) {
 			root.style.setProperty('--now-art', 'none');
 		}
 	};
-	source.src = image.src;
+	source.src = isLocalTrack(track) ? cover : artworkFor(artworkUrl(track), WASH_SOURCE_CSS_PX);
 }
 
 /* Past this many pixels sideways, or thrown faster than this, a swipe on what

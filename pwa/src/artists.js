@@ -24,6 +24,9 @@ export function artistRef(artist) {
 		name: String(artist?.name || artist?.artist || 'Unknown artist'),
 		art: artist?.thumbnail_url || artist?.artwork_url || artist?.art || '',
 		subscribers: String(artist?.subscribers || ''),
+		// "70.6M monthly audience", as YouTube Music now counts an artist on
+		// the phone's own search; subscribers is the computer's count.
+		audience: String(artist?.audience || ''),
 	};
 }
 
@@ -164,6 +167,10 @@ export function artistsFromTracks(tracks, seed = []) {
  *  the songs it sent alongside. */
 export function searchArtists(fromComputer, songs) {
 	const supplied = (Array.isArray(fromComputer) ? fromComputer : []).map(artistRef);
+	// A real artist search beats guessing: names lifted from song credits are
+	// mostly features and remixers, which is what put "Mei Mei The Bunny"
+	// beside Laufey.
+	if (supplied.length) return supplied;
 	const seen = new Set(supplied.map(artist => key(artist.name)));
 
 	const derived = artistsFromTracks(songs)
