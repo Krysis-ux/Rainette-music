@@ -231,9 +231,30 @@ page built from the phone's own search, Play from it, the queue, a seek, and
 50 s in the background. The first run found the bug that the client check
 above fixes: "Get Lucky" failed with "The stream expired".
 
+### Releasing the iPhone app
+
+It is sideloaded, not sold: the App Store refuses an app that plays YouTube's
+audio itself (guideline 5.2.3), and TestFlight needs a paid developer account
+and the same review. So `.github/workflows/ios.yml` builds it unsigned, and
+AltStore, SideStore or Sideloadly signs it with the user's own Apple ID as it
+installs. A free Apple ID's install stops opening after 7 days until it is
+refreshed.
+
+1. Tag `main` with `ios-vX.Y.Z` (an iPhone-only release) or `vX.Y.Z` (with the
+   desktop and Android ones). The tag build verifies the bundle id, background
+   audio, arm64, the version and that the pages are this commit's, and keeps
+   `rainette-music-ios.ipa` and its `.sha256` as an artifact. It publishes
+   nothing.
+2. Create the GitHub release for that tag (`--prerelease` for an iPhone-only
+   one, so the desktop's "latest" does not move).
+3. `gh workflow run ios.yml --ref main -f run_id=<tag build run id> -f tag=<tag>`
+   re-checks the artifact and attaches it to the release.
+
 **Not run on an iPhone yet:** the lock screen and Control Center (the
 simulator would not lock), calls, Bluetooth, unplugged headphones, and
-everything on real hardware.
+everything on real hardware. Pairing with a computer from the iPhone app
+needs a desktop release that includes `NATIVE_IOS_ORIGIN` in `server.py`
+(after 0.5.2); until then the iPhone app plays on its own.
 
 ## Not done yet
 

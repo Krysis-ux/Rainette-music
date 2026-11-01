@@ -223,6 +223,16 @@ class TestTheIPhoneApp(unittest.TestCase):
         self.assertLessEqual(called, offered, called - offered)
 
 
+    def test_ci_builds_it_and_only_the_manual_job_publishes(self):
+        workflow = (ROOT / ".github" / "workflows" / "ios.yml").read_text(encoding="utf-8")
+        self.assertIn("CODE_SIGNING_ALLOWED=NO", workflow)
+        self.assertIn("UIBackgroundModes", workflow)
+        publish = workflow[workflow.index("  publish:"):]
+        self.assertEqual(workflow.count("gh release upload"), publish.count("gh release upload"))
+        self.assertIn("github.event_name == 'workflow_dispatch'", publish)
+        self.assertIn("sha256sum --check", publish)
+
+
 class TestPairingFromTheApp(unittest.TestCase):
     def test_the_computer_answers_the_apps_exact_origin_and_still_no_wildcard(self):
         import server
@@ -230,8 +240,16 @@ class TestPairingFromTheApp(unittest.TestCase):
         config = json.loads((MOBILE / "capacitor.config.json").read_text(encoding="utf-8"))
         origin = f"{config['server']['androidScheme']}://{config['server']['hostname']}"
         self.assertEqual(origin, server.NATIVE_APP_ORIGIN)
+        # Capacitor's iOS scheme, since iOS reserves https for the network.
+        self.assertNotIn("iosScheme", config["server"])
+        self.assertEqual(f"capacitor://{config['server']['hostname']}", server.NATIVE_IOS_ORIGIN)
         origins = server.configured_pwa_origins()
         self.assertIn(server.NATIVE_APP_ORIGIN, origins)
+        self.assertIn(server.NATIVE_IOS_ORIGIN, origins)
+        # Its scheme is allowed for that one origin only.
+        for lookalike in ("capacitor://evil.example", "capacitor://rainette.localhost.evil.example"):
+            with self.assertRaises(ValueError):
+                server.normalize_origin(lookalike)
         self.assertIn(server.normalize_origin(server.DEFAULT_PWA_URL), origins)
         self.assertFalse(any("*" in o for o in origins))
         # Plain localhost stays refused: any local web server could claim that one.
