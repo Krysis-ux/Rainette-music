@@ -38,15 +38,37 @@ struct PickingAudio {
     }
 
     @Test func theBestAACWinsAndWebMIsNeverChosen() {
-        let picked = StreamResolver.pickAudio([
+        let picked = StreamResolver.rankAudio([
             candidate("webm", 160_000), candidate("m4a", 48_000), candidate("m4a", 128_000), candidate("mp4", 900_000, video: true),
         ])
-        #expect(picked?.fileExtension == "m4a")
-        #expect(picked?.bitrate == 128_000)
+        #expect(picked.map(\.bitrate) == [128_000, 48_000])
     }
 
-    @Test func nothingPlayableIsNil() {
-        #expect(StreamResolver.pickAudio([candidate("webm", 160_000)]) == nil)
+    @Test func nothingPlayableIsEmpty() {
+        #expect(StreamResolver.rankAudio([candidate("webm", 160_000)]).isEmpty)
+    }
+
+    private func signed(_ client: String, _ bitrate: Int) -> AudioCandidate {
+        AudioCandidate(url: URL(string: "https://x.googlevideo.com/videoplayback?c=\(client)&b=\(bitrate)")!,
+                       fileExtension: "m4a", bitrate: bitrate, hasAudio: true, hasVideo: false)
+    }
+
+    @Test func aClientTheSourceRefusesIsPassedOverForOneItServes() async throws {
+        let ranked = [signed("TVHTML5", 130_000), signed("TVHTML5", 50_000), signed("VISIONOS", 128_000)]
+        var asked: [String] = []
+        let stream = try await StreamResolver.firstServed(ranked, now: Date()) { stream in
+            asked.append(stream.url.query ?? "")
+            return StreamResolver.client(of: stream.url) == "VISIONOS"
+        }
+        #expect(StreamResolver.client(of: stream.url) == "VISIONOS")
+        // The second TV address is never asked for: that client already said no.
+        #expect(asked == ["c=TVHTML5&b=130000", "c=VISIONOS&b=128000"])
+    }
+
+    @Test func everyClientRefusedIsAnExpiredStream() async {
+        await #expect(throws: PlayerError(PlayerError.expired)) {
+            try await StreamResolver.firstServed([self.signed("TVHTML5", 130_000)], now: Date()) { _ in false }
+        }
     }
 
     @Test func expiryComesFromTheAddressOrAConservativeDefault() {

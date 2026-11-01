@@ -179,6 +179,10 @@ over an iOS player, so `pwa/src/native-engine.js` runs unchanged.
   - `StreamResolver`: [YouTubeKit](https://github.com/alexeichhorn/YouTubeKit)
     0.4.10 (MIT), **local extractor only**. Its remote fallback is never
     enabled; `tests/test_mobile_policy.py` fails the build if it is.
+    YouTubeKit asks as several clients at once (a TV, a Vision Pro, the web)
+    and the source sometimes refuses one client's addresses for a song while
+    serving another's, so each client's best address is checked with a
+    one-byte read and a refused client is passed over.
   - `ChunkedLoader`: serves AVPlayer in 1 MB ranges through a private
     `rainette-yt://` address. Expired addresses are re-resolved at most twice;
     a lost connection is retried at 2, 4, 8, 16 and 30 s.
@@ -210,8 +214,26 @@ Accounts; a free one works), the phone plugged in once, trusted, and in
 Developer Mode. A free Apple ID's build stops opening after 7 days and is
 reinstalled from the Mac. It cannot go on the App Store (guideline 5.2.3).
 
-**Not run on an iPhone yet:** everything above that needs one, including the
-lock screen, background playback, calls, Bluetooth and the WebView itself.
+The whole app also runs on the iOS Simulator (Xcode → Settings → Components
+→ iOS, about 8 GB). `ios/App/AppUITests` drives it the way a person would:
+search "daft punk get lucky", play the first song, open Now Playing, seek to
+the middle, leave the app for 15 s, come back, skip. It asks the real source,
+so like `emulator_check.py` it is run by hand:
+
+```bash
+cd mobile/ios/App && TEST_RUNNER_RAINETTE_OUT=/tmp/rainette-ui xcodebuild test -project App.xcodeproj -scheme AppUITests -parallel-testing-enabled NO -destination 'platform=iOS Simulator,name=iPhone 17'
+```
+
+On 2026-11-01 on an iPhone 17 simulator (iOS 27.0) it passed: playing 8 s
+after the tap, seeked to 3:05 of 6:10, still playing after 15 s away (3:21 on
+return), and the next song played. By hand on the same simulator: an artist
+page built from the phone's own search, Play from it, the queue, a seek, and
+50 s in the background. The first run found the bug that the client check
+above fixes: "Get Lucky" failed with "The stream expired".
+
+**Not run on an iPhone yet:** the lock screen and Control Center (the
+simulator would not lock), calls, Bluetooth, unplugged headphones, and
+everything on real hardware.
 
 ## Not done yet
 
