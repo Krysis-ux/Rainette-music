@@ -24,11 +24,17 @@ final class PlaysOnThePhone: XCTestCase {
         // "Get Lucky" is the song the first iPhone build could not play.
         field.typeText("daft punk get lucky\n")
 
-        let song = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Play '")).firstMatch
-        wait("search results", timeout: 20) { song.exists }
+        // The search's own count, then a row on screen: Recently Played on the
+        // Home tab has "Play …" rows too, and tapping one of those taps nothing.
+        let count = app.staticTexts.matching(NSPredicate(format: "label MATCHES '[0-9]+ results?'")).firstMatch
+        wait("search results", timeout: 20) { count.exists }
+        let rows = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Play '")).allElementsBoundByIndex
+        let song = try XCTUnwrap(rows.first { $0.isHittable }, "no song row on screen")
         let started = Date()
         song.tap()
-        app.buttons["Open the now playing screen"].firstMatch.tap()
+        let open = app.buttons["Open the now playing screen"].firstMatch
+        XCTAssert(open.waitForExistence(timeout: 15), "the mini player never appeared")
+        open.tap()
         wait("the song to play") { (position()?.at ?? 0) >= 2 }
         note("playing after \(Int(Date().timeIntervalSince(started)))s")
 
