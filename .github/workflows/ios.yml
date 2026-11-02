@@ -160,5 +160,4 @@ jobs:
         run: |
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null \
             || { echo "::error::Release $TAG does not exist yet"; exit 1; }
-          gh release upload "$TAG" out/rainette-music-ios.ipa out/rainette-music-ios.ipa.sha256 \
-            --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$TAG" out/rainette-music-ios.ipa --repo "$GITHUB_REPOSITORY" --clobber

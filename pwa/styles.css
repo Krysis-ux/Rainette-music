@@ -1987,6 +1987,10 @@ img { -webkit-user-drag: none; }
    hovers; the list is mid-rearrangement, not being pointed at. */
 .queue-list.reordering .queue-row:not(.dragging) { transition: transform var(--med) var(--ease); }
 
+/* What is playing does not move, so its grip keeps the row's alignment and
+   nothing else. */
+.queue-row-grip.is-inert { visibility: hidden; }
+
 .queue-row-grip {
 	display: grid;
 	place-items: center;

@@ -419,7 +419,7 @@ export function actionSheet({ title = 'Actions', items = [] } = {}) {
 }
 
 /** A one-line confirmation, as a sheet. Resolves true when confirmed. */
-export function confirmSheet({ title, message, confirmLabel = 'Confirm', danger = false }) {
+export function confirmSheet({ title, message, confirmLabel = 'Confirm', cancelLabel = 'Cancel', danger = false }) {
 	return new Promise(resolve => {
 		let answer = false;
 		const handle = openSheet({
@@ -431,7 +431,7 @@ export function confirmSheet({ title, message, confirmLabel = 'Confirm', danger 
 				const confirm = el('button', `primary${danger ? ' danger' : ''}`, confirmLabel);
 				confirm.type = 'button';
 				confirm.addEventListener('click', () => { answer = true; close(); });
-				const cancel = el('button', 'ghost', 'Cancel');
+				const cancel = el('button', 'ghost', cancelLabel);
 				cancel.type = 'button';
 				cancel.addEventListener('click', close);
 				const row = el('div', 'sheet-buttons');

@@ -34,6 +34,9 @@ import {
 import { refreshDownloaded, onDownloadsChanged } from './src/downloads.js';
 import { nativeAvailable } from './src/native-engine.js';
 import { catalogSearch } from './src/ytmusic.js';
+import { checkForUpdate } from './src/update.js';
+
+const UPDATE_CHECK_DELAY_MS = 4000;
 import { describeError } from './src/source-provider.js';
 import { graphState, graphCostsBackgroundPlayback, volumeMax } from './src/audio.js';
 import { runListDownload } from './src/downloadmenu.js';
@@ -1680,6 +1683,8 @@ if (scanned) {
 	// The service may still be playing from before the app was swiped away.
 	restoreNative();
 	if (state.endpoint && state.token) testConnection({ reveal: false }).then(ok => { if (ok) refreshLibrary(); });
+	// After the first screen has settled, not in the way of it.
+	setTimeout(() => checkForUpdate().catch(() => { /* asked again next launch */ }), UPDATE_CHECK_DELAY_MS);
 } else if (state.endpoint && state.token) {
 	testConnection().then(ok => { if (ok) refreshLibrary(); });
 } else {

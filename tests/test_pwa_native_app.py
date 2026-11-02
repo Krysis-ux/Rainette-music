@@ -75,6 +75,7 @@ FAKE_BRIDGE = """
             return answer(200, id.startsWith('UC') ? ytm.artist : id.startsWith('VL') ? ytm.playlist : ytm.album);
         }
         if (url.includes('lrclib.net/api/get')) return answer(200, ytm.lyrics);
+        if (url.endsWith('/releases/latest')) return answer(200, ytm.latest);
         if (url.startsWith('https://stream.example/')) {
             // Ranged, as the audio host answers: a 2.5 MB file in 1 MB reads.
             const total = 2.5 * 1048576;
@@ -89,6 +90,7 @@ FAKE_BRIDGE = """
     };
     window.Capacitor = {
         isNativePlatform: () => true,
+        getPlatform: () => 'android',
         isPluginAvailable: name => name === 'RainettePlayer' || (name === 'CapacitorHttp' && Boolean(window.__ytm)),
         addListener(plugin, event, callback) {
             (listeners[event] ||= []).push(callback);
@@ -112,7 +114,9 @@ FAKE_BRIDGE = """
                 return Promise.reject(failure);
             }
             switch (method) {
-                case 'capabilities': return Promise.resolve({ search: true, playback: true, protocol });
+                case 'capabilities': return Promise.resolve({ search: true, playback: true, protocol,
+                    version: window.__appVersion || '', installs_updates: true });
+                case 'installUpdate': return Promise.resolve({});
                 case 'search': return Promise.resolve({ songs });
                 case 'play': {
                     // A newer play cancels one still loading, as the plugin does.
@@ -483,6 +487,28 @@ class TestTransport:
         assert not errors, errors
         page.close()
 
+
+    def test_a_song_drags_several_places_in_one_go(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        search_and_play(page)
+        page.click("#queueButton")
+        page.locator(".sheet-queue .queue-row").nth(3).wait_for()
+        page.wait_for_function("() => !document.querySelector('.sheet-queue .sheet-panel').getAnimations().length")
+        grip = page.locator(".sheet-queue .queue-row").nth(3).locator(".queue-row-grip").bounding_box()
+        first = page.locator(".sheet-queue .queue-row").nth(1).bounding_box()
+        x, y = grip["x"] + grip["width"] / 2, grip["y"] + grip["height"] / 2
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.move(x, y - 10, steps=2)
+        page.mouse.move(x, first["y"] + first["height"] / 2, steps=12)
+        page.mouse.up()
+        page.wait_for_function("() => window.__native.log.some(e => e.method === 'setQueue')")
+        order = [t["source_id"] for t in native_calls(page, "setQueue")[-1]["options"]["queue"]]
+        assert order == ["song0000001", "song0000004", "song0000002", "song0000003"]
+        assert page.locator(".sheet-queue .queue-row b").all_inner_texts() == ["Song 1", "Song 4", "Song 2", "Song 3"]
+        assert len(native_calls(page, "play")) == 1
+        assert not errors, errors
+        page.close()
 
 class TestFailures:
     @pytest.mark.parametrize("code, words", [
@@ -860,6 +886,35 @@ class TestTheAppsOwnCatalog:
         assert not errors, errors
         page.close()
 
+
+class TestUpdates:
+    LATEST = {"tag_name": "v0.5.4", "assets": [
+        {"name": "rainette-music-android.apk",
+         "browser_download_url": "https://github.com/Krysis-ux/Rainette-music/releases/download/v0.5.4/rainette-music-android.apk"}]}
+
+    def open_with(self, browser, static_server, version):
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.add_init_script("window.__appVersion = %s; window.__ytm = { latest: %s };"
+                             % (json.dumps(version), json.dumps(self.LATEST)))
+        page.add_init_script(FAKE_AUDIO_SCRIPT)
+        page.add_init_script(FAKE_BRIDGE)
+        page.goto(static_server + "index.html", wait_until="domcontentloaded")
+        return page
+
+    def test_a_newer_release_is_offered_and_installed(self, browser, static_server):
+        page = self.open_with(browser, static_server, "0.5.3")
+        page.get_by_role("button", name="Update").click(timeout=10_000)
+        page.wait_for_function("() => window.__native.log.some(e => e.method === 'installUpdate')")
+        assert native_calls(page, "installUpdate")[0]["options"]["url"].endswith("/v0.5.4/rainette-music-android.apk")
+        page.close()
+
+    def test_the_same_version_and_dev_builds_are_left_alone(self, browser, static_server):
+        for version in ("0.5.4", "0.6.0-dev"):
+            page = self.open_with(browser, static_server, version)
+            page.wait_for_timeout(5_000)
+            assert page.get_by_role("button", name="Update").count() == 0, version
+            assert native_calls(page, "installUpdate") == []
+            page.close()
 
 class TestSearchFollowsTyping:
     def test_results_arrive_once_typing_pauses(self, browser, static_server):

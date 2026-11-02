@@ -3,13 +3,17 @@ package com.krysisux.rainettemusic
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Base64
 import androidx.activity.result.ActivityResult
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -26,6 +30,8 @@ import com.getcapacitor.annotation.CapacitorPlugin
 import com.google.common.util.concurrent.ListenableFuture
 import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.Executors
 
 /** Final errors from the service's own player, with the cause chain intact. */
@@ -111,7 +117,47 @@ class RainettePlayerPlugin : Plugin() {
 
     @PluginMethod
     fun capabilities(call: PluginCall) {
-        call.resolve(JSObject().put("search", true).put("playback", true).put("protocol", PROTOCOL))
+        // A debug build is a separate app (.dev) that no release can update.
+        val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        call.resolve(JSObject().put("search", true).put("playback", true).put("protocol", PROTOCOL)
+            .put("version", context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty())
+            .put("installs_updates", !debuggable))
+    }
+
+    /**
+     * Download a release APK and hand it to the system installer, which asks
+     * the person to confirm. A sideloaded app has no store to update it, and
+     * Android never lets one replace itself silently. Only this project's own
+     * GitHub release asset is accepted.
+     */
+    @PluginMethod
+    fun installUpdate(call: PluginCall) {
+        val url = call.getString("url").orEmpty()
+        if (!UPDATE_URL.matches(url)) return call.reject("That isn't a Rainette release.", StreamResolver.INVALID)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+            activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")))
+            return call.reject("Allow Rainette to install updates, then tap Update again.", "needs_permission")
+        }
+        io.execute {
+            try {
+                val dir = File(context.cacheDir, "update").apply { deleteRecursively(); mkdirs() }
+                val apk = File(dir, "rainette-music-android.apk")
+                val connection = URL(url).openConnection() as HttpURLConnection
+                connection.connectTimeout = 15_000
+                connection.readTimeout = 30_000
+                connection.inputStream.use { input -> apk.outputStream().use { input.copyTo(it) } }
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apk)
+                val install = Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                activity.runOnUiThread {
+                    activity.startActivity(install)
+                    call.resolve()
+                }
+            } catch (e: Exception) {
+                call.reject("The update didn’t download. Try again.", "service_failed")
+            }
+        }
     }
 
     @PluginMethod
@@ -474,6 +520,8 @@ class RainettePlayerPlugin : Plugin() {
         /** Bumped when the page and the plugin must change together. */
         const val PROTOCOL = 1
         private const val STAGED_NAME = "file"
+        private val UPDATE_URL =
+            Regex("^https://github\\.com/Krysis-ux/Rainette-music/releases/download/v\\d+\\.\\d+\\.\\d+/rainette-music-android\\.apk$")
         const val CANCELED = "canceled"
         const val MISMATCH = "mismatch"
         const val SERVICE_FAILED = "service_failed"

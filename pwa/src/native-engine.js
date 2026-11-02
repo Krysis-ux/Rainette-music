@@ -203,6 +203,12 @@ export async function nativeSearch(query) {
 	return Array.isArray(result?.songs) ? result.songs : [];
 }
 
+/** The app's own version, and whether it can install a newer one itself. */
+export const nativeInfo = () => call('capabilities');
+
+/** Download a release APK and open the system installer (Android). */
+export const nativeInstallUpdate = url => call('installUpdate', { url });
+
 /** Save a file where the person chooses, through the phone's own save screen
  *  (a page cannot, inside the app). Resolves true when it was saved. */
 export async function nativeSaveFile(blob, name) {

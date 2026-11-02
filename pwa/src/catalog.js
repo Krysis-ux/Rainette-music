@@ -15,7 +15,7 @@ import { command, commandError } from './bridge.js';
 import { renderTracks } from './tracks.js';
 import { sortTracks, sortControl, RELEASE_SORTS, sortReleases } from './sorting.js';
 import { playTrack, queueAddEnd } from './player.js';
-import { rememberRecent, artistName, artworkFor } from './state.js';
+import { state, hasComputer, rememberRecent, artistName, artworkFor } from './state.js';
 import { artistRef, knownArtist, resolveArtistImages } from './artists.js';
 
 /* What to do once a track starts from inside a browse sheet. `nowplaying.js`
@@ -97,16 +97,24 @@ function catalogError(error) {
 
 /* ── Follow ───────────────────────────────────────────────────────────────*/
 
-let followed = null;   // null until the computer has been asked once
+let followed = null;   // null until asked once
+/* Who keeps the list: this phone, or the computer it is paired with. Pairing
+ * or unpairing changes it, and a list cached from the other one would show
+ * the wrong Following buttons and send an unfollow to the wrong place. */
+let followedFrom = '';
+
+const followStore = () => (hasComputer() ? state.endpoint : 'phone');
 
 export async function loadFollowed({ force = false } = {}) {
-	if (followed && !force) return followed;
+	const store = followStore();
+	if (followed && !force && followedFrom === store) return followed;
 	try {
 		const result = await command('music_followed_artists', {}, 12000);
 		followed = Array.isArray(result?.followed_artists) ? result.followed_artists : [];
 	} catch {
-		followed = followed || [];
+		followed = followedFrom === store ? (followed || []) : [];
 	}
+	followedFrom = store;
 	return followed;
 }
 

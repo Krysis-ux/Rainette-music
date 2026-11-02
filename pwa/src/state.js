@@ -17,6 +17,7 @@ export const STORAGE = {
 	artistArt: 'rainette.pwa.artist_art',
 	/* Artists followed in the app with no computer; a paired computer keeps its own. */
 	followed: 'rainette.pwa.followed_artists',
+	update: 'rainette.pwa.update',
 	/* Computers this phone has paired with, and their credentials — kept apart
 	 * on purpose, so reading or dumping the list cannot leak a token. */
 	sessions: 'rainette.pwa.sessions',

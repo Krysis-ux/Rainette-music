@@ -31,6 +31,7 @@ public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPicker
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setSystemBarColor", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "installUpdate", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stageFile", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "saveFile", returnType: CAPPluginReturnPromise),
     ]
@@ -86,7 +87,10 @@ public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPicker
     }
 
     @objc func capabilities(_ call: CAPPluginCall) {
-        call.resolve(["search": true, "playback": true, "protocol": Self.protocolVersion])
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+        // A sideloaded iPhone app cannot install a newer copy of itself.
+        call.resolve(["search": true, "playback": true, "protocol": Self.protocolVersion,
+                      "version": version, "installs_updates": false])
     }
 
     @objc func search(_ call: CAPPluginCall) {
@@ -202,6 +206,16 @@ public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPicker
             call.resolve()
         }
     }
+
+    /// A sideloaded iPhone app cannot install a newer copy of itself, so an
+    /// update opens the download page, where the sideloading app takes over.
+    @objc func installUpdate(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            UIApplication.shared.open(Self.downloadPage) { opened in call.resolve(["opened": opened]) }
+        }
+    }
+
+    static let downloadPage = URL(string: "https://rainette-music.vercel.app")!
 
     /// Hold a file's bytes (base64) for `saveFile`, replacing any held before.
     /// Two calls, as on Android, where a song carried in the call that opens

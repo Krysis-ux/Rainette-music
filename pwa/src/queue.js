@@ -1,6 +1,6 @@
 /* The queue sheet: what is playing, what is next, and reordering. Reorder is
- * long-press-drag on a grip, because "drag from anywhere" and "scroll" are the
- * same gesture on a phone. Remove is a swipe. */
+ * a drag on a grip, because "drag from anywhere" and "scroll" are the same
+ * gesture on a phone. Remove is a swipe. */
 
 import { el, icon, iconButton, tap, toast, flip, collapseAway } from './dom.js';
 import { dragGesture } from './gesture.js';
@@ -12,9 +12,10 @@ import {
 	queueClearUpNext, toggleShuffle, subscribe, isLinked,
 } from './player.js';
 
-/* Long enough that a scroll starting on the grip is not a reorder, short
- * enough that a deliberate press does not feel like waiting. */
-const HOLD_TO_REORDER_MS = 220;
+/* Near the sheet's top or bottom edge a dragged row scrolls the list, so a
+ * song can travel further than one screen. */
+const EDGE_PX = 64;
+const EDGE_SCROLL_PX = 9;
 /* How far left a row goes before releasing removes it. */
 const REMOVE_PX = 72;
 
@@ -48,9 +49,16 @@ export function openQueueSheet() {
 			const list = el('div', 'queue-list');
 			handle.body.append(head, list);
 
+			/* Playback reports every second, and redrawing the list on each
+			 * report rebuilt the row under a dragging finger, which ended the
+			 * drag. It redraws when the queue itself changes, never mid-drag. */
+			let drawn = '';
 			const render = () => {
 				const tracks = activeQueue();
 				const index = activeIndex();
+				const shape = `${index}|${state.shuffled}|${isLinked()}|${tracks.map(trackKey).join(',')}`;
+				if (shape === drawn || list.classList.contains('reordering')) return;
+				drawn = shape;
 				const upNext = tracks.slice(index + 1);
 				summary.textContent = tracks.length
 					? `${tracks.length} track${tracks.length === 1 ? '' : 's'}${totalDuration(tracks) ? ` · ${totalDuration(tracks)}` : ''}`
@@ -79,6 +87,7 @@ export function openQueueSheet() {
 			};
 
 			render();
+			list.addEventListener('reorderend', render);
 			// Stay live while open: a track ending must advance this list too.
 			const stop = subscribe(render);
 			new MutationObserver((_records, observer) => {
@@ -129,7 +138,9 @@ function queueRow(track, index, { current = false, render } = {}) {
 	row.append(grip, tapArea, remove);
 	// Reordering a queue the desktop owns would have to round-trip through it;
 	// the desktop is the authority there, so the grip is simply not offered.
-	if (!isLinked()) wireReorder(row, grip, index, render);
+	// What is playing stays where it is; only what comes next moves.
+	grip.classList.toggle('is-inert', current || isLinked());
+	if (!isLinked() && !current) wireReorder(row, grip, index, render);
 	wireSwipeToRemove(row, index, render);
 	return row;
 }
@@ -139,46 +150,85 @@ function removeAt(row, index, render) {
 	toast('Removed from queue', { icon: 'trash' });
 }
 
-/* Long-press the grip, then drag. The list scrolls normally until the press is
- * held, which is what keeps a one-handed scroll from reordering the queue by
- * accident. */
+/* Drag a row by its grip. The row follows the finger, the rows it passes step
+ * aside, and the queue changes once, on release. It used to move the song one
+ * place, end the drag and redraw, so getting a song from the bottom to "next"
+ * took a separate press per row. The grip owns its touch (touch-action: none),
+ * so no hold is needed; the rest of the row still scrolls the list. */
 function wireReorder(row, grip, index, render) {
-	let rowHeight = 1;
+	let others = [];
+	let pitch = 1;
+	let target = index;
+	let scroller = null;
+	let scrollStart = 0;
+	let travel = 0;
+	let edgeSpeed = 0;
+	let frame = 0;
 
-	const stop = () => {
-		row.classList.remove('dragging');
-		row.style.transform = '';
-		row.parentElement?.classList.remove('reordering');
+	const lift = () => {
+		scroller = row.closest('.sheet-body') || document.scrollingElement;
+		scrollStart = scroller.scrollTop;
+		others = [...row.parentElement.querySelectorAll('.queue-row:not(.is-current)')].filter(other => other !== row);
+		// Row to row, gap included, read from the list rather than assumed.
+		const next = row.nextElementSibling?.classList.contains('queue-row') ? row.nextElementSibling : row.previousElementSibling;
+		pitch = Math.abs((next?.getBoundingClientRect().top ?? 0) - row.getBoundingClientRect().top) || row.offsetHeight || 1;
+		row.classList.add('dragging');
+		row.parentElement.classList.add('reordering');
+		tap(12);
 	};
 
-	const reorder = dragGesture(grip, {
-		axis: 'y',
-		holdMs: HOLD_TO_REORDER_MS,
-		// The hold, not a distance, is what arms this one — moving first is a
-		// scroll and abandons the gesture outright.
-		holdToDrag: true,
-		holdSlop: 8,
-		onStart: () => { rowHeight = row.getBoundingClientRect().height || 1; },
-		onHold: () => {
-			tap(12);
-			row.classList.add('dragging');
-			row.parentElement?.classList.add('reordering');
-		},
-		onMove: ({ dy }) => {
-			row.style.transform = `translateY(${dy}px)`;
-			const steps = Math.round(dy / rowHeight);
-			if (!steps) return;
-			const target = index + steps;
-			if (target < 0 || target >= activeQueue().length) return;
+	const paint = () => {
+		const moved = travel + scroller.scrollTop - scrollStart;
+		row.style.transform = `translateY(${moved}px)`;
+		target = Math.max(activeIndex() + 1, Math.min(activeQueue().length - 1, index + Math.round(moved / pitch)));
+		for (const other of others) {
+			const at = Number(other.dataset.queueIndex);
+			const shift = (target > index && at > index && at <= target) ? -pitch
+				: (target < index && at < index && at >= target) ? pitch : 0;
+			other.style.transform = shift ? `translateY(${shift}px)` : '';
+		}
+	};
+
+	const scrollAtEdge = () => {
+		frame = 0;
+		if (!edgeSpeed) return;
+		scroller.scrollTop += edgeSpeed;
+		paint();
+		frame = requestAnimationFrame(scrollAtEdge);
+	};
+
+	const drop = commit => {
+		cancelAnimationFrame(frame);
+		frame = 0;
+		edgeSpeed = 0;
+		if (!row.classList.contains('dragging')) return;
+		for (const other of others) other.style.transform = '';
+		row.style.transform = '';
+		row.classList.remove('dragging');
+		const list = row.parentElement;
+		list?.classList.remove('reordering');
+		if (commit && target !== index) {
 			queueMove(index, target);
-			stop();
-			// The re-render below replaces this very row, so the gesture is
-			// ended explicitly rather than left captured on a detached node.
-			reorder.cancel();
-			render?.();
+			tap(6);
+		}
+		// Anything the list skipped while the row was held is drawn now.
+		list?.dispatchEvent(new Event('reorderend'));
+	};
+
+	dragGesture(grip, {
+		axis: 'y',
+		threshold: 3,
+		onMove: ({ dy, event }) => {
+			if (!row.classList.contains('dragging')) lift();
+			travel = dy;
+			const edges = scroller.getBoundingClientRect();
+			edgeSpeed = event.clientY < edges.top + EDGE_PX ? -EDGE_SCROLL_PX
+				: event.clientY > edges.bottom - EDGE_PX ? EDGE_SCROLL_PX : 0;
+			if (edgeSpeed && !frame) frame = requestAnimationFrame(scrollAtEdge);
+			paint();
 		},
-		onEnd: stop,
-		onCancel: stop,
+		onEnd: () => drop(true),
+		onCancel: () => drop(false),
 	});
 }
 
