@@ -215,10 +215,17 @@ struct TheSongsLength {
     /// The source's own layout: ftyp, a moov whose mvhd holds the whole
     /// length, a sidx of fragments, then the fragments.
     private func file(mvhd: UInt64, fragments: [UInt64], timescale: UInt64 = 44_100) -> Data {
-        let header = box("mvhd", [0, 0, 0, 0] + be(0, 4) + be(0, 4) + be(timescale, 4) + be(mvhd, 4) + [UInt8](repeating: 0, count: 80))
-        var index = [0, 0, 0, 0] + be(1, 4) + be(timescale, 4) + be(0, 4) + be(0, 4) + be(0, 2) + be(UInt64(fragments.count), 2)
-        for duration in fragments { index += be(1000, 4) + be(duration, 4) + be(0x9000_0000, 4) }
-        return Data(box("ftyp", Array("dash".utf8) + be(0, 4)) + box("moov", header) + box("sidx", index) + box("moof", [0, 0, 0, 0]))
+        // Joined part by part: one long `+` chain is more than CI's compiler
+        // will type-check in time.
+        let headerParts: [[UInt8]] = [be(0, 4), be(0, 4), be(0, 4), be(timescale, 4), be(mvhd, 4), [UInt8](repeating: 0, count: 80)]
+        let header = box("mvhd", headerParts.flatMap { $0 })
+        var indexParts: [[UInt8]] = [be(0, 4), be(1, 4), be(timescale, 4), be(0, 4), be(0, 4), be(0, 2), be(UInt64(fragments.count), 2)]
+        for duration in fragments { indexParts += [be(1000, 4), be(duration, 4), be(0x9000_0000, 4)] }
+        let boxes: [[UInt8]] = [
+            box("ftyp", Array("dash".utf8) + be(0, 4)), box("moov", header),
+            box("sidx", indexParts.flatMap { $0 }), box("moof", be(0, 4)),
+        ]
+        return Data(boxes.flatMap { $0 })
     }
 
     @Test func theFragmentIndexIsTheLength() {
