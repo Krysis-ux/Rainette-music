@@ -200,6 +200,20 @@ function albumFromCard(card, artist, fallbackType) {
 	});
 }
 
+/** One card in an artist page's "Fans might also like". */
+function artistFromCard(card) {
+	const id = String(dig(card, 'navigationEndpoint', 'browseEndpoint', 'browseId') || '');
+	const name = text(dig(card, 'title', 'runs'));
+	if (!id.startsWith('UC') || !name) return null;
+	const audience = text(dig(card, 'subtitle', 'runs'));
+	return {
+		id, name,
+		thumbnail_url: thumbOf(card?.thumbnailRenderer),
+		audience: / audience$/.test(audience) ? audience.replace(/ audience$/, ' listeners') : '',
+		result_type: 'artist',
+	};
+}
+
 function releaseShape({ id, title, artist, artistId, year, type, art }) {
 	return {
 		id, browse_id: id, title, artist, artist_id: artistId || '', year,
@@ -256,7 +270,7 @@ export function parseArtistPage(answer, seed = {}) {
 
 	// `more` is where each shelf's full list lives, when it has more than the
 	// page shows: YouTube Music's artist page lists ten singles of thirty.
-	const page = { artist, songs: [], songsBrowseId: '', albums: [], singles: [], videos: [], more: {} };
+	const page = { artist, songs: [], songsBrowseId: '', albums: [], singles: [], videos: [], related: [], more: {} };
 	for (const section of sections) {
 		const shelf = section.musicShelfRenderer;
 		if (shelf) {
@@ -275,7 +289,8 @@ export function parseArtistPage(answer, seed = {}) {
 		if (kind && more?.browseId) {
 			page.more[kind] = more.params ? { browseId: String(more.browseId), params: String(more.params) } : { browseId: String(more.browseId) };
 		}
-		if (kind === 'albums') page.albums = cards.map(card => albumFromCard(card, artist, 'Album')).filter(Boolean);
+		if (title.includes('also like')) page.related = cards.map(artistFromCard).filter(Boolean);
+		else if (kind === 'albums') page.albums = cards.map(card => albumFromCard(card, artist, 'Album')).filter(Boolean);
 		else if (kind === 'singles') page.singles = cards.map(card => albumFromCard(card, artist, 'Single')).filter(Boolean);
 		else if (kind === 'videos') page.videos = cards.map(card => songFromCard(card, artist)).filter(Boolean);
 	}
@@ -419,6 +434,26 @@ async function fullArtistCatalog({ artist_id: id = '', name = '', thumbnail_url:
 		tracks(page.more.videos, page.videos).catch(() => page.videos),
 	]);
 	return { artist, songs, albums, singles, videos, source: 'on-device' };
+}
+
+/** The artist page, for Home: their top songs and who their fans also play.
+ *  One request, where the full catalog is several; `allSongs` adds one more
+ *  for the whole songs list rather than the page's five. */
+export async function artistHighlights({ artist_id: id = '', name = '' } = {}, { allSongs = false } = {}) {
+	let seed = { id: String(id || ''), name: String(name || '') };
+	if (!seed.id) {
+		const found = await findArtist(seed.name);
+		if (!found) throw catalogFailure(`Couldn’t find ${seed.name || 'that artist'}.`);
+		seed = { id: found.id, name: found.name, art: found.thumbnail_url };
+	}
+	const page = parseArtistPage(await innertube('browse', { browseId: seed.id }), seed);
+	const hint = { artist: page.artist.name, artistId: page.artist.id };
+	const songs = allSongs && page.songsBrowseId
+		? await innertube('browse', { browseId: page.songsBrowseId })
+			.then(answer => parseTrackPage(answer).rows.map(row => songFromRow(row, hint)).filter(Boolean))
+			.catch(() => [])
+		: [];
+	return { artist: page.artist, songs: songs.length ? songs : page.songs, related: page.related };
 }
 
 /** An album's tracks, as `music_album_tracks` returns them. */

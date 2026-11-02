@@ -270,7 +270,7 @@ export function openArtist(seed) {
 
 /* A placeholder about the artist rather than the app: their initial on a
  * neutral disc that reads in both themes. */
-function monogram(name) {
+export function monogram(name) {
 	const letter = (String(name || '').trim()[0] || '?').toUpperCase()
 		.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
 	const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 88 88">'
@@ -616,7 +616,7 @@ export function hydrateArtistArt(container) {
 		for (const image of pending) {
 			if (image.dataset.artistName?.trim().toLowerCase() !== resolvedKey) continue;
 			if (!image.isConnected) continue;
-			image.src = artworkFor(entry.art, 56);
+			image.src = artworkFor(entry.art, image.width || 56);
 			delete image.dataset.artistName;
 		}
 	});

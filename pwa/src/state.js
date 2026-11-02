@@ -11,6 +11,11 @@ export const STORAGE = {
 	repeat: 'rainette.pwa.repeat',
 	linked: 'rainette.pwa.linked',
 	plays: 'rainette.pwa.plays',
+	/* Every song this phone has played, with how often and when last: what
+	 * Home's top artists, songs and albums are made of. */
+	history: 'rainette.pwa.history',
+	/* Home's artist picks from YouTube Music, kept a few hours. */
+	homePicks: 'rainette.pwa.home_picks',
 	theme: 'rainette.pwa.theme',
 	accent: 'rainette.pwa.accent',
 	prefs: 'rainette.pwa.prefs',
@@ -203,9 +208,33 @@ export function localPlayCount(key) {
 export function countPlay(track) {
 	const key = trackKey(track);
 	if (!key) return;
+	// First, while the history it reads still predates this play.
+	recordPlay(track);
 	const counts = readPlayCounts();
 	counts[key] = (Number(counts[key]) || 0) + 1;
 	try { localStorage.setItem(STORAGE.plays, JSON.stringify(counts)); } catch { /* storage quota */ }
+}
+
+// ponytail: kept by recency, so a favourite unplayed for 300 songs drops out.
+const HISTORY_LIMIT = 300;
+
+/** `[{ track, plays, last }]`, most recently played first. */
+export function readHistory() {
+	const kept = readJson(STORAGE.history, null);
+	if (Array.isArray(kept)) return kept.filter(entry => entry?.track);
+	// Phones from before this kept the recent list and bare counts only.
+	const now = Date.now();
+	return readRecent().map((track, at) => ({
+		track, plays: localPlayCount(trackKey(track)) || 1, last: now - at * 60000,
+	}));
+}
+
+function recordPlay(track) {
+	const key = trackKey(track);
+	const history = readHistory();
+	const kept = history.find(entry => trackKey(entry.track) === key);
+	const rest = history.filter(entry => entry !== kept);
+	persist(STORAGE.history, [{ track, plays: (Number(kept?.plays) || 0) + 1, last: Date.now() }, ...rest].slice(0, HISTORY_LIMIT));
 }
 
 export function formatTime(seconds) {

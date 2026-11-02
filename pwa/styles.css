@@ -211,6 +211,10 @@ html, body {
 	background: var(--bg);
 }
 
+/* An app does not zoom: no double-tap zoom here, no pinch through the
+   viewport tag, and app.js stops the pinch Safari allows regardless. */
+html { touch-action: manipulation; }
+
 body {
 	font-family: var(--font);
 	color: var(--text);
@@ -391,6 +395,219 @@ h2 {
 	from { opacity: 0; transform: translateY(7px); }
 	to   { opacity: 1; transform: none; }
 }
+
+/* ── Home ─────────────────────────────────────────────────────────────── */
+
+/* The song in the player over its own colours, as the Mac app's Continue card. */
+.home-hero {
+	position: relative;
+	isolation: isolate;
+	overflow: hidden;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 12px;
+	margin: 16px 0 4px;
+	padding: 14px 16px 14px 14px;
+	border-radius: 20px;
+	color: #fff;
+	background: #1c1c1e;
+	box-shadow: 0 14px 34px oklch(0% 0 0 / 0.32);
+}
+
+.home-hero-backdrop {
+	position: absolute;
+	inset: -30%;
+	z-index: -2;
+	width: 160%;
+	height: 160%;
+	object-fit: cover;
+	filter: blur(34px) saturate(1.6);
+	opacity: 0.9;
+}
+
+.home-hero::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	background: linear-gradient(100deg, oklch(0% 0 0 / 0.55), oklch(0% 0 0 / 0.25));
+}
+
+.home-hero-open {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: center;
+	gap: 14px;
+	min-width: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	text-align: left;
+}
+
+.home-hero-art {
+	width: 104px;
+	height: 104px;
+	border-radius: 10px;
+	object-fit: cover;
+	background: oklch(100% 0 0 / 0.1);
+	box-shadow: 0 10px 24px oklch(0% 0 0 / 0.4);
+	transition: transform var(--fast) var(--ease);
+}
+
+.home-hero-open:active .home-hero-art { transform: scale(0.97); }
+
+.home-hero-copy { display: grid; gap: 3px; min-width: 0; }
+
+.home-hero-eyebrow {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	opacity: 0.75;
+}
+
+.home-hero-copy b {
+	display: -webkit-box;
+	overflow: hidden;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	font-family: var(--font-display);
+	font-size: 20px;
+	font-weight: 700;
+	line-height: 1.15;
+	letter-spacing: -0.015em;
+}
+
+.home-hero-artist {
+	overflow: hidden;
+	font-size: 14px;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	opacity: 0.8;
+}
+
+.home-hero-play {
+	display: grid;
+	place-items: center;
+	width: 52px;
+	height: 52px;
+	padding: 0;
+	border: 0;
+	border-radius: 50%;
+	color: #000;
+	background: #fff;
+	box-shadow: 0 6px 16px oklch(0% 0 0 / 0.35);
+	transition: transform var(--fast) var(--ease);
+}
+
+.home-hero-play:active { transform: scale(0.92); }
+
+/* Favourites, two to a row, as Spotify opens. */
+.quick-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+	margin: 14px 0 0;
+}
+
+.quick-tile {
+	display: grid;
+	grid-template-columns: 56px minmax(0, 1fr);
+	align-items: center;
+	gap: 10px;
+	height: 56px;
+	overflow: hidden;
+	padding: 0 10px 0 0;
+	border: 0;
+	border-radius: 8px;
+	background: var(--surface);
+	color: var(--text);
+	text-align: left;
+	transition: transform var(--fast) var(--ease), background var(--fast) var(--ease);
+}
+
+.quick-tile:active { transform: scale(0.97); background: var(--surface-high); }
+.quick-tile img { width: 56px; height: 56px; object-fit: cover; background: var(--surface-high); }
+.quick-tile img.round { width: 44px; height: 44px; margin-left: 6px; border-radius: 50%; }
+
+.quick-tile b {
+	display: -webkit-box;
+	overflow: hidden;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	font-size: 13px;
+	font-weight: 650;
+	line-height: 1.25;
+}
+
+/* Shelves run off the edge of the page, so it is plain there is more. */
+.home-shelf .section-head { margin: 30px 0 12px; }
+
+.shelf-row {
+	display: grid;
+	grid-auto-flow: column;
+	grid-auto-columns: 148px;
+	gap: 14px;
+	margin: 0 -18px;
+	padding: 0 18px 6px;
+	overflow-x: auto;
+	overscroll-behavior-x: contain;
+	scroll-snap-type: x mandatory;
+	scroll-padding-inline: 18px;
+	scrollbar-width: none;
+}
+
+.shelf-row::-webkit-scrollbar { display: none; }
+
+.shelf-card {
+	display: grid;
+	align-content: start;
+	gap: 3px;
+	min-width: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--text);
+	text-align: left;
+	scroll-snap-align: start;
+}
+
+.shelf-art {
+	width: 148px;
+	height: 148px;
+	margin-bottom: 6px;
+	border-radius: 10px;
+	object-fit: cover;
+	background: var(--surface);
+	box-shadow: 0 8px 20px oklch(0% 0 0 / 0.25);
+	transition: transform var(--fast) var(--ease);
+}
+
+.shelf-art.round { border-radius: 50%; }
+.shelf-card:active .shelf-art { transform: scale(0.96); }
+.shelf-card.artist { justify-items: center; text-align: center; }
+
+.shelf-mark {
+	display: grid;
+	place-items: center;
+	color: var(--text-muted);
+	font-size: 52px;
+	font-weight: 700;
+}
+
+.shelf-card b,
+.shelf-card span:not(.shelf-mark) {
+	max-width: 100%;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.shelf-card b { font-size: 14px; font-weight: 600; }
+.shelf-card span:not(.shelf-mark) { color: var(--text-muted); font-size: 12.5px; }
 
 /* ── Pairing ──────────────────────────────────────────────────────────── */
 
@@ -1972,9 +2189,10 @@ img { -webkit-user-drag: none; }
 .queue-row {
 	position: relative;
 	display: grid;
-	grid-template-columns: auto minmax(0, 1fr) auto;
+	grid-template-columns: minmax(0, 1fr) auto auto;
 	align-items: center;
-	gap: 8px;
+	gap: 4px;
+	padding-left: 6px;
 	border-radius: var(--r-sm);
 	transform: translateX(var(--swipe, 0));
 	transition: transform var(--med) var(--ease), background var(--fast) var(--ease);
@@ -1994,12 +2212,14 @@ img { -webkit-user-drag: none; }
 .queue-row-grip {
 	display: grid;
 	place-items: center;
-	width: 34px;
-	height: 46px;
+	width: 44px;
+	height: 56px;
 	color: var(--text-muted);
 	touch-action: none;
 	cursor: grab;
 }
+
+.queue-row.dragging .queue-row-grip { color: var(--text); }
 
 .queue-row-tap {
 	position: relative;

@@ -13,6 +13,8 @@ mobile/AUDIT.md for what has and has not been run on one.
 """
 
 import json
+import plistlib
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -514,6 +516,26 @@ class TestTransport:
         assert not errors, errors
         page.close()
 
+    def test_holding_a_song_lifts_it_and_a_drag_moves_it(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server, touch=True)
+        search_and_play(page)
+        page.click("#queueButton")
+        rows = page.locator(".sheet-queue .queue-row")
+        rows.nth(3).wait_for()
+        page.wait_for_function("() => !document.querySelector('.sheet-queue .sheet-panel').getAnimations().length")
+        pitch = rows.nth(3).bounding_box()["y"] - rows.nth(2).bounding_box()["y"]
+        # The song itself, not the handle: a drag there is a scroll unless held.
+        touch_hold_drag(page, rows.nth(3).locator(".queue-row-tap"), -2 * pitch)
+        page.wait_for_function("() => window.__native.log.some(e => e.method === 'setQueue')")
+        order = [t["source_id"] for t in native_calls(page, "setQueue")[-1]["options"]["queue"]]
+        assert order == ["song0000001", "song0000004", "song0000002", "song0000003"]
+        # Letting go is not a tap: the lifted song must not start playing, and
+        # the drag must not have pulled the sheet away with it.
+        assert len(native_calls(page, "play")) == 1
+        assert page.locator(".sheet-queue").count() == 1
+        assert not errors, errors
+        page.close()
+
 class TestFailures:
     @pytest.mark.parametrize("code, words", [
         ("region", "available in your country"),
@@ -631,6 +653,21 @@ def touch_drag(page, selector, dx, steps=12):
     cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": point(x)})
     for i in range(1, steps + 1):
         cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": point(x + dx * i / steps)})
+        page.wait_for_timeout(16)
+    cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+
+
+def touch_hold_drag(page, locator, dy, hold_ms=450, steps=14):
+    """Press and hold, then drag, with real touches: how a song is lifted out
+    of the queue in Apple Music and Spotify."""
+    box = locator.bounding_box()
+    x, y = box["x"] + box["width"] * 0.5, box["y"] + box["height"] / 2
+    cdp = page.context.new_cdp_session(page)
+    point = lambda py: [{"x": x, "y": py}]
+    cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": point(y)})
+    page.wait_for_timeout(hold_ms)
+    for i in range(1, steps + 1):
+        cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": point(y + dy * i / steps)})
         page.wait_for_timeout(16)
     cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
 
@@ -764,6 +801,15 @@ class TestTheAppsOwnCatalog:
         assert song["metadata"]["artist_id"] == "UCJtROTPxo3qnEzww8JyDxuA"
         assert song["metadata"]["album"] == {"name": "Bewitched", "id": "MPREb_oaeWh3ahKZ1"}
         assert song["thumbnail_url"].startswith("https://")
+        assert not errors, errors
+        page.close()
+
+    def test_an_artist_page_names_who_their_fans_also_like(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server, catalog=True)
+        related = page.evaluate("""async () => (await import('./src/ytmusic.js')).parseArtistPage(window.__ytm.artist).related""")
+        assert [artist["name"] for artist in related] == ["grentperez", "Cody Fry", "Lyn Lapid"]
+        assert all(artist["id"].startswith("UC") and artist["thumbnail_url"].startswith("https://") for artist in related)
+        assert related[0]["audience"].endswith("monthly listeners")
         assert not errors, errors
         page.close()
 
@@ -910,6 +956,112 @@ class TestTheAppsOwnCatalog:
         assert requests == []
         assert not errors, errors
         page.close()
+
+
+LAUFEY = "UCJtROTPxo3qnEzww8JyDxuA"
+PLAYED = [  # title, artist, artist id, album, album id, plays, minutes ago
+    ("Valentine", "Laufey", LAUFEY, "Everything I Know About Love", "MPREb_eikal", 9, 5),
+    ("Silver Lining", "Laufey", LAUFEY, "A Matter of Time", "MPREb_amot", 6, 10),
+    ("Fragile", "Laufey", LAUFEY, "Everything I Know About Love", "MPREb_eikal", 4, 30),
+    ("Coffee", "beabadoobee", "UCbeabadoobee0000000000", "Patched Up", "MPREb_patch", 5, 60),
+    ("Sofia", "Clairo", "UCclairo000000000000000", "Immunity", "MPREb_immun", 2, 90),
+    ("Glue Song", "beabadoobee", "UCbeabadoobee0000000000", "Beatopia", "MPREb_beato", 1, 120),
+]
+
+
+def played_history():
+    now = int(time.time() * 1000)
+    history = []
+    for n, (title, artist, artist_id, album, album_id, plays, ago) in enumerate(PLAYED, 1):
+        track = {"source": "youtube", "source_id": f"hist{n:07d}", "title": title, "artist": artist,
+                 "duration_s": 200, "thumbnail_url": f"https://lh3.googleusercontent.com/{n}=w120-h120",
+                 "metadata": {"artists": [{"name": artist, "id": artist_id}], "artist_id": artist_id,
+                              "album": {"name": album, "id": album_id}, "album_name": album, "album_id": album_id}}
+        history.append({"track": track, "plays": plays, "last": now - ago * 60000})
+    return history
+
+
+class TestHome:
+    """Home is the favourites and the picks, not only a list of what played last."""
+
+    @staticmethod
+    def open_home(browser, static_server):
+        page, errors, requests = open_app(browser, static_server, catalog=True)
+        history = played_history()
+        page.evaluate("""history => {
+            localStorage.setItem('rainette.pwa.history', JSON.stringify(history));
+            localStorage.setItem('rainette.pwa.recent', JSON.stringify(history.map(entry => entry.track)));
+        }""", history)
+        page.reload(wait_until="domcontentloaded")
+        page.click('#tabBar [data-tab="home"]')
+        return page, errors, requests
+
+    def test_home_leads_with_your_favourites_and_artists_to_try(self, browser, static_server):
+        page, errors, requests = self.open_home(browser, static_server)
+        hero = page.locator("#homeHero").inner_text()
+        assert "jump back in" in hero.lower()
+        assert "Valentine" in hero
+        assert page.locator(".quick-tile b").all_inner_texts() == [
+            "Laufey", "beabadoobee", "Everything I Know About Love", "A Matter of Time", "Valentine", "Silver Lining"]
+        # The picks come from the artist pages of the artists played most.
+        page.locator('[data-shelf="picks"]').wait_for()
+        assert page.locator(".home-shelf h2").all_inner_texts() == [
+            "Your Top Artists", "On Repeat", "Artists You Might Like", "More from Laufey", "Your Top Albums"]
+        assert page.locator('[data-shelf="picks"] .shelf-card b').all_inner_texts() == ["grentperez", "Cody Fry", "Lyn Lapid"]
+        top = page.locator('[data-shelf="top-artists"] .shelf-card').first.inner_text()
+        assert "Laufey" in top and "19 plays" in top
+        assert page.locator('[data-shelf="top-albums"] .shelf-card b').first.inner_text() == "Everything I Know About Love"
+        # Kept, so coming back to Home asks YouTube Music for nothing.
+        asked = len([c for c in native_calls(page, "http") if "/browse" in c["options"]["url"]])
+        page.click('#tabBar [data-tab="search"]')
+        page.click('#tabBar [data-tab="home"]')
+        assert len([c for c in native_calls(page, "http") if "/browse" in c["options"]["url"]]) == asked
+        assert requests == []
+        assert not errors, errors
+        page.close()
+
+    def test_a_card_plays_and_the_play_is_counted(self, browser, static_server):
+        page, errors, _ = self.open_home(browser, static_server)
+        page.locator('[data-shelf="on-repeat"] .shelf-card').first.click()
+        page.wait_for_function("() => document.querySelector('#playerTitle').textContent === 'Valentine'")
+        played = page.evaluate("() => JSON.parse(localStorage.getItem('rainette.pwa.history'))[0]")
+        assert (played["track"]["title"], played["plays"]) == ("Valentine", 10)
+        # The top card is now the song in the player.
+        page.wait_for_function("() => /now playing/i.test(document.querySelector('#homeHero').textContent)")
+        assert not errors, errors
+        page.close()
+
+
+    def test_a_joined_credit_counts_for_its_first_artist(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        names = page.evaluate("""async () => (await import('./src/home.js')).topArtists([
+            { track: { artist: 'Daft Punk, Pharrell Williams & Nile Rodgers' }, plays: 3, last: 2 },
+            { track: { artist: 'Daft Punk' }, plays: 1, last: 1 },
+            { track: { artist: 'Tyler, The Creator' }, plays: 2, last: 1 },
+        ]).map(artist => [artist.name, artist.plays])""")
+        assert names == [["Daft Punk", 4], ["Tyler, The Creator", 2]]
+        assert not errors, errors
+        page.close()
+
+
+class TestFeelsLikeAnApp:
+    """No zoom and no sideways turn, as Spotify and Apple Music behave."""
+
+    def test_the_page_cannot_be_zoomed(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        viewport = page.get_attribute('meta[name="viewport"]', "content")
+        assert "user-scalable=no" in viewport and "maximum-scale=1" in viewport
+        assert page.evaluate("() => getComputedStyle(document.documentElement).touchAction") == "manipulation"
+        assert not errors, errors
+        page.close()
+
+    def test_both_apps_stay_upright(self):
+        root = Path(__file__).parent.parent / "mobile"
+        info = plistlib.loads((root / "ios/App/App/Info.plist").read_bytes())
+        assert info["UISupportedInterfaceOrientations"] == ["UIInterfaceOrientationPortrait"]
+        manifest = (root / "android/app/src/main/AndroidManifest.xml").read_text()
+        activity = manifest[manifest.index('android:name=".MainActivity"') - 400:manifest.index("</activity>")]
+        assert 'android:screenOrientation="portrait"' in activity
 
 
 class TestUpdates:

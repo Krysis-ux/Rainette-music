@@ -38,6 +38,7 @@ export function buildBackup() {
 		playlists: exportLocalPlaylists(),
 		recent: readJson(STORAGE.recent, []),
 		plays: readJson(STORAGE.plays, {}),
+		history: readJson(STORAGE.history, []),
 		artist_art: readJson(STORAGE.artistArt, {}),
 		// Deliberately absent: the pairing endpoint and device token. A backup
 		// that carries a credential is a credential that travels through every
@@ -93,6 +94,7 @@ export async function restoreBackup(file, { replace = false } = {}) {
 
 	if (Array.isArray(payload.recent)) writeJson(STORAGE.recent, payload.recent);
 	if (payload.plays && typeof payload.plays === 'object') writeJson(STORAGE.plays, payload.plays);
+	if (Array.isArray(payload.history)) writeJson(STORAGE.history, payload.history);
 	if (payload.artist_art && typeof payload.artist_art === 'object') {
 		writeJson(STORAGE.artistArt, payload.artist_art);
 	}

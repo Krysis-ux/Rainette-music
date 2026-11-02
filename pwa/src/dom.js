@@ -59,7 +59,7 @@ const ICONS = {
 	close: '<path d="M18 6 6 18"/><path d="M6 6l12 12"/>',
 	plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
 	trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
-	grip: '<path d="M8 7h.01M8 12h.01M8 17h.01M16 7h.01M16 12h.01M16 17h.01" stroke-width="2.6"/>',
+	handle: '<path d="M4 8h16"/><path d="M4 12h16"/><path d="M4 16h16"/>',
 	speaker: '<rect x="5" y="2" width="14" height="20" rx="2"/><circle cx="12" cy="15" r="3.2"/><path d="M12 6h.01"/>',
 	bluetooth: '<path d="m7 7 10 10-5 4V3l5 4L7 17"/>',
 	laptop: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/>',

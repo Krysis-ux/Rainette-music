@@ -35,6 +35,7 @@ import { refreshDownloaded, onDownloadsChanged } from './src/downloads.js';
 import { nativeAvailable } from './src/native-engine.js';
 import { catalogSearch } from './src/ytmusic.js';
 import { checkForUpdate } from './src/update.js';
+import { configureHome, renderHome, refreshFollowedOnHome } from './src/home.js';
 
 const UPDATE_CHECK_DELAY_MS = 4000;
 import { describeError } from './src/source-provider.js';
@@ -591,8 +592,13 @@ let shownRecent = null;
 // tracks this phone has played itself.
 let desktopRecent = [];
 
+/* Home leads with the shelves; the list is the last few songs, as a list. */
+const RECENT_ROWS = 4;
+
 function renderRecent() {
-	const list = mergeRecent(desktopRecent).slice(0, 12);
+	const all = mergeRecent(desktopRecent);
+	renderHome(all);
+	const list = all.slice(0, RECENT_ROWS);
 	if (shownRecent && sameTracks(list, shownRecent)) return;
 	shownRecent = list;
 	renderTracks($('#recentList'), list, {
@@ -625,6 +631,7 @@ function homeGreeting(hour = new Date().getHours()) {
 async function refreshRecent() {
 	$('#homeGreeting').textContent = homeGreeting();
 	renderRecent();
+	refreshFollowedOnHome(mergeRecent(desktopRecent));
 	// One request at a time: tab switches and playback both ask for this, and
 	// two answers landing together re-render the list twice for no gain.
 	if (recentInFlight) return recentInFlight;
@@ -900,6 +907,20 @@ function newPlaylistRow() {
 		},
 	}));
 	return row;
+}
+
+/** Open one playlist in the Library tab, from anywhere. */
+function openPlaylist(playlist) {
+	library.mode = 'playlists';
+	library.playlistId = playlist.id;
+	library.playlistName = playlist.name;
+	library.playlist = playlist;
+	for (const [id, mode] of LIBRARY_MODES) {
+		$(id).setAttribute('aria-selected', String(mode === 'playlists'));
+	}
+	switchTab('library');
+	paintLibrarySort();
+	renderPlaylistTracks(playlist.id, playlist.name);
 }
 
 function playlistRow(playlist) {
@@ -1363,6 +1384,15 @@ configureExtras({
 
 subscribe(scheduleMiniBar);
 
+/* Home's top card follows the player: a song ending, a pause on the lock screen. */
+let homePlayer = '';
+subscribe(() => {
+	const now = `${trackKey(currentTrack())}|${isPlaying()}`;
+	if (now === homePlayer) return;
+	homePlayer = now;
+	if (activeTab === 'home') renderRecent();
+});
+
 $('#pairForm').addEventListener('submit', async event => {
 	event.preventDefault();
 	const button = $('#pairSubmit');
@@ -1618,7 +1648,15 @@ if ('serviceWorker' in navigator && !nativeAvailable()) {
 
 /* ── Boot ─────────────────────────────────────────────────────────────── */
 
+configureHome({
+	onPlay: (list, index) => playFromList(list)(list[index], index),
+	onOpenPlaylist: openPlaylist,
+	playlists: () => (hasComputer() ? state.playlists : []),
+});
+
 pairDeviceName.placeholder = defaultDeviceName();
+// Safari ignores user-scalable=no; its pinch starts with this event.
+document.addEventListener('gesturestart', event => event.preventDefault());
 $('#homeGreeting').textContent = homeGreeting();
 renderRecent();
 
