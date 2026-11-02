@@ -307,6 +307,12 @@ function shelves(history) {
 
 /* ── Painting ─────────────────────────────────────────────────────────────*/
 
+/* What a playlist card shows, so a rename or an edit repaints it. */
+function playlistShape(playlist) {
+	const count = playlist.tracks?.length ?? playlist.track_count ?? 0;
+	return [playlist.id, playlist.name, playlist.cover || playlist.thumbnail_url || trackKey(playlist.tracks?.[0]), count].join(':');
+}
+
 /* Shelves are scrolled sideways, and Home repaints when a song starts. Without
  * this every repaint threw each shelf back to its first card. */
 function keepScroll(container, paint) {
@@ -328,7 +334,7 @@ export function renderHome(recent) {
 		trackKey(now), isPlaying(), trackKey(recent[0]),
 		history.slice(0, 40).map(entry => `${trackKey(entry.track)}:${entry.plays}`).join(','),
 		picks?.at || 0, followed.map(artist => artist?.id || artist?.name).join(','),
-		localPlaylists().length, options.playlists().length,
+		[...localPlaylists(), ...options.playlists()].map(playlistShape).join(','),
 	].join('|');
 	if (signature === shown) return;
 	const first = !shown;

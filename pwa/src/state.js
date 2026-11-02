@@ -222,11 +222,13 @@ const HISTORY_LIMIT = 300;
 export function readHistory() {
 	const kept = readJson(STORAGE.history, null);
 	if (Array.isArray(kept)) return kept.filter(entry => entry?.track);
-	// Phones from before this kept the recent list and bare counts only.
+	// Phones from before this kept the recent list and bare counts only. The
+	// counts are taken as they stand: the play being recorded now is already
+	// first in the recent list but not yet counted, and must not count twice.
 	const now = Date.now();
-	return readRecent().map((track, at) => ({
-		track, plays: localPlayCount(trackKey(track)) || 1, last: now - at * 60000,
-	}));
+	return readRecent()
+		.map((track, at) => ({ track, plays: localPlayCount(trackKey(track)), last: now - at * 60000 }))
+		.filter(entry => entry.plays > 0);
 }
 
 function recordPlay(track) {

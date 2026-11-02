@@ -1032,6 +1032,32 @@ class TestHome:
         page.close()
 
 
+    def test_a_first_play_on_a_fresh_phone_counts_once(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server)
+        search_and_play(page)
+        counts = page.evaluate("""() => [
+            JSON.parse(localStorage.getItem('rainette.pwa.history'))[0].plays,
+            JSON.parse(localStorage.getItem('rainette.pwa.plays'))['song0000001'],
+        ]""")
+        assert counts == [1, 1]
+        assert not errors, errors
+        page.close()
+
+    def test_a_renamed_playlist_is_renamed_on_home(self, browser, static_server):
+        page, errors, _ = self.open_home(browser, static_server)
+        mixes = [{"id": f"local:mix{n}", "name": f"Mix {n}", "cover": "", "tracks": [], "local": True} for n in range(3)]
+        page.evaluate("mixes => localStorage.setItem('rainette.pwa.playlists.local', JSON.stringify(mixes))", mixes)
+        page.click('#tabBar [data-tab="search"]')
+        page.click('#tabBar [data-tab="home"]')
+        assert page.locator('[data-shelf="playlists"] .shelf-card b').first.inner_text() == "Mix 0"
+        mixes[0]["name"] = "Road Trip"
+        page.evaluate("mixes => localStorage.setItem('rainette.pwa.playlists.local', JSON.stringify(mixes))", mixes)
+        page.click('#tabBar [data-tab="search"]')
+        page.click('#tabBar [data-tab="home"]')
+        assert page.locator('[data-shelf="playlists"] .shelf-card b').first.inner_text() == "Road Trip"
+        assert not errors, errors
+        page.close()
+
     def test_a_joined_credit_counts_for_its_first_artist(self, browser, static_server):
         page, errors, _ = open_app(browser, static_server)
         names = page.evaluate("""async () => (await import('./src/home.js')).topArtists([
