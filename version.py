@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-APP_VERSION = "0.5.3"
+APP_VERSION = "0.5.4"
 
 # Release-signing identity for self-updates. The PUBLIC Ed25519 key below can
 # only verify signatures, never create them (the private key lives outside the
