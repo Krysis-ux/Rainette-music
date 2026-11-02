@@ -270,5 +270,9 @@ needs a desktop release that includes `NATIVE_IOS_ORIGIN` in `server.py`
   `server.py`, unreleased). Not yet verified end to end.
 - Phone files can't join a queue the service is streaming. They play through
   the element, which, unlike the service, depends on the WebView staying awake.
-- Artist pages, lyrics and the equaliser still need a computer, or are hidden.
+- Search (songs, artists, albums), artist and album pages, artist pictures,
+  following, lyrics, downloads, "Save a copy" and playlist import work with
+  no computer: `pwa/src/ytmusic.js` asks YouTube Music and LRCLIB through
+  Capacitor's native HTTP, and `bridge.js` routes those commands to it. The
+  equaliser still shapes only the page's own audio, so the app hides it.
 - Release signing, CI workflow, website download: not started (see the plan).

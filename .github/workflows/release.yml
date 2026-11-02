@@ -454,10 +454,8 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          generate_release_notes: false
           body: |
-            - **Windows**: run `RainetteMusicSetup.exe`.
-            - **macOS**: drag `RainetteMusic-macOS.dmg` into Applications; it is not yet notarized, so run once: `xattr -dr com.apple.quarantine "/Applications/Rainette Music.app"`
-            - Open it from **Applications**, not the disk image (a read-only copy can't update).
-            - **Phone**: open the [PWA](https://music-pwa-web.vercel.app) and pair.
+            - Windows: `RainetteMusicSetup.exe`
+            - macOS: `RainetteMusic-macOS.dmg`; open it from **Applications** (a read-only copy can't update). It is not yet notarized: `xattr -dr com.apple.quarantine "/Applications/Rainette Music.app"`
           files: release-assets/*

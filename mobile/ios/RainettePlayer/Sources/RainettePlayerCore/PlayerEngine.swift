@@ -345,12 +345,13 @@ public final class PlayerEngine {
         }
     }
 
-    /// Warm the next song's address, so it starts as soon as this one ends.
+    /// Warm the next song: its address, and its first megabyte in the song
+    /// cache, so a skip or the end of this one starts it at once.
     private func prefetchNext() {
         guard index + 1 < queue.count else { return }
         let next = queue[index + 1].sourceId
         let resolver = self.resolver
-        Task.detached { _ = try? await resolver.resolve(next) }
+        Task.detached { await ChunkedLoader(id: next, resolver: resolver).warm() }
     }
 
     private func seconds() -> Double {

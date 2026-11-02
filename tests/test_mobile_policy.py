@@ -78,14 +78,16 @@ class TestNoAdsNoPaidServices(unittest.TestCase):
 
 class TestNoOtherServer(unittest.TestCase):
     def test_the_resolver_talks_to_youtube_and_nothing_else(self):
-        """No undeclared extraction server, no third-party fallback, no proxy."""
+        """No undeclared extraction server, no third-party fallback, no proxy.
+        The one other address is this project's own release APK, for updates."""
+        own_release = r"^https://github\\\\.com/Krysis-ux/Rainette-music/releases/download/"
         for path in (SOURCES / "java").rglob("*.kt"):
             text = path.read_text(encoding="utf-8")
             for url in re.findall(r"https?://[^\s\"'$]+", text):
                 with self.subTest(path=path.name, url=url):
                     host = re.sub(r"^https?://", "", url).split("/")[0]
-                    self.assertTrue(host.endswith("youtube.com") or host.endswith(".invalid") or host == "",
-                                    f"{path.name} reaches {host}")
+                    self.assertTrue(host.endswith("youtube.com") or host.endswith(".invalid") or host == ""
+                                    or re.match(own_release, url), f"{path.name} reaches {host}")
 
     def test_the_page_never_hands_the_service_a_url(self):
         """The service derives where audio comes from; a page cannot point it anywhere."""

@@ -10,7 +10,7 @@ import { dragGesture } from './gesture.js';
  * It resolves because both directions are call-time only: nothing here runs
  * artistLink while the modules are still evaluating. */
 import { artistLink } from './catalog.js';
-import { trackKey, artworkUrl, artistName, formatTime, trackDuration } from './state.js';
+import { trackKey, artworkUrl, artworkFor, artistName, formatTime, trackDuration } from './state.js';
 import { queueAddNext, queueAddEnd, currentTrack, isPlaying } from './player.js';
 import { isLocalTrack, localArtworkUrl } from './local.js';
 
@@ -87,7 +87,7 @@ export function trackRow(track, { onPlay, onHold = null, swipe = true, showDurat
 		art.dataset.localArt = track.source_id;
 		art.src = localArtworkUrl(track);
 	} else {
-		art.src = artworkUrl(track);
+		art.src = artworkFor(artworkUrl(track), 48);
 	}
 	art.alt = '';
 	art.width = 48;

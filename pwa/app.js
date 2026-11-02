@@ -2,7 +2,7 @@
  * it, so pairing has a real waiting state. This file owns transport, pairing
  * and connection; everything visual lives in ./src. */
 
-import { state, STORAGE, artworkUrl, artistName, formatTime, rememberRecent, readRecent, trackKey, hasComputer } from './src/state.js';
+import { state, STORAGE, artworkUrl, artworkFor, artistName, formatTime, rememberRecent, readRecent, trackKey, hasComputer } from './src/state.js';
 import { fetchDesktopRecent, mergeRecent, fetchPlaylists, fetchPlaylistTracks, playlistSubtitle } from './src/collections.js';
 import { $, el, icon, iconButton, toast, stagger } from './src/dom.js';
 import { configureBridge, isUnsupportedCommand } from './src/bridge.js';
@@ -17,9 +17,9 @@ import { configureTarget, playbackSourceLabel } from './src/target.js';
 import { observePrefs } from './src/prefs.js';
 import { syncPrefs, markPrefChanged, flushPrefs } from './src/prefsync.js';
 import { reportCodecSupport } from './src/codecs.js';
-import { wireMiniBar, openNowPlaying } from './src/nowplaying.js';
+import { wireMiniBar, openNowPlaying, warmNowPlaying } from './src/nowplaying.js';
 import { openQueueSheet } from './src/queue.js';
-import { configureExtras, setLinked, openOutputPicker, sleepShouldStopAfterTrack, openTrackMenu, openSleepTimer, sleepLabel } from './src/extras.js';
+import { configureExtras, setLinked, openOutputPicker, sleepShouldStopAfterTrack, openTrackMenu, openSleepTimer, sleepLabel, openNewLocalPlaylist } from './src/extras.js';
 import { closeAllSheets, confirmSheet } from './src/sheets.js';
 import { openScanner, scanningIsPossible } from './src/scanner.js';
 import { artistRow, albumRow, openArtist, openFollowedArtists, loadFollowed, hydrateArtistArt, artistLink, trackArtist, configureCatalog } from './src/catalog.js';
@@ -32,9 +32,13 @@ import {
 	listLocalTracks, localTrackCount, localBytes, formatBytes, clearLocalTracks,
 } from './src/local.js';
 import { refreshDownloaded, onDownloadsChanged } from './src/downloads.js';
-import { nativeAvailable, nativeSearch } from './src/native-engine.js';
+import { nativeAvailable } from './src/native-engine.js';
+import { catalogSearch } from './src/ytmusic.js';
+import { checkForUpdate } from './src/update.js';
+
+const UPDATE_CHECK_DELAY_MS = 4000;
 import { describeError } from './src/source-provider.js';
-import { graphState, graphCostsBackgroundPlayback } from './src/audio.js';
+import { graphState, graphCostsBackgroundPlayback, volumeMax } from './src/audio.js';
 import { runListDownload } from './src/downloadmenu.js';
 import { localPlaylists, isLocalPlaylist, localPlaylistTracks, openPlaylistEditor, openPlaylistMenu } from './src/playlists.js';
 
@@ -42,6 +46,7 @@ const setupView = $('#setupView');
 const appView = $('#appView');
 const tabBar = $('#tabBar');
 const player = $('#player');
+const miniProgress = $('#player .player-progress span');
 const pairLinkInput = $('#pairLinkInput');
 const setupError = $('#setupError');
 const statusDot = $('#statusDot');
@@ -761,13 +766,13 @@ async function renderLibraryArtists() {
 			state.library = result.tracks || result.items || [];
 		} catch { /* followed artists alone are still a useful list */ }
 	}
-	const followedArtists = phone ? [] : await loadFollowed();
+	const followedArtists = await loadFollowed();
 	if (!libraryOwns(token)) return;
 
 	const artists = artistsFromTracks(phone ? readRecent() : state.library, followedArtists);
 	if (!artists.length) {
 		target.replaceChildren(el('p', 'empty', phone
-			? 'Artists you play on this phone show up here.'
+			? 'Artists you play or follow show up here.'
 			: 'Save some music on your computer, or follow an artist, and they show up here.'));
 		return;
 	}
@@ -849,24 +854,52 @@ async function renderLibraryPanel() {
 	const mine = localPlaylists();
 	let fromComputer = [];
 	let failure = null;
-	try {
-		fromComputer = await fetchPlaylists();
-	} catch (error) {
-		failure = error;
+	// With no computer paired there is nobody to ask, and "connect a computer"
+	// is not an answer to "where are my playlists" on a phone that keeps its own.
+	if (hasComputer()) {
+		try {
+			fromComputer = await fetchPlaylists();
+		} catch (error) {
+			failure = error;
+		}
 	}
 	if (!libraryOwns(token)) return;
 
 	const playlists = [...mine, ...fromComputer];
+	const create = newPlaylistRow();
 	if (!playlists.length) {
-		target.replaceChildren(el('p', 'empty', failure
+		target.replaceChildren(create, el('p', 'empty', failure
 			? connectionError(failure)
-			: 'Playlists you make on your computer show up here, and so do any you make on this phone.'));
+			: (hasComputer()
+				? 'Playlists you make on your computer show up here, and so do any you make on this phone.'
+				: 'Make one here, or add any song to one from its menu.')));
 		return;
 	}
 
-	target.replaceChildren(...playlists.map(playlistRow));
+	target.replaceChildren(create, ...playlists.map(playlistRow));
 	if (failure) target.append(el('p', 'catalog-note', connectionError(failure)));
 	stagger(target, ':scope > .collection-row');
+}
+
+/* The first row of the list, as in any music app: where a new playlist starts. */
+function newPlaylistRow() {
+	const row = el('button', 'collection-row playlist-new');
+	row.type = 'button';
+	const mark = el('span', 'collection-mark');
+	mark.innerHTML = icon('plus', 22);
+	const copy = el('span', 'collection-copy');
+	copy.append(el('b', '', 'New playlist'));
+	row.append(mark, copy);
+	row.addEventListener('click', () => openNewLocalPlaylist(null, {
+		onCreated: made => {
+			library.playlistId = made.id;
+			library.playlistName = made.name;
+			library.playlist = made;
+			paintLibrarySort();
+			renderPlaylistTracks(made.id, made.name);
+		},
+	}));
+	return row;
 }
 
 function playlistRow(playlist) {
@@ -951,8 +984,6 @@ async function renderPlaylistTracks(playlistId, name = '') {
 		download.type = 'button';
 		download.disabled = !tracks.length;
 		download.addEventListener('click', () => runListDownload(tracks, { title: name || 'Playlist' }));
-		// Downloads come through the computer, so with none paired there is none.
-		download.hidden = phoneOnly();
 		head.append(edit, download);
 		target.append(head);
 
@@ -1015,8 +1046,10 @@ async function search(query, { typing = false } = {}) {
 
 	let result;
 	if (nativeAvailable()) {
+		// The app searches by itself whether or not a computer is paired: what
+		// it finds is what it can play without one.
 		try {
-			result = { songs: await nativeSearch(query), artists: [], albums: [] };
+			result = await catalogSearch(query);
 		} catch (error) {
 			if (request === searchRequests) searchMessage.textContent = describeError(error);
 			return false;
@@ -1095,7 +1128,8 @@ function renderSearchResults() {
 
 	// Songs and artists sort on different fields, so each tab shows the control
 	// that belongs to what it is looking at and the other stays out of the way.
-	const sortSongs = (filter === 'all' || filter === 'songs') && songs.length > 1;
+	// "Top" is the search's own order, so it has no sort; each kind's tab does.
+	const sortSongs = filter === 'songs' && songs.length > 1;
 	const sortArtistList = filter === 'artists' && artists.length > 1;
 	searchSort.node.hidden = !sortSongs;
 	searchArtistSort.node.hidden = !sortArtistList;
@@ -1164,8 +1198,8 @@ function renderMiniBar() {
 	if (!track) { player.hidden = true; return; }
 	player.hidden = false;
 
-	const art = artworkUrl(track);
-	if (art !== shownMini.art) { shownMini.art = art; $('#playerArt').src = art; }
+	const art = artworkFor(artworkUrl(track), 46);
+	if (art !== shownMini.art) { shownMini.art = art; $('#playerArt').src = art; warmNowPlaying(track); }
 
 	const title = track.title || 'Nothing playing';
 	if (title !== shownMini.title) { shownMini.title = title; $('#playerTitle').textContent = title; }
@@ -1199,7 +1233,9 @@ function renderMiniBar() {
 
 	const length = duration();
 	const at = currentTime();
-	player.style.setProperty('--progress', String(length > 0 ? Math.min(1, at / length) : 0));
+	// The transform itself, not a custom property on the bar: that one restyled
+	// the whole bar several times a second.
+	miniProgress.style.transform = `scaleX(${length > 0 ? Math.min(1, at / length) : 0})`;
 	const elapsed = formatTime(at);
 	if (elapsed !== shownMini.elapsed) { shownMini.elapsed = elapsed; $('#playerElapsed').textContent = elapsed; }
 	const total = length > 0 ? formatTime(length) : '';
@@ -1260,6 +1296,12 @@ function renderSettings() {
 	$('#connectComputerButton').hidden = !unpairedApp;
 	for (const id of ['#linkToggle', '#testConnectionButton', '#disconnectButton']) $(id).hidden = unpairedApp;
 	$('#equalizerButton').hidden = nativeAvailable();
+	// What each row promises has to be true of the phone it is on: the app's
+	// own player stops at 100%, and with no computer the follows live here.
+	$('#playbackButton small').textContent = volumeMax() > 1
+		? 'Volume up to 200%, fades, autoplay and where the app opens'
+		: 'Volume, fades, autoplay and where the app opens';
+	$('#followedButton small').textContent = hasComputer() ? 'The same list your computer keeps' : 'Kept on this phone';
 	$('#sleepState').textContent = sleepLabel() === 'Sleep' ? 'Off' : sleepLabel();
 	$('#outputState').textContent = isLinked() ? (state.computerName || 'Your computer') : 'This phone';
 	paintSettingsValues().catch(() => { /* a value that will not load is not worth a failure */ });
@@ -1641,6 +1683,8 @@ if (scanned) {
 	// The service may still be playing from before the app was swiped away.
 	restoreNative();
 	if (state.endpoint && state.token) testConnection({ reveal: false }).then(ok => { if (ok) refreshLibrary(); });
+	// After the first screen has settled, not in the way of it.
+	setTimeout(() => checkForUpdate().catch(() => { /* asked again next launch */ }), UPDATE_CHECK_DELAY_MS);
 } else if (state.endpoint && state.token) {
 	testConnection().then(ok => { if (ok) refreshLibrary(); });
 } else {

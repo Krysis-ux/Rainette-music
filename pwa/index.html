@@ -135,7 +135,10 @@
       <section class="panel" data-panel="search">
         <h1>Search</h1>
         <form id="searchForm" class="search-form" role="search">
+          <!-- No autocorrect: artist names are not dictionary words, and the
+               iPhone keyboard turned "laufey" into "Lauded" on Enter. -->
           <input id="searchInput" type="search" autocomplete="off" enterkeyhint="search"
+                 autocorrect="off" autocapitalize="off" spellcheck="false"
                  placeholder="Songs, artists, albums" aria-label="Search music">
           <button class="primary compact" type="submit">Go</button>
         </form>

@@ -8,9 +8,7 @@ import { openSheet, actionSheet } from './sheets.js';
 import { command, commandError } from './bridge.js';
 import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
 import { playlistChoices, addTrackToPlaylist, isLocalPlaylist, createLocalPlaylist } from './playlists.js';
-import { isLocalTrack } from './local.js';
 import { trackDownloadItems } from './downloadmenu.js';
-import { nativeAvailable } from './native-engine.js';
 import {
 	queueAddNext, queueAddEnd, isPlaying, toggle, playTrack, pauseLocal, localSession,
 	currentTrack, currentTime, seekTo, subscribe,
@@ -44,24 +42,28 @@ export async function openAddToPlaylist(track) {
 
 	items.push({
 		id: 'new',
-		label: 'New playlist on this phone',
+		label: hasComputer() ? 'New playlist on this phone' : 'New playlist',
 		hint: 'Kept here, works offline',
 		icon: 'plus',
 		run: () => openNewLocalPlaylist(track),
 	});
-	items.push({
-		id: 'new-remote',
-		label: 'New playlist on my computer',
-		icon: 'plus',
-		run: () => openNewPlaylist(track),
-	});
+	// Only offered with a computer to keep it; without one it could only fail.
+	if (hasComputer()) {
+		items.push({
+			id: 'new-remote',
+			label: 'New playlist on my computer',
+			icon: 'plus',
+			run: () => openNewPlaylist(track),
+		});
+	}
 
 	await actionSheet({ title: 'Add to playlist', items });
 }
 
 /* A playlist made here can hold files that only exist here, which is the one
- * thing the computer's playlists can never do. */
-function openNewLocalPlaylist(track) {
+ * thing the computer's playlists can never do. With no track it is made empty,
+ * from the Library. */
+export function openNewLocalPlaylist(track, { onCreated } = {}) {
 	openSheet({
 		title: 'New playlist',
 		className: 'sheet-actions',
@@ -76,14 +78,15 @@ function openNewLocalPlaylist(track) {
 			input.autocapitalize = 'words';
 			field.append(input);
 
-			const create = el('button', 'primary', 'Create and add');
+			const create = el('button', 'primary', track ? 'Create and add' : 'Create');
 			create.type = 'button';
 			create.addEventListener('click', () => {
 				const name = input.value.trim();
 				if (!name) { input.focus(); return; }
-				createLocalPlaylist(name, [track]);
-				toast(`Added to ${name}`);
+				const made = createLocalPlaylist(name, track ? [track] : []);
+				toast(track ? `Added to ${name}` : `Made ${name}`);
 				close();
+				onCreated?.(made);
 			});
 
 			body.append(field, create);
@@ -134,8 +137,9 @@ function openNewPlaylist(track) {
 }
 
 /* ── Lyrics ────────────────────────────────────────────────────────────────
- * Fetched and cached by the computer, so the phone never talks to LRCLIB. When
- * a timed LRC comes back the sheet follows the song and a tapped line seeks. */
+ * From LRCLIB, through the computer when one is paired and by the app itself
+ * when not (ytmusic.js). When a timed LRC comes back the sheet follows the
+ * song and a tapped line seeks. */
 
 /** Parse LRC ("[mm:ss.xx]text", repeated tags for a chorus) into timed lines. */
 function parseSyncedLyrics(lrc) {
@@ -237,7 +241,7 @@ export function openLyrics(track) {
 				result = await command('music_lyrics', { track }, 20000);
 			} catch (error) {
 				content.replaceChildren(el('p', 'empty',
-					commandError(error, 'Could not reach your computer for lyrics.')));
+					commandError(error, 'Couldn’t load lyrics. Check your connection and try again.')));
 				return;
 			}
 			if (result?.instrumental) {
@@ -459,18 +463,10 @@ export function setLinked(linked) {
  * which is what makes an artist reachable from every list in the app rather
  * than only from a search result. */
 
-/** The app with no computer paired, where lyrics and downloads (both fetched
- *  through the computer) are not offered rather than offered and broken. */
-export function phoneOnly() {
-	return !hasComputer() && nativeAvailable();
-}
-
 export async function openTrackMenu(track, list = []) {
 	const artist = trackArtist(track);
 	const album = trackAlbum(track);
-	const needsComputer = phoneOnly() && !isLocalTrack(track);
-	const downloads = trackDownloadItems(track)
-		.filter(item => !needsComputer || item.id === 'remove-download');
+	const downloads = trackDownloadItems(track);
 
 	await actionSheet({
 		title: track.title || 'Track',
@@ -480,7 +476,7 @@ export async function openTrackMenu(track, list = []) {
 			artist ? { id: 'artist', label: `Go to ${artist.name}`, icon: 'artist', run: () => openArtist(artist) } : null,
 			album ? { id: 'album', label: `Go to ${album.title}`, icon: 'album', run: () => openAlbum(album) } : null,
 			{ id: 'playlist', label: 'Add to playlist', icon: 'plus', run: () => openAddToPlaylist(track) },
-			needsComputer ? null : { id: 'lyrics', label: 'Lyrics', icon: 'mic', run: () => openLyrics(track) },
+			{ id: 'lyrics', label: 'Lyrics', icon: 'mic', run: () => openLyrics(track) },
 			// Keeping-it and going-somewhere are different kinds of action, so
 			// the download rows sit below the navigation ones rather than among
 			// them. `trackDownloadItems` decides which of them apply.

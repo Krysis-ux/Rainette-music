@@ -17,7 +17,11 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
@@ -26,6 +30,7 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import java.io.File
 
 /**
  * The one audio owner on Android.
@@ -40,6 +45,7 @@ import com.google.common.util.concurrent.ListenableFuture
 class PlaybackService : MediaSessionService() {
 
     private var session: MediaSession? = null
+    private var songs: SimpleCache? = null
     private val main = Handler(Looper.getMainLooper())
     private var networkRetries = 0
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -53,8 +59,17 @@ class PlaybackService : MediaSessionService() {
             .setConnectTimeoutMs(10_000)
             .setReadTimeoutMs(15_000)
         val streams = ResolvingDataSource.Factory(ChunkedDataSource.Factory(http), ::resolveSpec)
+        // Songs already heard, kept on disk under their own id (the private
+        // rainette:// address, before it is resolved): a replay starts at once,
+        // asks the source for nothing, and plays with no connection.
+        val cache = SimpleCache(File(cacheDir, "songs"), LeastRecentlyUsedCacheEvictor(SONG_CACHE_BYTES), StandaloneDatabaseProvider(this))
+        songs = cache
+        val cached = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(streams)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         val player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(streams).setLoadErrorHandlingPolicy(RetryPolicy()))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(cached).setLoadErrorHandlingPolicy(RetryPolicy()))
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
                 /* handleAudioFocus = */ true,
@@ -62,6 +77,9 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
+        // The next song's address and first seconds are fetched while this one
+        // plays, so a skip or the end of a song starts the next one at once.
+        player.preloadConfiguration = ExoPlayer.PreloadConfiguration(PRELOAD_US)
         player.addListener(Recovery(player))
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
@@ -106,10 +124,13 @@ class PlaybackService : MediaSessionService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
+    /** Swiping the app away closes it, music included, as the person means it to. */
     override fun onTaskRemoved(rootIntent: Intent?) {
-        val player = session?.player
-        // Swiping the app away while music plays keeps the music; while paused, it ends the session.
-        if (player == null || !player.playWhenReady || player.mediaItemCount == 0) stopSelf()
+        session?.player?.run {
+            pause()
+            stop()
+        }
+        stopSelf()
     }
 
     override fun onDestroy() {
@@ -120,6 +141,8 @@ class PlaybackService : MediaSessionService() {
             release()
         }
         session = null
+        songs?.release()
+        songs = null
         super.onDestroy()
     }
 
@@ -194,6 +217,8 @@ class PlaybackService : MediaSessionService() {
 
     companion object {
         const val SCHEME = "rainette"
+        private const val SONG_CACHE_BYTES = 400L shl 20
+        private const val PRELOAD_US = 10_000_000L
         const val TAG = "RainettePlayback"
         const val EXPIRED = "expired"
         private const val MAX_REFRESHES = 2

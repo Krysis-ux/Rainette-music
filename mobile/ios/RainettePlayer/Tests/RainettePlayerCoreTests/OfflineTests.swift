@@ -157,3 +157,46 @@ struct EngineRules {
         engine.stop()
     }
 }
+
+@Suite struct QuickPlayerAnswers {
+    @Test func directAudioAddressesAreRead() throws {
+        let answer = Data("""
+        {"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[
+          {"itag":140,"mimeType":"audio/mp4; codecs=\\"mp4a.40.2\\"","bitrate":130000,"url":"https://rr1.googlevideo.com/videoplayback?c=VISIONOS&itag=140"},
+          {"itag":251,"mimeType":"audio/webm; codecs=\\"opus\\"","bitrate":140000,"url":"https://rr1.googlevideo.com/videoplayback?c=VISIONOS&itag=251"},
+          {"itag":137,"mimeType":"video/mp4","bitrate":4000000,"url":"https://rr1.googlevideo.com/videoplayback?c=VISIONOS&itag=137"},
+          {"itag":139,"mimeType":"audio/mp4","signatureCipher":"s=x&url=y"}]}}
+        """.utf8)
+        let ranked = StreamResolver.rankAudio(try StreamResolver.parsePlayer(answer))
+        #expect(ranked.map(\.url.absoluteString) == ["https://rr1.googlevideo.com/videoplayback?c=VISIONOS&itag=140"])
+    }
+
+    @Test func anythingButAPlayableAnswerTakesTheLongWay() {
+        let refused = Data(#"{"playabilityStatus":{"status":"LOGIN_REQUIRED"}}"#.utf8)
+        #expect(throws: PlayerError.self) { try StreamResolver.parsePlayer(refused) }
+        #expect(throws: PlayerError.self) { try StreamResolver.parsePlayer(Data("not json".utf8)) }
+    }
+}
+
+@Suite struct KeepingSongs {
+    private func scratch() -> SongCache {
+        SongCache(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true))
+    }
+
+    @Test func aKeptPieceComesBackWithTheFilesLength() {
+        let cache = scratch()
+        #expect(cache.piece("abcdefghijk", 0) == nil)
+        cache.store("abcdefghijk", 0, Data([1, 2, 3]), total: 3)
+        #expect(cache.piece("abcdefghijk", 0)?.0 == Data([1, 2, 3]))
+        #expect(cache.piece("abcdefghijk", 0)?.1 == 3)
+        #expect(cache.piece("abcdefghijk", 1) == nil)
+    }
+
+    @Test func anotherLengthMeansAnotherFileAndReplacesWhatWasKept() {
+        let cache = scratch()
+        cache.store("abcdefghijk", 0, Data([1]), total: 2_000_000)
+        cache.store("abcdefghijk", 1, Data([2]), total: 3_000_000)
+        #expect(cache.piece("abcdefghijk", 0) == nil, "a piece of the old encoding is never joined to the new one")
+        #expect(cache.piece("abcdefghijk", 1)?.1 == 3_000_000)
+    }
+}

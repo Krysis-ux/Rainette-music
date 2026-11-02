@@ -54,7 +54,10 @@ function transact(mode, run) {
 		const store = tx.objectStore(STORE);
 		let result;
 		try { result = run(store); } catch (error) { reject(error); return; }
-		tx.oncomplete = () => resolve(result?.result !== undefined ? result.result : result);
+		// A request's answer, not the request: a get() for a missing key answers
+		// undefined, and handing back the request object instead read as a row
+		// that existed with no bytes ("Save a copy" on any song not downloaded).
+		tx.oncomplete = () => resolve(result instanceof IDBRequest ? result.result : result);
 		tx.onerror = () => reject(tx.error || new Error('Local storage failed.'));
 		tx.onabort = () => reject(tx.error || new Error('Local storage was interrupted.'));
 	}));

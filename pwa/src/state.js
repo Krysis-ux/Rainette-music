@@ -15,6 +15,9 @@ export const STORAGE = {
 	accent: 'rainette.pwa.accent',
 	prefs: 'rainette.pwa.prefs',
 	artistArt: 'rainette.pwa.artist_art',
+	/* Artists followed in the app with no computer; a paired computer keeps its own. */
+	followed: 'rainette.pwa.followed_artists',
+	update: 'rainette.pwa.update',
 	/* Computers this phone has paired with, and their credentials — kept apart
 	 * on purpose, so reading or dumping the list cannot leak a token. */
 	sessions: 'rainette.pwa.sessions',
@@ -115,13 +118,27 @@ export function artworkUrl(track) {
 	return track?.thumbnail_url || track?.artwork_url || './icon.svg';
 }
 
-/* YouTube Music covers carry their size in the address (`=w120-h120-…`), and
- * search hands out the 120px one. A cover shown large asks for a large one
- * rather than stretching a thumbnail across the screen. */
+/* YouTube Music covers carry their size in the address (`=w120-h120-…`, or
+ * `=s120` on a channel picture), and search hands out the 120px one. A cover
+ * shown large asks for a large one rather than stretching a thumbnail across
+ * the screen. */
+export function resizeArtwork(url, px) {
+	if (!/^https:\/\/([a-z0-9]+\.googleusercontent\.com|yt\d\.ggpht\.com)\//.test(String(url || ''))) return url;
+	return url.replace(/=w\d+-h\d+(?=-|$)/, `=w${px}-h${px}`).replace(/=s\d+(?=-|$)/, `=s${px}`);
+}
+
 export function artworkAt(track, px) {
-	const url = artworkUrl(track);
-	if (!/^https:\/\/[a-z0-9]+\.googleusercontent\.com\//.test(url)) return url;
-	return url.replace(/=w\d+-h\d+(?=-|$)/, `=w${px}-h${px}`);
+	return resizeArtwork(artworkUrl(track), px);
+}
+
+/* The sizes asked for, so one cover is fetched and cached at a handful of sizes
+ * rather than one per layout. */
+const ART_SIZES = [120, 226, 360, 544, 720, 1080];
+
+/** A cover sharp at `cssPx` on this screen's pixel density. */
+export function artworkFor(url, cssPx) {
+	const wanted = Math.ceil(cssPx * Math.max(1, Number(globalThis.devicePixelRatio) || 2));
+	return resizeArtwork(url, ART_SIZES.find(size => size >= wanted) || ART_SIZES[ART_SIZES.length - 1]);
 }
 
 export function artistName(track) {

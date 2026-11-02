@@ -1,11 +1,19 @@
 package com.krysisux.rainettemusic
 
+import android.app.Activity
 import android.content.ComponentName
+import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
+import android.util.Base64
+import androidx.activity.result.ActivityResult
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -17,9 +25,13 @@ import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
+import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.google.common.util.concurrent.ListenableFuture
 import org.json.JSONObject
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.Executors
 
 /** Final errors from the service's own player, with the cause chain intact. */
@@ -105,7 +117,47 @@ class RainettePlayerPlugin : Plugin() {
 
     @PluginMethod
     fun capabilities(call: PluginCall) {
-        call.resolve(JSObject().put("search", true).put("playback", true).put("protocol", PROTOCOL))
+        // A debug build is a separate app (.dev) that no release can update.
+        val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        call.resolve(JSObject().put("search", true).put("playback", true).put("protocol", PROTOCOL)
+            .put("version", context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty())
+            .put("installs_updates", !debuggable))
+    }
+
+    /**
+     * Download a release APK and hand it to the system installer, which asks
+     * the person to confirm. A sideloaded app has no store to update it, and
+     * Android never lets one replace itself silently. Only this project's own
+     * GitHub release asset is accepted.
+     */
+    @PluginMethod
+    fun installUpdate(call: PluginCall) {
+        val url = call.getString("url").orEmpty()
+        if (!UPDATE_URL.matches(url)) return call.reject("That isn't a Rainette release.", StreamResolver.INVALID)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+            activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")))
+            return call.reject("Allow Rainette to install updates, then tap Update again.", "needs_permission")
+        }
+        io.execute {
+            try {
+                val dir = File(context.cacheDir, "update").apply { deleteRecursively(); mkdirs() }
+                val apk = File(dir, "rainette-music-android.apk")
+                val connection = URL(url).openConnection() as HttpURLConnection
+                connection.connectTimeout = 15_000
+                connection.readTimeout = 30_000
+                connection.inputStream.use { input -> apk.outputStream().use { input.copyTo(it) } }
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apk)
+                val install = Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                activity.runOnUiThread {
+                    activity.startActivity(install)
+                    call.resolve()
+                }
+            } catch (e: Exception) {
+                call.reject("The update didn’t download. Try again.", "service_failed")
+            }
+        }
     }
 
     @PluginMethod
@@ -131,8 +183,10 @@ class RainettePlayerPlugin : Plugin() {
         io.execute {
             try {
                 val stream = StreamResolver.resolve(id, force)
+                // The User-Agent the address was issued to: the page's own
+                // downloads have to present it, as the player does.
                 call.resolve(JSObject().put("url", stream.url).put("mime_type", stream.mimeType)
-                    .put("expires_at_ms", stream.expiresAtMs))
+                    .put("expires_at_ms", stream.expiresAtMs).put("user_agent", stream.userAgent))
             } catch (e: Exception) {
                 reject(call, StreamResolver.classify(e))
             }
@@ -280,6 +334,73 @@ class RainettePlayerPlugin : Plugin() {
         }
     }
 
+    /* A file waiting for the system save screen. On disk, not in memory or in
+     * the call: Capacitor keeps a pending call's data in the activity's saved
+     * state, and a song there is a 14 MB parcel that Android kills the app for
+     * the moment the save screen covers it. On disk it also outlives the
+     * process being reclaimed while the screen is open. */
+    private val staged get() = File(context.cacheDir, "staged")
+
+    /** Hold a file's bytes (base64) for `saveFile`, replacing any held before. */
+    @PluginMethod
+    fun stageFile(call: PluginCall) {
+        val bytes = try {
+            Base64.decode(call.getString("data").orEmpty(), Base64.DEFAULT)
+        } catch (e: IllegalArgumentException) {
+            null
+        }
+        if (bytes == null || bytes.isEmpty()) return call.reject("Nothing to save.", StreamResolver.INVALID)
+        io.execute {
+            try {
+                staged.deleteRecursively()
+                staged.mkdirs()
+                File(staged, STAGED_NAME).writeBytes(bytes)
+                call.resolve()
+            } catch (e: Exception) {
+                call.reject("That file could not be prepared.", "service_failed")
+            }
+        }
+    }
+
+    /**
+     * Save the staged file where the person chooses, through the system's own
+     * save screen. A WebView cannot save a page's file itself: a download link
+     * and the web's save picker both do nothing in one. Resolves `{ saved }`,
+     * false when the screen was dismissed.
+     */
+    @PluginMethod
+    fun saveFile(call: PluginCall) {
+        if (!File(staged, STAGED_NAME).exists()) return call.reject("Nothing to save.", StreamResolver.INVALID)
+        val name = call.getString("name").orEmpty().replace(Regex("[\\\\/:*?\"<>|]"), "_").take(120)
+            .ifBlank { "Rainette file" }
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType(call.getString("mime") ?: "application/octet-stream")
+            .putExtra(Intent.EXTRA_TITLE, name)
+        startActivityForResult(call, intent, "fileSaved")
+    }
+
+    @ActivityCallback
+    fun fileSaved(call: PluginCall?, result: ActivityResult) {
+        val file = File(staged, STAGED_NAME)
+        val uri = result.data?.data
+        if (call == null || result.resultCode != Activity.RESULT_OK || uri == null || !file.exists()) {
+            staged.deleteRecursively()
+            return call?.resolve(JSObject().put("saved", false)) ?: Unit
+        }
+        io.execute {
+            try {
+                val out = context.contentResolver.openOutputStream(uri) ?: throw java.io.IOException("No stream for $uri")
+                out.use { sink -> file.inputStream().use { it.copyTo(sink) } }
+                call.resolve(JSObject().put("saved", true))
+            } catch (e: Exception) {
+                call.reject("Couldn’t save that file there. Try another folder.", "service_failed")
+            } finally {
+                staged.deleteRecursively()
+            }
+        }
+    }
+
     /* ── Internals ──────────────────────────────────────────────────────── */
 
     private inner class Events : Player.Listener {
@@ -398,6 +519,9 @@ class RainettePlayerPlugin : Plugin() {
     companion object {
         /** Bumped when the page and the plugin must change together. */
         const val PROTOCOL = 1
+        private const val STAGED_NAME = "file"
+        private val UPDATE_URL =
+            Regex("^https://github\\.com/Krysis-ux/Rainette-music/releases/download/v\\d+\\.\\d+\\.\\d+/rainette-music-android\\.apk$")
         const val CANCELED = "canceled"
         const val MISMATCH = "mismatch"
         const val SERVICE_FAILED = "service_failed"

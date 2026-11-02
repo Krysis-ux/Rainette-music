@@ -40,6 +40,9 @@ public actor StreamResolver {
 
     private var cache: [String: ResolvedStream] = [:]
     private var running: [String: Task<ResolvedStream, Error>] = [:]
+    /// YouTube's visitor id, asked for once and reused, which the quick
+    /// path needs to be answered at all.
+    private var visitor: String?
 
     public init() {}
 
@@ -55,7 +58,7 @@ public actor StreamResolver {
         // Two callers asking for the same song (the player and its prefetch)
         // share one extraction rather than racing two.
         if !force, let task = running[id] { return try await task.value }
-        let task = Task { try await Self.extract(id, now: now) }
+        let task = Task { try await self.extract(id, now: now) }
         running[id] = task
         defer { running[id] = nil }
         do {
@@ -72,7 +75,84 @@ public actor StreamResolver {
         cache[id] = nil
     }
 
-    private static func extract(_ id: String, now: Date) async throws -> ResolvedStream {
+    /// The quick path first, the full extraction only when it does not answer.
+    private func extract(_ id: String, now: Date) async throws -> ResolvedStream {
+        do {
+            return try await quickResolve(id, now: now)
+        } catch {
+            visitor = nil
+            return try await Self.fullExtract(id, now: now)
+        }
+    }
+
+    /// One request, as YouTube's visionOS client, whose addresses are the ones
+    /// the full extraction ended up serving anyway (the others are refused).
+    /// Measured from a Mac: ~0.3 s, where the full extraction took 5–7 s,
+    /// because that also downloads and runs YouTube's web player.
+    private func quickResolve(_ id: String, now: Date) async throws -> ResolvedStream {
+        let ranked = Self.rankAudio(try await Self.visionCandidates(id, visitor: try await visitorData()))
+        guard !ranked.isEmpty else { throw PlayerError(PlayerError.sourceChanged) }
+        return try await Self.firstServed(ranked, now: now, isServed: Self.isServed)
+    }
+
+    private func visitorData() async throws -> String {
+        if let visitor { return visitor }
+        var request = URLRequest(url: Self.visitorEndpoint, timeoutInterval: 10)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "context": ["client": ["clientName": "WEB", "clientVersion": "2.20260708.00.00", "hl": "en", "gl": "US"]],
+        ])
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let raw = (root?["responseContext"] as? [String: Any])?["visitorData"] as? String,
+              let value = raw.removingPercentEncoding, !value.isEmpty
+        else { throw PlayerError(PlayerError.sourceChanged) }
+        visitor = value
+        return value
+    }
+
+    static let visitorEndpoint = URL(string: "https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false")!
+    static let playerEndpoint = URL(string: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false")!
+    static let visionClient: [String: Any] = [
+        "clientName": "VISIONOS", "clientVersion": "1.02", "deviceMake": "Apple", "deviceModel": "RealityDevice17,1",
+        "osName": "visionOS", "osVersion": "26.5.23O471", "hl": "en", "gl": "US",
+    ]
+    static let visionUserAgent =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+
+    static func visionCandidates(_ id: String, visitor: String, session: URLSession = .shared) async throws -> [AudioCandidate] {
+        var request = URLRequest(url: playerEndpoint, timeoutInterval: 10)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(visionUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(visitor, forHTTPHeaderField: "X-Goog-Visitor-Id")
+        var client = visionClient
+        client["visitorData"] = visitor
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "context": ["client": client], "videoId": id, "contentCheckOk": true, "racyCheckOk": true,
+        ])
+        let (data, _) = try await session.data(for: request)
+        return try parsePlayer(data)
+    }
+
+    /// The formats a player answer gives a direct address for. Anything but a
+    /// playable answer is a reason to take the long way, not an empty list.
+    public static func parsePlayer(_ data: Data) throws -> [AudioCandidate] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (root["playabilityStatus"] as? [String: Any])?["status"] as? String == "OK",
+              let formats = (root["streamingData"] as? [String: Any])?["adaptiveFormats"] as? [[String: Any]]
+        else { throw PlayerError(PlayerError.sourceChanged) }
+        return formats.compactMap { format in
+            guard let raw = format["url"] as? String, let url = URL(string: raw),
+                  let mime = format["mimeType"] as? String else { return nil }
+            return AudioCandidate(url: url, fileExtension: mime.hasPrefix("audio/mp4") ? "m4a" : "webm",
+                                  bitrate: format["averageBitrate"] as? Int ?? format["bitrate"] as? Int ?? 0,
+                                  hasAudio: mime.hasPrefix("audio/"), hasVideo: mime.hasPrefix("video/"))
+        }
+    }
+
+    private static func fullExtract(_ id: String, now: Date) async throws -> ResolvedStream {
         let streams = try await YouTube(videoID: id, methods: [.local]).streams
         let candidates = streams.map {
             AudioCandidate(url: $0.url, fileExtension: $0.fileExtension.rawValue,

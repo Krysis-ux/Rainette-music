@@ -3,6 +3,7 @@ package com.krysisux.rainettemusic
 import android.net.Uri
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSpec
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -24,6 +25,28 @@ class StreamResolverTest {
 
     private fun candidate(itag: Int, bitrate: Int, suffix: String, url: String = "https://r1.example/$itag", isUrl: Boolean = true) =
         StreamResolver.Candidate(url, itag, bitrate, suffix, isUrl)
+
+    @Test
+    fun `a quick player answer gives its direct audio addresses and nothing else`() {
+        val answer = JSONObject(
+            """{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[
+              {"itag":140,"mimeType":"audio/mp4; codecs=\"mp4a.40.2\"","averageBitrate":129000,"url":"https://rr1.googlevideo.com/videoplayback?c=VISIONOS&itag=140"},
+              {"itag":137,"mimeType":"video/mp4","bitrate":4000000,"url":"https://rr1.googlevideo.com/videoplayback?c=VISIONOS&itag=137"},
+              {"itag":139,"mimeType":"audio/mp4","signatureCipher":"s=x&url=y"}]}}""".trimIndent(),
+        )
+        val best = StreamResolver.pickAudio(StreamResolver.parsePlayer(answer))
+        assertEquals("https://rr1.googlevideo.com/videoplayback?c=VISIONOS&itag=140", best?.url)
+    }
+
+    @Test
+    fun `anything but a playable answer takes the full path`() {
+        try {
+            StreamResolver.parsePlayer(JSONObject("""{"playabilityStatus":{"status":"LOGIN_REQUIRED"}}"""))
+            fail("a refusal is not an empty list")
+        } catch (e: StreamResolver.ResolveException) {
+            assertEquals(StreamResolver.SOURCE_CHANGED, e.code)
+        }
+    }
 
     @Test
     fun `AAC wins over a higher-bitrate Opus, and the best AAC wins among AAC`() {
