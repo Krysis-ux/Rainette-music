@@ -47,8 +47,8 @@ export async function nativeRequest(options) {
 	}
 }
 
-async function http(url, { method = 'GET', data, headers = {} } = {}) {
-	const response = await nativeRequest({ url, method, headers, data });
+async function http(url, { method = 'GET', data, headers = {}, timeoutMs = TIMEOUT_MS } = {}) {
+	const response = await nativeRequest({ url, method, headers, data, connectTimeout: timeoutMs, readTimeout: timeoutMs });
 	const body = typeof response?.data === 'string' && /^[[{]/.test(response.data.trim())
 		? JSON.parse(response.data)
 		: response?.data;
@@ -254,7 +254,9 @@ export function parseArtistPage(answer, seed = {}) {
 		description: text(dig(header, 'description', 'runs')),
 	};
 
-	const page = { artist, songs: [], songsBrowseId: '', albums: [], singles: [], videos: [] };
+	// `more` is where each shelf's full list lives, when it has more than the
+	// page shows: YouTube Music's artist page lists ten singles of thirty.
+	const page = { artist, songs: [], songsBrowseId: '', albums: [], singles: [], videos: [], more: {} };
 	for (const section of sections) {
 		const shelf = section.musicShelfRenderer;
 		if (shelf) {
@@ -266,9 +268,16 @@ export function parseArtistPage(answer, seed = {}) {
 		if (!carousel) continue;
 		const title = text(dig(carousel, 'header', 'musicCarouselShelfBasicHeaderRenderer', 'title', 'runs')).toLowerCase();
 		const cards = (carousel.contents || []).map(item => item.musicTwoRowItemRenderer).filter(Boolean);
-		if (title === 'albums') page.albums = cards.map(card => albumFromCard(card, artist, 'Album')).filter(Boolean);
-		else if (title.startsWith('singles')) page.singles = cards.map(card => albumFromCard(card, artist, 'Single')).filter(Boolean);
-		else if (title === 'videos') page.videos = cards.map(card => songFromCard(card, artist)).filter(Boolean);
+		const header = dig(carousel, 'header', 'musicCarouselShelfBasicHeaderRenderer');
+		const more = dig(header, 'moreContentButton', 'buttonRenderer', 'navigationEndpoint', 'browseEndpoint')
+			|| dig(header, 'title', 'runs', 0, 'navigationEndpoint', 'browseEndpoint');
+		const kind = title === 'albums' ? 'albums' : title.startsWith('singles') ? 'singles' : title === 'videos' ? 'videos' : '';
+		if (kind && more?.browseId) {
+			page.more[kind] = more.params ? { browseId: String(more.browseId), params: String(more.params) } : { browseId: String(more.browseId) };
+		}
+		if (kind === 'albums') page.albums = cards.map(card => albumFromCard(card, artist, 'Album')).filter(Boolean);
+		else if (kind === 'singles') page.singles = cards.map(card => albumFromCard(card, artist, 'Single')).filter(Boolean);
+		else if (kind === 'videos') page.videos = cards.map(card => songFromCard(card, artist)).filter(Boolean);
 	}
 	return page;
 }
@@ -291,7 +300,36 @@ export function parseTrackPage(answer) {
 		type: details.find(part => RELEASE_TYPES.test(part)) || '',
 		art: thumbOf(header.thumbnail),
 		rows: rows.map(item => item?.musicResponsiveListItemRenderer).filter(Boolean),
+		continuation: continuationOf(rows),
 	};
+}
+
+const continuationOf = items => String(dig(items?.[items.length - 1], 'continuationItemRenderer', 'continuationEndpoint',
+	'continuationCommand', 'token') || '');
+
+/** The release cards of an artist's full "Albums" or "Singles & EPs" page. */
+export function parseReleaseGrid(answer) {
+	const grid = dig(answer, 'contents', 'singleColumnBrowseResultsRenderer', 'tabs', 0, 'tabRenderer', 'content',
+		'sectionListRenderer', 'contents', 0, 'gridRenderer', 'items');
+	if (!Array.isArray(grid)) throw catalogFailure('That list did not load.');
+	return grid.map(item => item?.musicTwoRowItemRenderer).filter(Boolean);
+}
+
+/* A long list arrives a hundred rows at a time. Three more pages is three
+ * hundred more songs, which is past what anyone scrolls an artist page for. */
+const MORE_PAGES = 3;
+
+async function allRows(page) {
+	const rows = [...page.rows];
+	let token = page.continuation;
+	for (let n = 0; token && n < MORE_PAGES; n += 1) {
+		const next = await innertube('browse', { continuation: token });
+		const items = (next?.onResponseReceivedActions || [])
+			.flatMap(action => dig(action, 'appendContinuationItemsAction', 'continuationItems') || []);
+		rows.push(...items.map(item => item?.musicResponsiveListItemRenderer).filter(Boolean));
+		token = continuationOf(items);
+	}
+	return rows;
 }
 
 /* ── Asking ───────────────────────────────────────────────────────────────*/
@@ -359,16 +397,28 @@ async function fullArtistCatalog({ artist_id: id = '', name = '', thumbnail_url:
 		seed = { id: found.id, name: found.name, art: seed.art || found.thumbnail_url };
 	}
 	const page = parseArtistPage(await innertube('browse', { browseId: seed.id }), seed);
-	// The page shows five top songs; the playlist behind them has the rest.
-	if (page.songsBrowseId) {
-		try {
-			const full = parseTrackPage(await innertube('browse', { browseId: page.songsBrowseId }));
-			const songs = full.rows.map(row => songFromRow(row, { artist: page.artist.name, artistId: page.artist.id })).filter(Boolean);
-			if (songs.length) page.songs = songs;
-		} catch { /* the five are still a page */ }
-	}
-	const { songsBrowseId: _unused, ...result } = page;
-	return { ...result, source: 'on-device' };
+	const { artist } = page;
+	const hint = { artist: artist.name, artistId: artist.id };
+	const releases = async (more, fallback, type) => {
+		if (!more) return fallback;
+		const cards = parseReleaseGrid(await innertube('browse', more));
+		return cards.map(card => albumFromCard(card, artist, type)).filter(Boolean);
+	};
+	const tracks = async (browse, fallback) => {
+		if (!browse) return fallback;
+		const rows = await allRows(parseTrackPage(await innertube('browse', browse)));
+		const songs = rows.map(row => songFromRow(row, hint)).filter(Boolean);
+		return songs.length ? songs : fallback;
+	};
+	// The page shows the first of each; the lists behind it have the rest.
+	// Each is a bonus: one failing leaves what the page itself showed.
+	const [songs, albums, singles, videos] = await Promise.all([
+		tracks(page.songsBrowseId && { browseId: page.songsBrowseId }, page.songs).catch(() => page.songs),
+		releases(page.more.albums, page.albums, 'Album').catch(() => page.albums),
+		releases(page.more.singles, page.singles, 'Single').catch(() => page.singles),
+		tracks(page.more.videos, page.videos).catch(() => page.videos),
+	]);
+	return { artist, songs, albums, singles, videos, source: 'on-device' };
 }
 
 /** An album's tracks, as `music_album_tracks` returns them. */
@@ -418,9 +468,12 @@ export async function artistImages({ names = [] } = {}) {
 }
 
 /* ── Lyrics ───────────────────────────────────────────────────────────────
- * LRCLIB, as the computer asks it, plus a looser search when the exact lookup
- * misses: a YouTube title ("Song - Sped Up", "Song (Official Audio)") rarely
- * matches a release's own spelling and length to the second. */
+ * Two sources at once: LRCLIB's own database, for lines timed to the song,
+ * and YouTube Music's lyrics (Musixmatch, LyricFind), for the words of the
+ * many songs LRCLIB lacks. Timed lines win; plain words are next. LRCLIB's
+ * outside search is slow (seconds, for a miss), so it is only the last try. */
+
+const LYRICS_TIMEOUT_MS = 8000;
 
 function lyricsShape(entry) {
 	return {
@@ -431,29 +484,60 @@ function lyricsShape(entry) {
 }
 
 const cleanTitle = title => String(title || '')
-	.replace(/\s*[([](official|lyric|audio|video|visuali[sz]er|explicit|clean)[^)\]]*[)\]]/gi, '')
+	.replace(/\s*[([](official|lyric|audio|video|visuali[sz]er|explicit|clean|feat\.?|ft\.?|with)[^)\]]*[)\]]/gi, '')
+	.replace(/\s+-\s+(sped up|slowed|remaster(ed)?|live)\b.*$/i, '')
 	.trim();
 
-export async function lyrics({ track } = {}) {
-	const title = String(track?.title || '').trim();
-	if (!title) throw catalogFailure('Nothing to look up.');
-	const artist = String(track?.artist || '').trim();
-	const headers = { 'User-Agent': 'RainetteMusic (https://github.com/Krysis-ux/Rainette-music)' };
-	const query = params => Object.entries(params).filter(([, value]) => value)
-		.map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&');
+const LRCLIB_HEADERS = { 'User-Agent': 'RainetteMusic (https://github.com/Krysis-ux/Rainette-music)' };
+const query = params => Object.entries(params).filter(([, value]) => value)
+	.map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&');
 
-	const duration = Number(track?.duration_s) > 0 ? Math.round(Number(track.duration_s)) : 0;
-	const exact = await http(`${LRCLIB}get?${query({ track_name: title, artist_name: artist, duration })}`, { headers });
+async function lrclib(title, artist, duration, { outside = false } = {}) {
+	const exact = await http(`${LRCLIB}${outside ? 'get' : 'get-cached'}?${query({ track_name: title, artist_name: artist, duration })}`,
+		{ headers: LRCLIB_HEADERS, timeoutMs: LYRICS_TIMEOUT_MS });
 	if (exact.status === 200 && exact.body && typeof exact.body === 'object') return lyricsShape(exact.body);
-	if (exact.status && exact.status !== 404) throw catalogFailure('The lyrics service did not answer. Try again.');
-
-	const found = await http(`${LRCLIB}search?${query({ track_name: cleanTitle(title), artist_name: artist })}`, { headers });
+	if (outside) return null;
+	const found = await http(`${LRCLIB}search?${query({ track_name: cleanTitle(title), artist_name: artist })}`,
+		{ headers: LRCLIB_HEADERS, timeoutMs: LYRICS_TIMEOUT_MS });
 	const list = Array.isArray(found.body) ? found.body : [];
 	const close = entry => !duration || !entry?.duration || Math.abs(entry.duration - duration) <= 8;
 	const best = list.find(entry => entry?.syncedLyrics && close(entry))
 		|| list.find(entry => entry?.plainLyrics && close(entry))
 		|| list.find(entry => entry?.syncedLyrics || entry?.plainLyrics);
-	return best ? lyricsShape(best) : { ...lyricsShape(null), not_found: true };
+	return best ? lyricsShape(best) : null;
+}
+
+/** YouTube Music's own lyrics for a song: its Lyrics tab, then that page. */
+async function youtubeLyrics(videoId) {
+	if (!/^[A-Za-z0-9_-]{11}$/.test(String(videoId || ''))) return null;
+	const next = await innertube('next', { videoId });
+	const tabs = dig(next, 'contents', 'singleColumnMusicWatchNextResultsRenderer', 'tabbedRenderer',
+		'watchNextTabbedResultsRenderer', 'tabs') || [];
+	const browseId = tabs.map(tab => dig(tab, 'tabRenderer', 'endpoint', 'browseEndpoint', 'browseId'))
+		.find(id => String(id || '').startsWith('MPLY'));
+	if (!browseId) return null;
+	const page = await innertube('browse', { browseId });
+	const shelf = dig(page, 'contents', 'sectionListRenderer', 'contents', 0, 'musicDescriptionShelfRenderer');
+	const words = text(dig(shelf, 'description', 'runs')).replace(/\r\n?/g, '\n').trim();
+	return words ? { plain: words, synced: '', instrumental: false, source: text(dig(shelf, 'footer', 'runs')) } : null;
+}
+
+export async function lyrics({ track } = {}) {
+	const title = String(track?.title || '').trim();
+	if (!title) throw catalogFailure('Nothing to look up.');
+	const artist = String(track?.artist || '').trim();
+	const duration = Number(track?.duration_s) > 0 ? Math.round(Number(track.duration_s)) : 0;
+
+	const [timed, words] = await Promise.allSettled([lrclib(title, artist, duration), youtubeLyrics(track?.source_id)]);
+	const fromLrclib = timed.status === 'fulfilled' ? timed.value : null;
+	const fromYoutube = words.status === 'fulfilled' ? words.value : null;
+	if (fromLrclib?.synced || fromLrclib?.instrumental) return fromLrclib;
+	if (fromYoutube) return fromYoutube;
+	if (fromLrclib?.plain) return fromLrclib;
+	const outside = await lrclib(title, artist, duration, { outside: true }).catch(() => null);
+	if (outside) return outside;
+	if (timed.status === 'rejected' && words.status === 'rejected') throw timed.reason;
+	return { ...lyricsShape(null), not_found: true };
 }
 
 /* ── Following, on this phone ─────────────────────────────────────────────*/

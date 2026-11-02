@@ -1,5 +1,6 @@
 package com.krysisux.rainettemusic
 
+import org.json.JSONObject
 import org.schabi.newpipe.extractor.Image
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
@@ -21,6 +22,7 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.URLDecoder
 import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 
@@ -76,10 +78,109 @@ object StreamResolver {
 
     fun isValidId(id: String) = ID.matches(id)
 
-    /** A playable audio URL for [videoId], from cache unless [force] or near expiry. */
+    /**
+     * A playable audio URL for [videoId], from cache unless [force] or near
+     * expiry. The quick path first; NewPipe's full extraction when it does not
+     * answer, and always when re-asking after the source refused an address.
+     */
     fun resolve(videoId: String, force: Boolean = false, now: Long = System.currentTimeMillis()): Resolved {
         if (!isValidId(videoId)) throw ResolveException(INVALID, "Not a track this app can play.")
         if (!force) cache[videoId]?.takeIf { it.expiresAtMs - now > EXPIRY_MARGIN_MS }?.let { return it }
+        if (!force) {
+            try {
+                return quickResolve(videoId, now).also { cache[videoId] = it }
+            } catch (e: Exception) {
+                visitor = null
+            }
+        }
+        return fullResolve(videoId, now)
+    }
+
+    /*
+     * One request, as YouTube's visionOS client, whose addresses are the ones
+     * the source serves (other clients' are refused for many songs). NewPipe's
+     * full extraction also downloads and runs YouTube's web player, which is
+     * most of the several seconds a song took to start; this is ~0.3 s.
+     */
+    private const val VISITOR_URL = "https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false"
+    private const val PLAYER_URL = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"
+    private const val VISION_UA =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+
+    @Volatile
+    private var visitor: String? = null
+
+    private fun quickResolve(videoId: String, now: Long): Resolved {
+        val id = visitor ?: visitorData().also { visitor = it }
+        val client = JSONObject().put("clientName", "VISIONOS").put("clientVersion", "1.02").put("deviceMake", "Apple")
+            .put("deviceModel", "RealityDevice17,1").put("osName", "visionOS").put("osVersion", "26.5.23O471")
+            .put("hl", "en").put("gl", "US").put("visitorData", id)
+        val answer = postJson(
+            PLAYER_URL,
+            JSONObject().put("context", JSONObject().put("client", client)).put("videoId", videoId)
+                .put("contentCheckOk", true).put("racyCheckOk", true),
+            mapOf("User-Agent" to VISION_UA, "X-Goog-Visitor-Id" to id),
+        )
+        val best = pickAudio(parsePlayer(answer)) ?: throw ResolveException(SOURCE_CHANGED, "No direct audio.")
+        val resolved = Resolved(best.url, userAgentFor(best.url), if (best.suffix == "m4a") "audio/mp4" else "audio/webm",
+            expiresAt(best.url, now))
+        if (!isServed(resolved)) throw ResolveException(SOURCE_CHANGED, "The quick address was refused.")
+        return resolved
+    }
+
+    private fun visitorData(): String {
+        val client = JSONObject().put("clientName", "WEB").put("clientVersion", "2.20260708.00.00").put("hl", "en").put("gl", "US")
+        val answer = postJson(VISITOR_URL, JSONObject().put("context", JSONObject().put("client", client)), emptyMap())
+        return URLDecoder.decode(answer.getJSONObject("responseContext").getString("visitorData"), "UTF-8")
+    }
+
+    /** The audio formats a player answer gives a direct address for; anything but a playable answer throws. */
+    fun parsePlayer(answer: JSONObject): List<Candidate> {
+        if (answer.optJSONObject("playabilityStatus")?.optString("status") != "OK") {
+            throw ResolveException(SOURCE_CHANGED, "The player did not answer OK.")
+        }
+        val formats = answer.optJSONObject("streamingData")?.optJSONArray("adaptiveFormats")
+            ?: throw ResolveException(SOURCE_CHANGED, "No formats.")
+        return (0 until formats.length()).map { formats.getJSONObject(it) }
+            .filter { it.optString("mimeType").startsWith("audio/") && it.optString("url").isNotEmpty() }
+            .map {
+                val suffix = if (it.optString("mimeType").startsWith("audio/mp4")) "m4a" else "webm"
+                Candidate(it.getString("url"), it.optInt("itag"), it.optInt("averageBitrate", it.optInt("bitrate")), suffix, true)
+            }
+    }
+
+    /** One byte, asked for the way the player will ask for the rest. */
+    private fun isServed(stream: Resolved): Boolean {
+        val connection = URL(stream.url).openConnection() as HttpURLConnection
+        try {
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 10_000
+            connection.setRequestProperty("Range", "bytes=0-0")
+            connection.setRequestProperty("User-Agent", stream.userAgent)
+            return connection.responseCode == 206
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun postJson(url: String, body: JSONObject, headers: Map<String, String>): JSONObject {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        try {
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 10_000
+            connection.requestMethod = "POST"
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json")
+            headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
+            connection.outputStream.use { it.write(body.toString().toByteArray()) }
+            if (connection.responseCode != 200) throw IOException("HTTP ${connection.responseCode}")
+            return JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun fullResolve(videoId: String, now: Long): Resolved {
         init()
         val info = try {
             StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=$videoId")

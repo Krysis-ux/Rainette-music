@@ -72,9 +72,13 @@ FAKE_BRIDGE = """
         }
         if (url.includes('/youtubei/v1/browse')) {
             const id = String(options.data?.browseId || '');
-            return answer(200, id.startsWith('UC') ? ytm.artist : id.startsWith('VL') ? ytm.playlist : ytm.album);
+            if (options.data?.continuation) return answer(200, { onResponseReceivedActions: [] });
+            return answer(200, id.startsWith('UC') ? ytm.artist : id.startsWith('VL') ? ytm.playlist
+                : id.startsWith('MPAD') ? ytm.releases : ytm.album);
         }
-        if (url.includes('lrclib.net/api/get')) return answer(200, ytm.lyrics);
+        if (url.includes('lrclib.net/api/get')) return ytm.lyrics ? answer(200, ytm.lyrics) : answer(404, {});
+        if (url.includes('lrclib.net/api/search')) return answer(200, []);
+        if (url.includes('/youtubei/v1/next')) return ytm.next ? answer(200, ytm.next) : answer(404, {});
         if (url.endsWith('/releases/latest')) return answer(200, ytm.latest);
         if (url.startsWith('https://stream.example/')) {
             // Ranged, as the audio host answers: a 2.5 MB file in 1 MB reads.
@@ -795,8 +799,10 @@ class TestTheAppsOwnCatalog:
         self.search(page)
         page.locator("#searchResults .collection-row").first.click()
         page.locator(".sheet-catalog .catalog-tabs").wait_for()
+        # Each shelf's full list, not just the few the artist page shows:
+        # four singles from the "Singles & EPs" page, three videos from its list.
         assert page.locator(".sheet-catalog .catalog-tabs button").all_text_contents() == [
-            "Songs3", "Albums2", "Singles2", "Videos2"]
+            "Songs3", "Albums2", "Singles4", "Videos3"]
         assert page.locator(".sheet-catalog .catalog-sub").inner_text() == "3.75M subscribers"
         assert page.locator(".sheet-catalog .catalog-art").get_attribute("src").startswith("https://")
         follow = page.locator(".sheet-catalog .catalog-follow")
@@ -836,7 +842,26 @@ class TestTheAppsOwnCatalog:
         page.locator(".sheet-lyrics .lyrics-line.is-current").wait_for()
         assert page.locator(".sheet-lyrics .lyrics-line").all_inner_texts() == ["First line", "Second line", "Third line"]
         asked = [call["options"]["url"] for call in native_calls(page, "http") if "lrclib" in call["options"]["url"]]
-        assert asked == ["https://lrclib.net/api/get?track_name=From%20The%20Start&artist_name=Laufey&duration=170"]
+        # LRCLIB's own database first; its slow outside search only when nothing else answered.
+        assert asked == ["https://lrclib.net/api/get-cached?track_name=From%20The%20Start&artist_name=Laufey&duration=170"]
+        assert not errors, errors
+        page.close()
+
+    def test_youtube_musics_lyrics_fill_in_when_lrclib_has_none(self, browser, static_server):
+        page, errors, _ = open_app(browser, static_server, catalog=True)
+        page.evaluate("""() => {
+            window.__ytm.lyrics = null;
+            window.__ytm.next = { contents: { singleColumnMusicWatchNextResultsRenderer: { tabbedRenderer: {
+                watchNextTabbedResultsRenderer: { tabs: [{ tabRenderer: {} },
+                    { tabRenderer: { endpoint: { browseEndpoint: { browseId: 'MPLYt_example' } } } }] } } } } };
+            window.__ytm.album = { contents: { sectionListRenderer: { contents: [{ musicDescriptionShelfRenderer: {
+                description: { runs: [{ text: 'Words line one\\r\\nWords line two' }] },
+                footer: { runs: [{ text: 'Source: Musixmatch' }] } } }] } } };
+        }""")
+        self.search(page)
+        self.open_menu(page).get_by_text("Lyrics", exact=True).click()
+        page.locator(".sheet-lyrics .lyrics-line").first.wait_for()
+        assert page.locator(".sheet-lyrics .lyrics-line").all_inner_texts() == ["Words line one", "Words line two"]
         assert not errors, errors
         page.close()
 

@@ -56,6 +56,10 @@ public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPicker
     private var pendingSave: (call: CAPPluginCall, file: URL)?
 
     override public func load() {
+        // Closing the app from the app switcher closes the music with it.
+        NotificationCenter.default.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { _ = self?.engine.stop() }
+        }
         // A page that was asleep missed events; give it the truth on return.
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in

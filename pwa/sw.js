@@ -8,7 +8,7 @@
  * gesture fix could be tested on a phone, appear not to work, and be "fixed"
  * again. Tying the cache name to the bytes it holds ends that: any change to a
  * client file is a new cache, and CI will not let the two disagree. */
-const CACHE = 'rainette-pwa-v37-b82dad45';
+const CACHE = 'rainette-pwa-v38-8e683db7';
 const SHELL = [
   './',
   './index.html',

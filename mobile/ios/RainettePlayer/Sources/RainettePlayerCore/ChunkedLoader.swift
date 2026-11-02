@@ -10,6 +10,9 @@ import Foundation
 /// this answers its requests a megabyte at a time, the way the Android app's
 /// ChunkedDataSource does.
 ///
+/// Pieces are whole, aligned megabytes, kept in `SongCache`: a song heard
+/// before is served from disk without asking the source for anything.
+///
 /// It also owns the source's failures: an address that expires (403/410) is
 /// resolved afresh at most twice, and a lost connection is retried with backoff
 /// (2, 4, 8, 16, 30 s) before the song is given up on. Meanwhile AVPlayer just
@@ -24,6 +27,7 @@ public final class ChunkedLoader: NSObject, AVAssetResourceLoaderDelegate, @unch
     public let queue = DispatchQueue(label: "rainette.loader")
     private let resolver: StreamResolver
     private let session: URLSession
+    private let cache: SongCache
     /// Loader queue only.
     private var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var length: Int64?
@@ -32,10 +36,11 @@ public final class ChunkedLoader: NSObject, AVAssetResourceLoaderDelegate, @unch
     /// queue only; read it through `reason()`.
     private var failure: PlayerError?
 
-    public init(id: String, resolver: StreamResolver = .shared, session: URLSession = .shared) {
+    public init(id: String, resolver: StreamResolver = .shared, session: URLSession = .shared, cache: SongCache = .shared) {
         self.id = id
         self.resolver = resolver
         self.session = session
+        self.cache = cache
     }
 
     public static func url(for id: String) -> URL {
@@ -109,8 +114,40 @@ public final class ChunkedLoader: NSObject, AVAssetResourceLoaderDelegate, @unch
         }
     }
 
-    /// Bytes `from...through` and the whole file's length.
+    /// Bytes `from...through` and the whole file's length, assembled from
+    /// whole pieces so each one can be kept and served again.
     private func fetch(from: Int64, through: Int64) async throws -> (Data, Int64) {
+        let first = from / Self.chunkBytes
+        var joined = Data()
+        var total: Int64 = 0
+        for index in first...(through / Self.chunkBytes) {
+            let (bytes, size) = try await piece(index)
+            total = size
+            joined.append(bytes)
+            if Int64(bytes.count) < Self.chunkBytes { break }   // the end of the file
+        }
+        let start = Int(from - first * Self.chunkBytes)
+        guard start < joined.count else { return (Data(), total) }
+        let end = min(joined.count, Int(through - first * Self.chunkBytes) + 1)
+        return (joined.subdata(in: start..<end), total)
+    }
+
+    /// The first piece into the cache ahead of time. Failing here costs
+    /// nothing: the song is simply fetched when it is played.
+    public func warm() async {
+        _ = try? await piece(0)
+    }
+
+    private func piece(_ index: Int64) async throws -> (Data, Int64) {
+        if let kept = cache.piece(id, index) { return kept }
+        let from = index * Self.chunkBytes
+        let (bytes, total) = try await download(from: from, through: from + Self.chunkBytes - 1)
+        cache.store(id, index, bytes, total: total)
+        return (bytes, total)
+    }
+
+    /// Bytes `from...through` from the source, and the whole file's length.
+    private func download(from: Int64, through: Int64) async throws -> (Data, Int64) {
         var refreshes = 0
         var drops = 0
         while true {
