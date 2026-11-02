@@ -31,6 +31,9 @@ public final class ChunkedLoader: NSObject, AVAssetResourceLoaderDelegate, @unch
     /// Loader queue only.
     private var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var length: Int64?
+    /// The song's true length in seconds, once its first piece is in. Loader
+    /// queue only; read it through `songLength()`.
+    private var seconds: Double?
     /// Why the song could not be served, for the player to report; AVPlayer
     /// itself only ever says "the operation could not be completed". Loader
     /// queue only; read it through `reason()`.
@@ -64,6 +67,11 @@ public final class ChunkedLoader: NSObject, AVAssetResourceLoaderDelegate, @unch
 
     public func reason() -> PlayerError? {
         queue.sync { failure }
+    }
+
+    /// How long the song really is, which AVPlayer misreads (see `SongLength`).
+    public func songLength() -> Double? {
+        queue.sync { seconds }
     }
 
     /// Stop every request in flight; the item is being thrown away.
@@ -139,6 +147,14 @@ public final class ChunkedLoader: NSObject, AVAssetResourceLoaderDelegate, @unch
     }
 
     private func piece(_ index: Int64) async throws -> (Data, Int64) {
+        let (bytes, total) = try await keptOrDownloaded(index)
+        if index == 0, let found = SongLength.seconds(in: bytes) {
+            queue.sync { seconds = seconds ?? found }
+        }
+        return (bytes, total)
+    }
+
+    private func keptOrDownloaded(_ index: Int64) async throws -> (Data, Int64) {
         if let kept = cache.piece(id, index) { return kept }
         let from = index * Self.chunkBytes
         let (bytes, total) = try await download(from: from, through: from + Self.chunkBytes - 1)

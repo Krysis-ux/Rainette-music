@@ -75,6 +75,8 @@ public final class PlayerEngine {
     private var item: AVPlayerItem?
     private var loader: ChunkedLoader?
     private var startAt: Double?
+    /// The song's true length, from its file, once it has loaded.
+    private var songSeconds: Double?
     private var itemWatch: [NSKeyValueObservation] = []
     private var playerWatch: [NSKeyValueObservation] = []
     private var pending: Pending?
@@ -240,7 +242,7 @@ public final class PlayerEngine {
         state.playing = current != nil && wantsToPlay && !ended && item?.status != .failed
         state.loading = current != nil && !ended && item?.status != .failed && (!ready || (wantsToPlay && waiting))
         state.positionS = current == nil ? 0 : seconds()
-        state.durationS = itemLength.isFinite && itemLength > 0 ? itemLength : (current?.durationS ?? 0)
+        state.durationS = songSeconds ?? (itemLength.isFinite && itemLength > 0 ? itemLength : (current?.durationS ?? 0))
         return state
     }
 
@@ -256,6 +258,7 @@ public final class PlayerEngine {
         dropItem()
         index = at
         ended = false
+        songSeconds = nil
         startAt = position > 0 ? position : nil
         let song = queue[at]
         let loader = ChunkedLoader(id: song.sourceId, resolver: resolver)
@@ -290,6 +293,12 @@ public final class PlayerEngine {
         guard observed === item else { return }
         switch observed.status {
         case .readyToPlay:
+            // AVPlayer thinks the song is about twice as long and would play
+            // silence to get there; it ends at the file's own length instead.
+            if let length = loader?.songLength() {
+                songSeconds = length
+                observed.forwardPlaybackEndTime = CMTime(seconds: length, preferredTimescale: 44_100)
+            }
             if let start = startAt {
                 startAt = nil
                 player.seek(to: CMTime(seconds: start, preferredTimescale: 1000), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
