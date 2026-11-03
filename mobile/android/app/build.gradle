@@ -22,7 +22,7 @@ android {
     defaultConfig {
         // Not the 0.2.6 app's com.krysisux.rainettemusic: that one is signed with a
         // key that is not available, so this installs beside it rather than
-        // pretending to be an update (see mobile/AUDIT.md section 2).
+        // pretending to be an update (see docs/mobile-audit.md section 2).
         applicationId "com.krysisux.rainette"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion

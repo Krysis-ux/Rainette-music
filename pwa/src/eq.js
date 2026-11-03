@@ -1,10 +1,5 @@
-/* The equaliser sheet. The graph it drives lives in ./audio.js, which owns the
- * one Web Audio chain that volume and the EQ both hang off.
- *
- * It only shapes audio this phone is playing. In linked mode the computer is
- * making the sound and its own EQ applies, so the sheet says so rather than
- * offering sliders that do nothing.
- */
+/* The equaliser sheet. The graph it drives lives in ./audio.js, which owns the one Web Audio chain
+ * that volume and the EQ both hang off. */
 
 import { el, icon } from './dom.js';
 import { createSlider } from './slider.js';
@@ -149,10 +144,7 @@ export function openEqualizer() {
 
 			note.textContent = eqIsOn() ? 'Shapes audio playing on this phone.' : 'Audio plays untouched.';
 			body.append(toggleRow, presets, sliders, reset, note);
-			/* The equaliser needs an audio graph, and WebKit suspends one
-			 * whenever the page is hidden. Said here rather than discovered
-			 * later, because "the music stops when I lock my phone" is not a
-			 * symptom anybody would connect back to this switch. */
+			/* The equaliser needs an audio graph, and WebKit suspends one whenever the page is hidden. */
 			if (graphCostsBackgroundPlayback()) {
 				body.append(el('p', 'catalog-note',
 					'On an iPhone the equalizer needs an audio graph, and iOS silences one whenever the screen locks or you switch apps. With it on, playback will not continue in the background.'));

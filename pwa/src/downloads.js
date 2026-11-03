@@ -1,26 +1,5 @@
-/* Keeping a track on this phone.
- *
- * A download is a fetch of the same relay URL playback already uses, held as a
- * blob instead of streamed into an <audio> element. The bytes are passed
- * through exactly as the computer sent them — no decode, no re-encode, no
- * transcode. That is a deliberate choice and worth being plain about:
- *
- * The catalog resolves to M4A (AAC) because that is what `music_bridge`'s
- * format ladder asks YouTube for. Turning that into MP3 would mean decoding to
- * PCM and encoding again, which costs a second generation of lossy damage, tens
- * of seconds per track on a phone, and a great deal of memory — for a container
- * change. Every device this app runs on plays M4A natively, `local.js` already
- * reads its iTunes-style tag atoms, and `local_library.py` already counts `.m4a`
- * as music. So the file is saved as it arrived.
- *
- * Metadata does *not* come from the file. It comes from the catalog row, which
- * knows the real artist, album and cover art — a YouTube M4A often carries none
- * of those, and a library full of "Unknown artist" is the failure this avoids.
- *
- * Direction matters: bytes travel computer to phone and stop here. Nothing in
- * this module uploads, which keeps `local.js`'s categorical claim about the
- * local library true.
- */
+/* Keeping a track on this phone. A download is a fetch of the same relay URL playback already
+ * uses, held as a blob instead of streamed into an <audio> element. */
 
 import { command, mediaUrl, commandError } from './bridge.js';
 import { trackKey, artworkUrl, artistName, trackDuration } from './state.js';
@@ -36,20 +15,7 @@ import { nativeRequest } from './ytmusic.js';
  */
 const RESOLVE_TIMEOUT_MS = 50000;
 
-/* A download that has stopped receiving bytes, and what to do about it.
- *
- * `fetch` has no timeout. A mobile link that drops mid-transfer -- a hotspot
- * losing signal, a train, a lift -- leaves the read hanging forever with no
- * error, so the download sits at whatever percentage it reached, including 0%,
- * until the app is closed. That is the "stuck at 0% all day" report, and it is
- * a bug rather than slowness: nothing is going to arrive, and nothing says so.
- *
- * So a download that goes quiet for this long is treated as dead and resumed
- * from where it stopped, with a `Range` header -- the same one seeking already
- * uses, which the relay forwards and googlevideo honours. Resuming matters as
- * much as retrying: starting a 4 MB track over on a metered link is how a
- * download never finishes.
- */
+/* A download that has stopped receiving bytes, and what to do about it. */
 const STALL_MS = 20000;
 const MAX_RESUMES = 4;
 /* Between attempts, so a link that is down for a moment is not hammered. */
@@ -71,10 +37,7 @@ const EXTENSIONS = {
 };
 
 /* ── Which tracks are already here ────────────────────────────────────────
- * Lists ask this once per row while drawing, so it has to be answerable without
- * a promise. The set is read once at boot and kept current by the writes below,
- * rather than re-queried per row — four hundred rows must not cost four hundred
- * IndexedDB round trips. */
+ * Lists ask this once per row while drawing, so it has to be answerable without a promise. */
 
 let present = new Set();
 let loaded = false;
@@ -121,15 +84,7 @@ export function isDownloading(track) {
 	return track ? inFlight.has(trackKey(track)) : false;
 }
 
-/**
- * Fetch one track onto this phone.
- *
- * `onProgress({ received, total, ratio })` fires as bytes arrive; `total` is 0
- * when the relay sent no Content-Length, in which case `ratio` stays 0 and the
- * caller should show an indeterminate state rather than a lying bar.
- *
- * Resolves to the stored row. Rejects with a message worth showing a person.
- */
+/** Fetch one track onto this phone. */
 export function downloadTrack(track, { onProgress, signal } = {}) {
 	const key = trackKey(track);
 	const running = inFlight.get(key);
@@ -145,14 +100,7 @@ export function downloadTrack(track, { onProgress, signal } = {}) {
 async function runDownload(track, { onProgress, signal }) {
 	if (isLocalTrack(track)) throw new Error('That track is already on this phone.');
 
-	/* Say that something is happening before anything is measurable.
-	 *
-	 * `resolveUrl` is a yt-dlp call on the computer and is allowed 50 seconds;
-	 * the fetch that follows has its own wait before the first byte. Until then
-	 * there is no ratio to report, and reporting nothing left the bar sitting
-	 * at a dead 0% -- which is what "stuck at 0% all day" actually looks like,
-	 * whether or not anything is wrong. A phase costs nothing and is the
-	 * difference between "working" and "frozen". */
+	/* Say that something is happening before anything is measurable. */
 	onProgress?.({ phase: 'preparing', received: 0, total: 0, ratio: 0 });
 	// The app fetches a song itself, as it plays one: no computer involved.
 	const { blob, contentType } = nativeAvailable() && isCatalogTrack(track)
@@ -186,10 +134,9 @@ async function connect(track, onProgress) {
 	return url;
 }
 
-/* In the app the stream is resolved on the phone and read in 1 MB ranges,
- * the size its own player reads in: the audio host slows a long open-ended
- * read to playback speed, and a range this size arrives in well under a
- * second. Native HTTP, because the host does not allow a page's fetch. */
+/* In the app the stream is resolved on the phone and read in 1 MB ranges, the size its own player
+ * reads in: the audio host slows a long open-ended read to playback speed, and a range this size
+ * arrives in well under a second. */
 const PHONE_CHUNK_BYTES = 1 << 20;
 const PHONE_CHUNK_TRIES = 3;
 
@@ -265,13 +212,7 @@ async function relayError(response) {
 	return `Your computer could not send that track (${response.status}).`;
 }
 
-/* Fetch the whole track, surviving a link that comes and goes.
- *
- * Kept deliberately close to what playback already does: the same relay URL,
- * the same `Range` header seeking uses. What is new is that a read which stops
- * producing bytes is noticed at all -- `fetch` will wait on a dead socket
- * forever -- and that the retry asks for the rest rather than the whole thing.
- */
+/* Fetch the whole track, surviving a link that comes and goes. */
 async function fetchResumable(url, onProgress, signal) {
 	const chunks = [];
 	let received = 0;
@@ -376,10 +317,8 @@ function sleep(ms, signal) {
 	});
 }
 
-/* Cover art is fetched separately and stored as a blob, so the local library
- * shows the real artwork offline rather than a URL that needs the network it
- * was downloaded to survive without. A failure here is not a failed download —
- * a track with no cover is still a track. */
+/* Cover art is fetched separately and stored as a blob, so the local library shows the real
+ * artwork offline rather than a URL that needs the network it was downloaded to survive without. */
 async function fetchArtwork(track, signal) {
 	const url = artworkUrl(track);
 	if (!url || url.startsWith('./')) return null;
@@ -397,10 +336,7 @@ function albumTitle(track) {
 	return track?.album || track?.metadata?.album_name || track?.metadata?.album?.name || '';
 }
 
-/* A filename a file system will accept, on every platform this can land on.
- * Windows is the strictest of them and is what the character class is drawn
- * from; the length cap is there because a very long name is refused outright on
- * some of them. */
+/* A filename a file system will accept, on every platform this can land on. */
 function safeName(track) {
 	const artist = artistName(track);
 	const title = track?.title || 'Untitled';
@@ -410,21 +346,7 @@ function safeName(track) {
 
 /* ── Many tracks ──────────────────────────────────────────────────────────*/
 
-/**
- * Download a whole list, one at a time.
- *
- * Sequential on purpose. Each track costs the computer a yt-dlp resolve, and
- * firing thirty of those at once is how a phone turns a playlist download into
- * a stalled computer and a fistful of timeouts.
- *
- * `onProgress({ done, total, track, ratio, failed })` fires per track and as
- * bytes arrive within one. Already-downloaded tracks are skipped, not refetched,
- * so running this twice on a playlist finishes the part that did not land rather
- * than paying for all of it again.
- *
- * Never rejects on one bad track: it returns a tally. A playlist where two songs
- * are unavailable should still put the other twenty-eight on the phone.
- */
+/** Download a whole list, one at a time. Sequential on purpose. */
 export async function downloadTracks(tracks, { onProgress, signal } = {}) {
 	const wanted = [...tracks].filter(track => track && !isDownloaded(track));
 	const total = wanted.length;
@@ -470,17 +392,8 @@ export function canChooseLocation() {
 	return nativeAvailable() || typeof window.showSaveFilePicker === 'function';
 }
 
-/**
- * Hand a downloaded track to the phone's own file system.
- *
- * Where possible this opens a real save dialog, so the file goes where the
- * person says. Where it is not — iOS has no such API — it becomes an ordinary
- * browser download, which lands in Downloads and is then theirs to move. Both
- * paths are a copy: the track stays in the local library either way, because
- * that is what makes it play offline.
- *
- * Returns 'saved' | 'downloaded' | 'cancelled'.
- */
+/** Hand a downloaded track to the phone's own file system. Where possible this opens a real save
+ * dialog, so the file goes where the person says. */
 export async function saveCopy(track) {
 	// A track, not a row: every caller has one of those and none of them should
 	// have to know this module stores rows. Downloading it first when it is not

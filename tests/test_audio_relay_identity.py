@@ -1,10 +1,4 @@
-"""How a resolved stream is asked for, and what happens when upstream says no.
-
-Two live bugs, both of which read to the user as "no music plays, it says the
-format is unsupported": yt-dlp's default player client returns chunked URLs that
-refuse the open-ended range a media element opens with, and upstream failures
-were streamed to the element as though they were audio.
-"""
+"""How a resolved stream is asked for, and what happens when upstream says no."""
 
 import unittest
 
@@ -63,12 +57,7 @@ async def _install(app, session):
 
 
 class _StubYDL:
-    """Stands in for yt_dlp.YoutubeDL, answering per player client.
-
-    `_extract_stream` picks a client by putting it in `extractor_args`, so the
-    stub reads the options back out to decide which canned answer to give --
-    the same way the real extractor's behaviour varies by client.
-    """
+    """Stands in for yt_dlp.YoutubeDL, answering per player client."""
 
     calls: list[str | None] = []
 
@@ -109,15 +98,7 @@ def _muxed(url="https://rr1---sn-x.googlevideo.com/videoplayback?a=18"):
 
 
 class PlayerClientTests(unittest.TestCase):
-    """What a resolve must *produce*, rather than which client it must ask.
-
-    The previous version of this class asserted that ANDROID was pinned. That
-    assertion passed on the day every phone stopped playing: YouTube had cut
-    ANDROID back to format 18 alone, so the pin was still in place and still
-    green while it served a muxed video to every <audio> element. Pinning a
-    client is a bet on a third party; the property worth protecting is that
-    whatever comes back is audio.
-    """
+    """What a resolve must *produce*, rather than which client it must ask."""
 
     def setUp(self):
         self._real = music_bridge.yt_dlp.YoutubeDL
@@ -379,12 +360,7 @@ if __name__ == "__main__":
 
 
 class PhoneDiagnosticContractTests(unittest.TestCase):
-    """What the phone asks when it is trying to explain a failure.
-
-    This is a source-level contract because the thing worth pinning is a single
-    header value, and the cost of getting it wrong is not a broken feature but a
-    *misleading* one -- which is far more expensive to find.
-    """
+    """What the phone asks when it is trying to explain a failure."""
 
     @classmethod
     def setUpClass(cls):
@@ -435,15 +411,7 @@ class PhoneDiagnosticContractTests(unittest.TestCase):
 
 
 class TrustStoreTests(unittest.TestCase):
-    """The frozen macOS build shipped with no certificate authorities at all.
-
-    ``no-certifi`` tells yt-dlp to use the operating system's trust store. On
-    Windows that picks up enterprise roots, which is the point. On macOS Python
-    cannot read the Keychain, and a frozen build's OpenSSL default paths point
-    at the *build* machine's Homebrew directory — so it means "no roots", every
-    request to YouTube fails before it starts, and the app told users on their
-    own home Wi-Fi that a firewall was intercepting the connection.
-    """
+    """The frozen macOS build shipped with no certificate authorities at all."""
 
     def test_system_trust_is_windows_only(self):
         import os

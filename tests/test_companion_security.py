@@ -258,13 +258,7 @@ def test_server_registry_uses_app_data_persistence():
 
 
 def test_destructive_local_data_commands_are_not_reachable_from_the_lan():
-    """Erasing the user's library is a desktop-only action.
-
-    The desktop WebSocket is token-gated and dispatches anything registered in
-    music_bridge.DISPATCH, so a new command is reachable from the LAN the moment
-    it is added to COMPANION_COMMAND_TYPES. These must never be: a paired phone
-    should not be able to wipe recents, playlists, or follows over the network.
-    """
+    """Erasing the user's library is a desktop-only action."""
     import music_bridge
 
     for command in ("music_recent_delete", "music_clear_data"):
@@ -309,23 +303,7 @@ class _FakeSession:
 
 
 class AudioRelayCorsTests(unittest.IsolatedAsyncioTestCase):
-    """The relay must set CORS headers *before* it starts streaming.
-
-    ``companion_audio_relay`` calls ``prepare()``, which puts the headers on the
-    wire; the CORS middleware only runs once the handler has returned, so
-    anything it sets at that point is silently dropped. The relay therefore has
-    to ask for the headers itself.
-
-    This matters because without ``Access-Control-Allow-Origin`` the phone
-    cannot load the audio as ``crossorigin="anonymous"``, and without that
-    ``createMediaElementSource`` may not be used — no equalizer, and no gain
-    node, which is the only volume control iOS honours at all since it makes
-    ``HTMLMediaElement.volume`` read-only.
-
-    The fake upstream is the whole point: an unreachable one makes the handler
-    return a plain error response that the middleware *can* still decorate, so
-    the bug hides unless the streaming path is actually taken.
-    """
+    """The relay must set CORS headers *before* it starts streaming."""
 
     async def _serve(self):
         registry = CompanionRegistry(now=lambda: 1_000)

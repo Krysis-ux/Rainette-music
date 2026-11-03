@@ -89,15 +89,31 @@ function settingsRow(label, control, hint) {
 	const row = el('div', 'rw-settings-row');
 	const text = el('div', 'rw-settings-row-text');
 	text.appendChild(el('div', 'rw-settings-row-label', label));
-	if (hint) text.appendChild(el('div', 'rw-settings-row-hint', hint));
+	// The explanation is a hover tooltip, not a line under every row.
+	if (hint) row.title = hint;
 	row.append(text, control);
 	return row;
 }
 
+/** A card with a title; its explanation stays behind a "?" until asked for. */
 function settingsCard(title, sub) {
 	const card = el('div', 'rw-bubble rw-bubble-pad rw-settings-card');
-	card.appendChild(el('h3', 'rw-settings-card-title', title));
-	if (sub) card.appendChild(el('p', 'rw-settings-card-sub', sub));
+	const head = el('div', 'rw-settings-card-head');
+	head.appendChild(el('h3', 'rw-settings-card-title', title));
+	card.appendChild(head);
+	if (!sub) return card;
+	const note = el('p', 'rw-settings-card-sub', sub);
+	note.hidden = true;
+	const help = el('button', 'rw-settings-help', '?');
+	help.type = 'button';
+	help.setAttribute('aria-label', `About ${title}`);
+	help.setAttribute('aria-expanded', 'false');
+	help.addEventListener('click', () => {
+		note.hidden = !note.hidden;
+		help.setAttribute('aria-expanded', String(!note.hidden));
+	});
+	head.appendChild(help);
+	card.appendChild(note);
 	return card;
 }
 
@@ -119,11 +135,10 @@ function renderAppearance() {
 		swatch.className = 'rw-theme-swatch' + (activeTheme === id ? ' on' : '');
 		swatch.title = name;
 		swatch.setAttribute('aria-label', name);
-		// The theme class lives on the small preview span, not the button
-		// itself, so its --rw-* custom properties resolve to that theme's
-		// real values for an accurate live preview - without also recoloring
-		// the label text next to it, which needs to stay legible against the
-		// *actual* current theme, not whichever one this swatch is previewing.
+		// The theme class lives on the small preview span, not the button itself, so its --rw-* custom
+		// properties resolve to that theme's real values for an accurate live preview - without also
+		// recoloring the label text next to it, which needs to stay legible against the *actual* current
+		// theme, not whichever one this swatch is previewing.
 		swatch.appendChild(el('span', 'rw-theme-swatch-preview ' + (THEME_CLASS[id] || 'rw-theme-swatch-auto')));
 		swatch.appendChild(el('span', 'rw-theme-swatch-label', name));
 		swatch.addEventListener('click', () => {
@@ -234,10 +249,9 @@ function renderPlaybackDefaults() {
 		lsSet(AUTOPLAY_SIMILAR_KEY, on ? '1' : '0');
 	}), 'When Up Next runs out, keep going with a mix seeded from the last track.'));
 	const initial = Math.min(1.5, Math.max(0, Number(lsGet(VOLUME_KEY, '1')) || 1));
-	// The slider's own value *is* the percentage (100 = unity/full volume),
-	// matching how every other surface in the app displays volume
-	// (Math.round(state.volume * 100), e.g. miniplayer.js) - no separate
-	// ceiling-relative conversion, so there's no dead zone at the top end.
+	// The slider's own value *is* the percentage (100 = unity/full volume), matching how every other
+	// surface in the app displays volume (Math.round(state.volume * 100), e.g. miniplayer.js) - no
+	// separate ceiling-relative conversion, so there's no dead zone at the top end.
 	const pct = Math.round(initial * 100);
 
 	const row = el('div', 'rw-settings-row');
@@ -302,10 +316,7 @@ function renderBehavior() {
 
 // ── Danger zone ───────────────────────────────────────────────────────────
 
-// Each entry is a checkbox in the clear-data picker. `client: true` means it is
-// cleared here in the browser (localStorage); the rest are erased server-side by
-// the music_clear_data command, keyed by these ids (see state.clear_user_data).
-// -- App updates ------------------------------------------------------------
+// Each entry is a checkbox in the clear-data picker.
 
 const UPDATE_REPOSITORY_URL = 'https://github.com/Krysis-ux/Rainette-music';
 

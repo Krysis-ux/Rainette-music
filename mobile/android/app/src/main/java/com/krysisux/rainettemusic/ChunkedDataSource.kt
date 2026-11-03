@@ -8,17 +8,7 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
 
-/**
- * Reads a stream as a run of bounded `Range` requests.
- *
- * YouTube throttles an open-ended request for a whole file to roughly real-time
- * speed (measured: 36 KB/s for a 128 kbps track) while answering 1 MB ranges at
- * several MB/s. Media3 opens progressive media open-ended, so without this the
- * next track buffers barely faster than it plays and a seek ahead stalls.
- *
- * To the player this is still one continuous source: chunk boundaries are
- * crossed inside [read].
- */
+/** Reads a stream as a run of bounded `Range` requests. */
 @UnstableApi
 class ChunkedDataSource(
     private val upstream: HttpDataSource,

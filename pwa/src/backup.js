@@ -1,15 +1,4 @@
-/* Backing the phone up to the phone.
- *
- * Everything this app knows that the computer does not — the playlists made
- * here, the settings, the play counts, the recent list — is written to one JSON
- * file and handed to whatever the phone does with files. It is a download, not
- * an upload: nothing is sent anywhere, and a backup taken on a plane restores on
- * a plane.
- *
- * Audio itself is deliberately not included. A library of local files is
- * gigabytes and belongs in the phone's own backup, not in a JSON blob; the
- * playlists that reference them are what is worth keeping.
- */
+/* Backing the phone up to the phone. */
 
 import { toast } from './dom.js';
 import { STORAGE } from './state.js';
@@ -38,6 +27,7 @@ export function buildBackup() {
 		playlists: exportLocalPlaylists(),
 		recent: readJson(STORAGE.recent, []),
 		plays: readJson(STORAGE.plays, {}),
+		history: readJson(STORAGE.history, []),
 		artist_art: readJson(STORAGE.artistArt, {}),
 		// Deliberately absent: the pairing endpoint and device token. A backup
 		// that carries a credential is a credential that travels through every
@@ -93,6 +83,7 @@ export async function restoreBackup(file, { replace = false } = {}) {
 
 	if (Array.isArray(payload.recent)) writeJson(STORAGE.recent, payload.recent);
 	if (payload.plays && typeof payload.plays === 'object') writeJson(STORAGE.plays, payload.plays);
+	if (Array.isArray(payload.history)) writeJson(STORAGE.history, payload.history);
 	if (payload.artist_art && typeof payload.artist_art === 'object') {
 		writeJson(STORAGE.artistArt, payload.artist_art);
 	}

@@ -1,12 +1,4 @@
-"""In-app updater: version comparison, the GitHub check's tri-state, and the
-download/verify gate. The end-to-end download+install+relaunch can only be
-exercised once a real v* release exists, so these pin everything up to (and the
-refusal past) that boundary.
-
-The root of trust is an Ed25519 signature over the release manifest's raw
-bytes, verified against the public key committed in version.py. Authenticode
-is an optional second layer, enforced only when a certificate fingerprint is
-pinned."""
+"""In-app updater: version comparison, the GitHub check's tri-state, and the download/verify gate."""
 
 import base64
 import hashlib
@@ -61,14 +53,7 @@ _platform_patchers = []
 
 
 def setUpModule():
-    """Describe Windows by default, wherever the suite runs.
-
-    Release discovery now picks its asset names from the host platform, so on
-    macOS every Windows fixture below would otherwise stop matching and these
-    cases would pass by finding nothing. Pinning the platform keeps them
-    asserting what they were written to assert; the macOS path has its own
-    class, which pins the other way.
-    """
+    """Describe Windows by default, wherever the suite runs."""
     for name, value in (("IS_WINDOWS", True), ("IS_MACOS", False)):
         patcher = mock.patch.object(main, name, value)
         patcher.start()
@@ -130,18 +115,8 @@ def _frozen(flag: bool = True):
 
 
 def _windows_host():
-    """Pin the updater's Windows branch.
-
-    The only artifact Rainette can install is the signed Windows installer, so
-    ``apply_update`` refuses outright anywhere else. These cases describe that
-    Windows behaviour and must keep asserting it wherever the suite runs --
-    including on macOS, where the port would otherwise silently stop covering
-    the install path.
-
-    Deliberately narrow: it flips only the install gate, leaving ``os.name``
-    alone so the Authenticode helpers keep refusing to run off Windows exactly
-    as they do in production.
-    """
+    """Pin the updater's Windows branch. The only artifact Rainette can install is the signed
+    Windows installer, so ``apply_update`` refuses outright anywhere else."""
     return mock.patch.object(main, "IS_WINDOWS", True)
 
 
@@ -362,10 +337,9 @@ class CheckForUpdatesTests(_SignedBuildTestCase):
             self.assertEqual(main.check_for_updates("0.2.2")["status"], "check_failed")
 
     def test_accepts_the_content_types_github_actually_assigns_on_upload(self):
-        # Regression: the real v0.2.3 release was rejected because GitHub's
-        # upload path (action-gh-release) tags .exe as x-msdos-program and .sig
-        # as pgp-signature, neither of which was on the allow-list. These are
-        # the verbatim content types observed on the live published release.
+        # Regression: the real v0.2.3 release was rejected because GitHub's upload path
+        # (action-gh-release) tags .exe as x-msdos-program and .sig as pgp-signature, neither of
+        # which was on the allow-list.
         release, _ = _release_fixture()
         live_types = {
             INSTALLER_NAME: "application/x-msdos-program",
@@ -436,11 +410,7 @@ class ManifestSignatureTests(unittest.TestCase):
 
 
 class SourceRunAndKeylessUpdateTests(unittest.TestCase):
-    """A build that could not install an update must not offer one.
-
-    A source run has no installer to swap in, and a build whose committed
-    release key is missing or corrupt could only refuse whatever it downloads.
-    Either way the check must fail closed before it ever contacts GitHub."""
+    """A build that could not install an update must not offer one."""
 
     def test_source_run_offers_no_update_and_never_asks_github(self):
         with _pinned_public_key(), _frozen(False), \
@@ -896,13 +866,7 @@ class ApplyUpdateGuardTests(_SignedBuildTestCase):
 
 
 class MacOsUpdateTests(unittest.TestCase):
-    """The macOS half, which exists because notarisation was never the blocker.
-
-    The root of trust is the Ed25519 manifest signature, exactly as on Windows,
-    and that costs nothing from Apple. What these cases pin down is that the
-    macOS build asks for macOS artifacts, refuses Windows ones, and will not
-    try to swap a bundle it cannot safely replace.
-    """
+    """The macOS half, which exists because notarisation was never the blocker."""
 
     def setUp(self):
         for name, value in (("IS_WINDOWS", False), ("IS_MACOS", True)):
@@ -934,11 +898,7 @@ class MacOsUpdateTests(unittest.TestCase):
             self.assertIsNone(main._platform_update_assets())
 
     def test_a_translocated_bundle_is_refused_with_an_actionable_message(self):
-        """macOS runs a quarantined app from a read-only shadow copy.
-
-        Swapping there either fails or writes somewhere that disappears on
-        quit, so it has to be refused -- and the message has to say what to do.
-        """
+        """macOS runs a quarantined app from a read-only shadow copy."""
         # Arrange
         translocated = "/private/var/folders/ab/cd/AppTranslocation/XYZ/d/Rainette Music.app/Contents/MacOS/main"
         with mock.patch.object(main.sys, "executable", translocated):

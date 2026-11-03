@@ -1,9 +1,4 @@
-"""Output routing, and the phone/desktop link that makes it work.
-
-These cover four defects that were each individually silent — nothing logged,
-nothing raised, just a control that did nothing — so each test states the
-symptom it prevents rather than only the mechanism.
-"""
+"""Output routing, and the phone/desktop link that makes it work."""
 
 import hashlib
 import re
@@ -22,10 +17,7 @@ class OutputTransferAddressingTests(unittest.TestCase):
     """"Play on → my phone" sat on "Connecting" until it timed out."""
 
     def test_transfer_targets_a_real_paired_device_id(self):
-        # The broker routes a transfer by looking target_device_id up among the
-        # paired device ids.  Addressing it to the literal string 'phone' found
-        # no log at all, so no phone ever saw the request and the desktop waited
-        # out its whole 35s timeout.
+        # The broker routes a transfer by looking target_device_id up among the paired device ids.
         music = (ROOT / "web" / "rainette_music.js").read_text(encoding="utf-8")
         self.assertIn("const targetId = String(phone?.device_id || '')", music)
         self.assertNotIn("target_device_id: 'phone'", music)
@@ -104,12 +96,7 @@ class LinkedSessionTests(unittest.TestCase):
 
 
 class DesktopToPhoneTransportTests(unittest.TestCase):
-    """The computer's transport controls reaching a phone that owns the audio.
-
-    This did not work in either direction of the problem: the broker returned no
-    recipients for a desktop-originated transport command, and the phone had no
-    handler for one even if it had arrived.
-    """
+    """The computer's transport controls reaching a phone that owns the audio."""
 
     def setUp(self):
         self.broker = server.CompanionSyncBroker()
@@ -253,20 +240,8 @@ class PhoneClientShellTests(unittest.TestCase):
         self.assertIn(".catch(() => {})", worker)
 
     def test_the_cache_name_matches_the_files_it_would_hold(self):
-        """A changed client file must mean a changed cache name.
-
-        This is the regression guard for a real and repeated failure. Three
-        separate fixes to the sheet pull-down (#19, #22, #23) each shipped
-        without touching CACHE. The worker answers stale-while-revalidate, so a
-        missed bump is not permanent -- but it does cost one load running the
-        *previous* JavaScript. That is enough to test a gesture fix on a phone,
-        watch it not work, and conclude the fix was wrong when it was only
-        late.
-
-        Tying the cache name to a digest of the shell makes the two impossible
-        to disagree about: change any client file and this fails until the name
-        follows.
-        """
+        """A changed client file must mean a changed cache name. This is the regression guard for a
+        real and repeated failure."""
         worker = (ROOT / "pwa" / "sw.js").read_text(encoding="utf-8")
         shell = re.search(r"const SHELL = \[(.*?)\];", worker, re.S).group(1)
 
@@ -277,10 +252,9 @@ class PhoneClientShellTests(unittest.TestCase):
             if not relative or not path.is_file():
                 continue
             digest.update(relative.encode())
-            # Newlines are normalised because the repository carries no
-            # .gitattributes, so a Windows checkout converts these text files to
-            # CRLF and an unnormalised digest would name a different build on
-            # every platform -- which is what this test caught the first time it
+            # Newlines are normalised because the repository carries no .gitattributes, so a Windows
+            # checkout converts these text files to CRLF and an unnormalised digest would name a
+            # different build on every platform -- which is what this test caught the first time it
             # ran in CI, having passed on macOS.
             digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
         expected = digest.hexdigest()[:8]
@@ -295,13 +269,7 @@ class PhoneClientShellTests(unittest.TestCase):
 
 
 class PlaybackTargetBroadcastTests(unittest.TestCase):
-    """Every surface has to be able to name the same owner.
-
-    This is the difference between an app that knows where the sound is and one
-    that guesses: a phone showing "playing on the computer" must stop saying so
-    the moment another device takes over, and it cannot learn that from its own
-    session's events.
-    """
+    """Every surface has to be able to name the same owner."""
 
     def setUp(self):
         self.broker = server.CompanionSyncBroker()
@@ -422,11 +390,7 @@ class DeviceSettingsSyncTests(unittest.TestCase):
 
 
 class SessionSurvivalTests(unittest.TestCase):
-    """A phone that slept had to be restarted by hand to come back.
-
-    There was no visibilitychange, pageshow or freeze handler anywhere in the
-    client, and the only reconnect was a flat retry with no backoff.
-    """
+    """A phone that slept had to be restarted by hand to come back."""
 
     def setUp(self):
         self.connection = (ROOT / "pwa" / "src" / "connection.js").read_text(encoding="utf-8")

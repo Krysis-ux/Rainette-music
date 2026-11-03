@@ -1,14 +1,7 @@
-/* The suffix is a digest of every file in SHELL, and it is not maintained by
- * hand: `tests/test_output_and_phone_sync.py` recomputes it and fails when it
- * has drifted, printing the value to paste back.
- *
- * It exists because three separate fixes to the sheet drag (#19, #22, #23) all
- * shipped without touching this line. Stale-while-revalidate meant each one
- * still cost a load running the previous JavaScript before it healed — so a
- * gesture fix could be tested on a phone, appear not to work, and be "fixed"
- * again. Tying the cache name to the bytes it holds ends that: any change to a
- * client file is a new cache, and CI will not let the two disagree. */
-const CACHE = 'rainette-pwa-v38-8e683db7';
+/* The suffix is a digest of every file in SHELL, and it is not maintained by hand:
+ * `tests/test_output_and_phone_sync.py` recomputes it and fails when it has drifted, printing the
+ * value to paste back. */
+const CACHE = 'rainette-pwa-v41-aaf1dc3d';
 const SHELL = [
   './',
   './index.html',
@@ -52,16 +45,17 @@ const SHELL = [
   './src/settings.js',
   './src/ytmusic.js',
   './src/update.js',
+  './src/home.js',
+  './src/browse.js',
   './fonts/inter-latin.woff2',
   './manifest.webmanifest',
   './icon.svg',
 ];
 
 self.addEventListener('install', event => {
-  // addAll is all-or-nothing: one missing module would leave the phone with no
-  // offline shell at all rather than a partial one, so a failed precache falls
-  // back to caching lazily through the fetch handler instead of blocking the
-  // install outright.
+  // addAll is all-or-nothing: one missing module would leave the phone with no offline shell at all
+  // rather than a partial one, so a failed precache falls back to caching lazily through the fetch
+  // handler instead of blocking the install outright.
   event.waitUntil(
     caches.open(CACHE)
       .then(cache => cache.addAll(SHELL))
@@ -98,13 +92,6 @@ self.addEventListener('fetch', event => {
   }
 
   // Stale-while-revalidate rather than cache-first.
-  //
-  // Cache-first meant that forgetting to bump CACHE above shipped a *new*
-  // index.html to a phone still running the *old* modules — new markup wired by
-  // old JavaScript, which is an app whose buttons are all there and none of
-  // which do anything. That failure was permanent until the app was
-  // reinstalled. Here a missed bump costs one stale load and then heals itself,
-  // because every hit also refreshes the copy in the background.
   event.respondWith(
     caches.open(CACHE).then(cache => cache.match(request).then(cached => {
       const network = fetch(request)

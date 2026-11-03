@@ -1,6 +1,4 @@
-/* The queue sheet: what is playing, what is next, and reordering. Reorder is
- * a drag on a grip, because "drag from anywhere" and "scroll" are the same
- * gesture on a phone. Remove is a swipe. */
+/* The queue sheet: what is playing, what is next, and reordering. */
 
 import { el, icon, iconButton, tap, toast, flip, collapseAway } from './dom.js';
 import { dragGesture } from './gesture.js';
@@ -18,6 +16,8 @@ const EDGE_PX = 64;
 const EDGE_SCROLL_PX = 9;
 /* How far left a row goes before releasing removes it. */
 const REMOVE_PX = 72;
+/* How long a press on the row lifts it for reordering. */
+const LIFT_HOLD_MS = 320;
 
 export function openQueueSheet() {
 	openSheet({
@@ -105,7 +105,7 @@ function queueRow(track, index, { current = false, render } = {}) {
 	row.dataset.flipKey = `${trackKey(track)}:${index}`;
 
 	const grip = el('span', 'queue-row-grip');
-	grip.innerHTML = icon('grip', 18);
+	grip.innerHTML = icon('handle', 20);
 	grip.setAttribute('aria-hidden', 'true');
 
 	const art = document.createElement('img');
@@ -135,12 +135,12 @@ function queueRow(track, index, { current = false, render } = {}) {
 		onClick: () => removeAt(row, index, render),
 	});
 
-	row.append(grip, tapArea, remove);
+	row.append(tapArea, remove, grip);
 	// Reordering a queue the desktop owns would have to round-trip through it;
 	// the desktop is the authority there, so the grip is simply not offered.
 	// What is playing stays where it is; only what comes next moves.
 	grip.classList.toggle('is-inert', current || isLinked());
-	if (!isLinked() && !current) wireReorder(row, grip, index, render);
+	if (!isLinked() && !current) wireReorder(row, grip, tapArea, index);
 	wireSwipeToRemove(row, index, render);
 	return row;
 }
@@ -150,12 +150,9 @@ function removeAt(row, index, render) {
 	toast('Removed from queue', { icon: 'trash' });
 }
 
-/* Drag a row by its grip. The row follows the finger, the rows it passes step
- * aside, and the queue changes once, on release. It used to move the song one
- * place, end the drag and redraw, so getting a song from the bottom to "next"
- * took a separate press per row. The grip owns its touch (touch-action: none),
- * so no hold is needed; the rest of the row still scrolls the list. */
-function wireReorder(row, grip, index, render) {
+/* Drag a row by its grip, or hold the row and drag. The row follows the finger, the rows it passes
+ * step aside, and the queue changes once, on release. */
+function wireReorder(row, grip, surface, index) {
 	let others = [];
 	let pitch = 1;
 	let target = index;
@@ -164,8 +161,12 @@ function wireReorder(row, grip, index, render) {
 	let travel = 0;
 	let edgeSpeed = 0;
 	let frame = 0;
+	let droppedAt = 0;
 
 	const lift = () => {
+		if (row.classList.contains('dragging')) return;
+		target = index;
+		travel = 0;
 		scroller = row.closest('.sheet-body') || document.scrollingElement;
 		scrollStart = scroller.scrollTop;
 		others = [...row.parentElement.querySelectorAll('.queue-row:not(.is-current)')].filter(other => other !== row);
@@ -207,6 +208,7 @@ function wireReorder(row, grip, index, render) {
 		row.classList.remove('dragging');
 		const list = row.parentElement;
 		list?.classList.remove('reordering');
+		droppedAt = performance.now();
 		if (commit && target !== index) {
 			queueMove(index, target);
 			tap(6);
@@ -215,21 +217,47 @@ function wireReorder(row, grip, index, render) {
 		list?.dispatchEvent(new Event('reorderend'));
 	};
 
+	const follow = ({ dy, event }) => {
+		lift();
+		travel = dy;
+		const edges = scroller.getBoundingClientRect();
+		edgeSpeed = event.clientY < edges.top + EDGE_PX ? -EDGE_SCROLL_PX
+			: event.clientY > edges.bottom - EDGE_PX ? EDGE_SCROLL_PX : 0;
+		if (edgeSpeed && !frame) frame = requestAnimationFrame(scrollAtEdge);
+		paint();
+	};
+
 	dragGesture(grip, {
 		axis: 'y',
 		threshold: 3,
-		onMove: ({ dy, event }) => {
-			if (!row.classList.contains('dragging')) lift();
-			travel = dy;
-			const edges = scroller.getBoundingClientRect();
-			edgeSpeed = event.clientY < edges.top + EDGE_PX ? -EDGE_SCROLL_PX
-				: event.clientY > edges.bottom - EDGE_PX ? EDGE_SCROLL_PX : 0;
-			if (edgeSpeed && !frame) frame = requestAnimationFrame(scrollAtEdge);
-			paint();
-		},
+		onMove: follow,
 		onEnd: () => drop(true),
 		onCancel: () => drop(false),
 	});
+
+	dragGesture(surface, {
+		axis: 'y',
+		holdMs: LIFT_HOLD_MS,
+		holdToDrag: true,
+		canStart: event => !event.target?.closest?.('.link-inline'),
+		onHold: lift,
+		onMove: follow,
+		onEnd: () => drop(true),
+		onCancel: () => drop(false),
+	});
+
+	// A lifted row's moves are the reorder's alone. Let through, the sheet's
+	// own pull-down saw them too and took the pointer to drag the sheet away.
+	surface.addEventListener('pointermove', event => {
+		if (row.classList.contains('dragging')) event.stopPropagation();
+	});
+	// Letting go of a lifted row is not a tap on it.
+	surface.addEventListener('click', event => {
+		if (row.classList.contains('dragging') || performance.now() - droppedAt < 500) {
+			event.stopImmediatePropagation();
+			event.preventDefault();
+		}
+	}, true);
 }
 
 /* Swipe a queue row away to remove it — the same left-swipe vocabulary the
@@ -250,7 +278,7 @@ function wireSwipeToRemove(row, index, render) {
 		canStart: event => !event.target?.closest?.('.link-inline'),
 		onStart: () => { offset = 0; },
 		onMove: ({ dx }) => {
-			if (dx > 0) return;                 // removal is leftward only
+			if (dx > 0 || row.classList.contains('dragging')) return;   // removal is leftward only
 			offset = dx;
 			row.style.setProperty('--swipe', `${dx}px`);
 			row.classList.toggle('removing', dx < -REMOVE_PX);

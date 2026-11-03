@@ -105,7 +105,7 @@ What must keep working, where it lives, and what already guards it. "Risk" is th
 
 ## 6. Android extractor proof of concept
 
-`mobile/poc/newpipe-jvm/` runs NewPipeExtractor **v0.26.5** (pinned, latest release, 2026-08-15) on a plain JVM, with the JDK's own HTTP client as its downloader. No Rainette server and no third-party server sit in the path. Logs: `run-1.log` to `run-3.log`.
+`mobile/poc/newpipe-jvm/` (removed; in git history at tag `checkpoint-2026-11-03`) ran NewPipeExtractor **v0.26.5** (pinned, latest release, 2026-08-15) on a plain JVM, with the JDK's own HTTP client as its downloader. No Rainette server and no third-party server sit in the path. Logs: `run-1.log` to `run-3.log`.
 
 | Check | Result |
 |---|---|

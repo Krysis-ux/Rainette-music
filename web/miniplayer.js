@@ -1,8 +1,4 @@
-/* The detached player window: the <audio>, the queue, the transport, the Web
- * Audio graph. Driven by music_remote_play / music_remote_control.
- *
- * MediaElementSource is silent for cross-origin media, so playback uses the
- * direct URL until the EQ is enabled and the /audio proxy after. */
+/* The detached player window: the <audio>, the queue, the transport, the Web Audio graph. */
 
 import { sendHelper, helperRequest } from './music_shell.js';
 import { iconMarkup } from './rainette_icons.js';
@@ -156,10 +152,8 @@ function beginOutputTransfer(message) {
 	if (transferred !== state.repeat) _setRepeat(transferred);
 	state.pendingSeek = Math.max(0, Number(message.current_time) || 0);
 
-	// playQueue() skips reloading an already-current track, which during a
-	// handoff left the transfer waiting for an event that never came. Confirm
-	// readiness directly when the element is ready, and take the guarded load
-	// path when it is not, so a failure still rolls back on the phone.
+	// playQueue() skips reloading an already-current track, which during a handoff left the transfer
+	// waiting for an event that never came.
 	const current = state.queue[state.index];
 	if (current && trackKey(current) === trackKey(target)) {
 		state.queue = tracks;
@@ -316,12 +310,8 @@ function _freshAudioElement() {
 		}
 	}
 	audio = next;
-	// Changing tracks ends every fade and every pause that was still owed to
-	// the element being replaced. Belt and braces with the identity checks in
-	// _rampVolume and _pauseBackstop: those stop a stale callback acting on the
-	// wrong element, and these two counters stop it running at all. Without
-	// either, pausing and then immediately skipping leaves a timer that pauses
-	// the next track a moment after it starts.
+	// Changing tracks ends every fade and every pause that was still owed to the element being
+	// replaced.
 	_fadeToken += 1;
 	_pauseIntent += 1;
 	applyEqGains(state.eqGains);
@@ -469,11 +459,9 @@ function _terminalLoadFailure(loadToken, reason = '') {
 	state.playing = false;
 	_renderPlay();
 	_renderMeta(track, 'error');
-	// The computer already worked out *why* -- `describe_resolve_failure` names
-	// a network blocking YouTube, an unavailable video, a bot check -- and this
-	// was throwing it away, so every one of them reached the user as the same
-	// unactionable "playback failed". The banner has always been able to show a
-	// reason; nothing ever gave it one.
+	// The computer already worked out *why* -- `describe_resolve_failure` names a network blocking
+	// YouTube, an unavailable video, a bot check -- and this was throwing it away, so every one of
+	// them reached the user as the same unactionable "playback failed".
 	_broadcast('error', false, reason);
 	if (pendingOutputTransfer?.trackKey === trackKey(track)) finishOutputTransfer(false, 'Desktop could not load this track');
 	return false;
@@ -624,11 +612,8 @@ function _restoreVolumeNow() {
 
 function _rampVolume(from, to, ms, done) {
 	const token = ++_fadeToken;
-	// `audio` is a module-level variable that a track change REPLACES, so a
-	// deferred callback that reads it later can act on a completely different
-	// element than the one this fade belongs to. Capturing the element here and
-	// checking identity before touching it is what stops a pause meant for the
-	// track you just left from landing on the track you just started.
+	// `audio` is a module-level variable that a track change REPLACES, so a deferred callback that
+	// reads it later can act on a completely different element than the one this fade belongs to.
 	const element = audio;
 	try {
 		if (graphBuilt === true && gainNode && audioCtx) {
@@ -657,12 +642,7 @@ function _rampVolume(from, to, ms, done) {
 				else finish();
 			};
 			requestAnimationFrame(step);
-			// rAF does not run in a hidden window, and this player window spends
-			// its whole life hidden. Pause is implemented as this ramp's
-			// completion callback, so without a timer that cannot be suspended
-			// the callback never fires and the pause button does nothing at all
-			// while the track keeps playing. Whichever fires first wins; the
-			// token and the flag make the loser a no-op.
+			// rAF does not run in a hidden window, and this player window spends its whole life hidden.
 			setTimeout(finish, ms + 15);
 			return;
 		}
@@ -711,13 +691,7 @@ function _pause() { if (state.resolvingId || (audio && !audio.paused)) _togglePl
 
 let _pauseIntent = 0;
 
-/** Guarantee a requested pause actually lands, whatever the fade does.
- *
- *  Bound to the element it was asked for. Skipping to another track during the
- *  fade swaps `audio` out from under this timer, and a backstop that read the
- *  variable would then pause the *new* track a few hundred milliseconds after
- *  it started — silently, with the volume restored, so nothing about it looks
- *  like a fault. */
+/** Guarantee a requested pause actually lands, whatever the fade does. */
 function _pauseBackstop(intent, element) {
 	setTimeout(() => {
 		if (intent !== _pauseIntent) return;   // a later play/pause superseded this
@@ -726,10 +700,8 @@ function _pauseBackstop(intent, element) {
 	}, FADE_MS + 120);
 }
 
-// Autoplay-similar ("infinite radio", Settings → Playback): when the queue
-// runs out and loop is off, seed a mix from the last track and keep playing.
-// Read from localStorage at decision time - the main window writes the key
-// and both windows share the same origin/profile.
+// Autoplay-similar ("infinite radio", Settings → Playback): when the queue runs out and loop is
+// off, seed a mix from the last track and keep playing.
 let _autoplayBusy = false;
 
 function autoplaySimilarEnabled() {
@@ -819,10 +791,8 @@ function playQueue(tracks, startIndex = 0, { restoreState = '' } = {}) {
 	const nextId = filtered[startIndex]?.source_id;
 	const curId = state.queue[state.index]?.source_id;
 	const restoring = ['playing', 'paused', 'loading'].includes(restoreState);
-	// If we're already on this exact track (e.g. a duplicate remote_play from the
-	// connect-time state handshake), just adopt the queue without restarting it.
-	// The local player remains authoritative when it survived a socket reconnect:
-	// a cached "paused" response must never resume or reload its current media.
+	// If we're already on this exact track (e.g. a duplicate remote_play from the connect-time state
+	// handshake), just adopt the queue without restarting it.
 	if (nextId && nextId === curId && (restoring || state.playing || state.resolvingId)) {
 		state.queue = filtered;
 		state.index = clamp(startIndex, 0, Math.max(0, filtered.length - 1));
@@ -1023,12 +993,8 @@ function _broadcastProgress(force = false) {
 	});
 }
 
-/* AVFoundation reads some YouTube m4a streams as exactly twice their real
- * length: 261.04s for a file AudioToolbox reads as 130.52s. It renders the
- * frames the file actually has and then plays silence for the remainder, so the
- * clock stays honest but the total is wrong and `ended` arrives minutes late.
- * WebKit decodes through it, which is why macOS and iOS see this and Chromium
- * does not. duration_s from the library is the authority. */
+/* AVFoundation reads some YouTube m4a streams as exactly twice their real length: 261.04s for a
+ * file AudioToolbox reads as 130.52s. */
 function trueDuration() {
 	const known = Number(state.queue[state.index]?.duration_s || 0);
 	if (known) return known;
@@ -1287,11 +1253,8 @@ function buildUI() {
 	const pin = root.querySelector('#mpPin'), min = root.querySelector('#mpMin'), close = root.querySelector('#mpClose');
 	const pillClose = root.querySelector('#mpPillClose');
 	const winbtns = root.querySelector('.mp-winbtns');
-	// pywebview injects window.pywebview.api asynchronously and fires
-	// 'pywebviewready' once it's actually available. If that happens after this
-	// script's DOMContentLoaded-time check, nativeApi() would otherwise read as
-	// "not native" forever and permanently hide the close buttons even inside a
-	// real native window - so re-check once the event confirms readiness.
+	// pywebview injects window.pywebview.api asynchronously and fires 'pywebviewready' once it's
+	// actually available.
 	function updateNativeChromeVisibility() {
 		const isNative = !!nativeApi();
 		winbtns.style.display = isNative ? '' : 'none';
@@ -1322,19 +1285,12 @@ function initAudio() {
 	audio = new Audio();
 	audio.preload = 'auto';
 	audio.volume = Math.min(1, state.volume);
-	// A remembered speaker has to be re-asserted on a fresh element, or the
-	// window reopens playing through the built-in output with the picker still
-	// claiming otherwise. Failure is silent and harmless: the device may simply
-	// have been unplugged since, and the system default is the right fallback.
+	// A remembered speaker has to be re-asserted on a fresh element, or the window reopens playing
+	// through the built-in output with the picker still claiming otherwise.
 	if (state.sinkId) routeElementTo(audio, state.sinkId).catch(() => {});
 }
 
-/* Point this window's <audio> at one output sink and report back.
- *
- * Only this window can do it — it owns the element — and only it can know
- * whether the engine supports setSinkId at all (Chromium/WebView2 does,
- * WKWebView does not). The main window turns a false answer into an offer to
- * open the system sound settings, so an honest failure here is useful. */
+/* Point this window's <audio> at one output sink and report back. */
 async function applyOutputSink(sinkId, requestId) {
 	const routed = await routeElementTo(audio, sinkId);
 	// A sink survives a track change on the same element, but the window can be
@@ -1386,14 +1342,8 @@ function wireRemote() {
 			else if (a === 'loop') _cycleRepeat();
 			else if (a === 'set_repeat') _setRepeat(msg.mode);
 			else if (!state.queue.length) return;
-			// `pause` and `play` state an intent; `toggle` states a flip, which
-			// is only correct if the sender's idea of `playing` is current. It
-			// often is not, and then the pause-looking button resumes. New
-			// callers send the absolute verb; `toggle` stays for older ones.
-			// A track still resolving is not paused, but "stop what you are
-			// doing" during a load means cancel it — and _togglePlay owns that
-			// path. Without this arm, pressing the pause-looking button on a
-			// loading row would do nothing at all.
+			// `pause` and `play` state an intent; `toggle` states a flip, which is only correct if the
+			// sender's idea of `playing` is current.
 			else if (a === 'pause') _pause();
 			else if (a === 'play') _play();
 			else if (a === 'toggle') _togglePlay();

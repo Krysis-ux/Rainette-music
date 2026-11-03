@@ -1,11 +1,5 @@
-"""Tests for the transport provider seam.
-
-The property under test throughout is that adding options did not remove the
-one that already worked.  A user who never opens the new picker must get the
-Cloudflare Quick Tunnel, on a fresh install and on an install that predates the
-seam entirely, and every new provider must report unfinished setup as a
-checklist rather than as a failure.
-"""
+"""Tests for the transport provider seam. The property under test throughout is that adding options
+did not remove the one that already worked."""
 
 from __future__ import annotations
 
@@ -122,12 +116,8 @@ def test_the_labels_the_settings_page_shows_are_the_agreed_ones():
     assert labels["cloudflare-quick"] == "Works anywhere"
     assert labels["tailscale-serve"] == "Direct on your network"
     assert labels["tailscale-funnel"] == "Direct, plus reachable anywhere"
-    # The recommendation is the one that is both fast on a home network and
-    # still a secure context, so the phone client stays installable.
-    # The recommendation follows the default. Tailscale is better where it
-    # applies, but it asks for a VPN app on both devices; the plain tunnel needs
-    # nothing and is what most people will use, so it is the one recommended --
-    # and the one that has to work.
+    # The recommendation is the one that is both fast on a home network and still a secure context,
+    # so the phone client stays installable.
     recommended = [entry["id"] for entry in transport.catalogue() if entry["recommended"]]
     assert recommended == [transport.DEFAULT_PROVIDER]
     assert transport.DEFAULT_PROVIDER == "cloudflare-quick"
@@ -315,12 +305,7 @@ def test_a_logged_out_tailnet_is_a_login_step(monkeypatch, tmp_path):
 
 
 def test_a_tailnet_without_https_names_the_switch_and_says_it_is_free(monkeypatch):
-    """This is the step that reads as "it cannot connect" when it is skipped.
-
-    Without it `tailscale cert` answers "your Tailscale account does not support
-    getting TLS certs", so the phone has nothing to trust. Pointing at a
-    settings page is not enough — the message has to name the switch.
-    """
+    """This is the step that reads as "it cannot connect" when it is skipped."""
     # Arrange: connected, named, but HTTPS is off for the tailnet.
     provider = transport.build_provider("tailscale-serve", locate_tailscale=lambda: Path("tailscale"))
     monkeypatch.setattr(provider, "_status_json", lambda: {
@@ -342,19 +327,12 @@ def test_a_tailnet_without_https_names_the_switch_and_says_it_is_free(monkeypatc
 
 
 def test_the_start_button_reports_the_same_step_as_the_panel_does(tmp_path, monkeypatch):
-    """`start` and `preflight` must not describe the same state differently.
-
-    The detail line and the fix button were dropped on the start path, so
-    pressing "turn this connection on" produced a bare sentence while asking
-    the same question through the panel produced a full step.
-    """
+    """`start` and `preflight` must not describe the same state differently."""
     # Arrange
     manager = tunnel.TunnelManager(tmp_path, provider="tailscale-serve")
     provider = manager.provider()
-    # Without this the test asks the *host* whether Tailscale is installed, so
-    # it reported "install" on a clean machine and only passed where a developer
-    # happened to have it. The question here is whether start and preflight
-    # agree, which has nothing to do with either.
+    # Without this the test asks the *host* whether Tailscale is installed, so it reported "install"
+    # on a clean machine and only passed where a developer happened to have it.
     monkeypatch.setattr(provider, "ensure_binary", lambda *_a, **_k: Path("tailscale"))
     monkeypatch.setattr(provider, "_status_json", lambda: {
         "BackendState": "Running",
@@ -374,12 +352,7 @@ def test_the_start_button_reports_the_same_step_as_the_panel_does(tmp_path, monk
 
 
 def test_a_sleeping_tailscale_offers_to_start_it_rather_than_blaming_the_user(monkeypatch):
-    """`tailscale up` cannot help when the daemon it talks to is not running.
-
-    On macOS the CLI is a client of a daemon the app owns, so with the app quit
-    the old panel said "open the Tailscale app once, then try again" beside a
-    button that was guaranteed to fail. Rainette can just open it.
-    """
+    """`tailscale up` cannot help when the daemon it talks to is not running."""
     # Arrange: installed, daemon not answering.
     provider = transport.build_provider("tailscale-serve", locate_tailscale=lambda: Path("tailscale"))
     monkeypatch.setattr(provider, "_status_json", lambda: None)
@@ -444,11 +417,7 @@ def test_a_responsive_tailscale_is_not_relaunched(monkeypatch):
 
 
 def test_a_logged_out_tailnet_with_no_auth_url_offers_to_start_the_login(monkeypatch):
-    """Logged out, the daemon has no AuthURL until something runs `tailscale up`.
-
-    That is the whole reason this step is a button: the old flow linked to a
-    login page that could not know which computer was asking.
-    """
+    """Logged out, the daemon has no AuthURL until something runs `tailscale up`."""
     # Arrange
     provider = transport.build_provider("tailscale-serve", locate_tailscale=lambda: Path("tailscale"))
     monkeypatch.setattr(provider, "_status_json", lambda: {"BackendState": "NeedsLogin"})
@@ -560,11 +529,7 @@ def test_funnels_first_run_consent_is_a_button_not_an_outage(monkeypatch):
 
 
 def test_funnel_targets_the_pinned_companion_port_directly(monkeypatch):
-    """443 is a restriction on the *public* listener, not on the local target.
-
-    Rewriting the companion port to satisfy a limit that does not apply to it
-    would break the pinned endpoint for no reason.
-    """
+    """443 is a restriction on the *public* listener, not on the local target."""
     # Arrange
     seen: list[list[str]] = []
     provider = transport.build_provider("tailscale-funnel", locate_tailscale=lambda: Path("tailscale"))
@@ -975,11 +940,7 @@ def test_switching_provider_stops_what_is_already_running(tmp_path, monkeypatch,
 
 
 def test_a_hung_but_alive_helper_is_noticed_and_replaced(tmp_path, monkeypatch, fast_tunnel):
-    """`poll()` stays None forever for a helper that stopped carrying traffic.
-
-    That was invisible to the old supervisor, and the phone was left to time
-    out with nothing on the desktop to explain it.
-    """
+    """`poll()` stays None forever for a helper that stopped carrying traffic."""
     # Arrange: reachable on the way up, then never again.
     monkeypatch.setattr(tunnel, "_HEALTH_PROBE_INTERVAL_S", 0.05)
     monkeypatch.setattr(tunnel, "_HEALTH_PROBE_FAILURES", 2)
@@ -1091,19 +1052,7 @@ def test_the_quick_tunnel_still_requires_its_helper(tmp_path):
 
 
 def test_tailscales_windows_path_is_recognised_as_absolute_without_a_slash(tmp_path):
-    """The concrete regression `_locate_tailscale` used to have.
-
-    Routing was decided with ``os.sep not in candidate``, which only
-    recognises the *current* platform's own separator. Every non-Windows
-    candidate in ``_TAILSCALE_PATHS`` is "/"-separated and the Windows one is
-    "\\"-separated, so on an actual Windows machine ``os.sep`` is ``"\\"``
-    and every "/"-separated candidate would (mis)classify as a bare command
-    name for ``shutil.which()`` instead of a literal path to check -- and,
-    symmetrically, on POSIX the "\\"-separated Windows candidate does too.
-    ``os.path.isabs`` is what the check actually means on either platform, and
-    is asserted directly here (via ``ntpath``) rather than by running on
-    Windows.
-    """
+    """The concrete regression `_locate_tailscale` used to have."""
     import ntpath
     import posixpath
 
@@ -1118,10 +1067,9 @@ def test_tailscales_windows_path_is_recognised_as_absolute_without_a_slash(tmp_p
 
 
 def test_an_absolute_tailscale_candidate_is_checked_as_a_literal_file(monkeypatch, tmp_path):
-    """The routing choice itself: an absolute candidate must be checked with
-    ``Path.is_file()`` and must never be handed to ``shutil.which()``, whose
-    PATH search is a different (and here, wrong) operation entirely.
-    """
+    """The routing choice itself: an absolute candidate must be checked with ``Path.is_file()`` and
+    must never be handed to ``shutil.which()``, whose PATH search is a different (and here,
+    wrong) operation entirely."""
     fake_binary = tmp_path / "tailscale-here"
     fake_binary.write_text("")
     monkeypatch.setattr(transport, "_TAILSCALE_PATHS", (str(fake_binary),))
@@ -1134,10 +1082,9 @@ def test_an_absolute_tailscale_candidate_is_checked_as_a_literal_file(monkeypatc
 
 
 def test_a_bare_tailscale_candidate_is_searched_on_path(monkeypatch, tmp_path):
-    """The other half of the same routing choice: a bare command name must go
-    through ``shutil.which()`` rather than being checked as a literal file
-    relative to the current directory.
-    """
+    """The other half of the same routing choice: a bare command name must go through
+    ``shutil.which()`` rather than being checked as a literal file relative to the current
+    directory."""
     calls = []
     found = tmp_path / "found-tailscale"
     monkeypatch.setattr(transport, "_TAILSCALE_PATHS", ("tailscale-bin-name",))
@@ -1148,12 +1095,7 @@ def test_a_bare_tailscale_candidate_is_searched_on_path(monkeypatch, tmp_path):
 
 
 def test_no_window_kwargs_matches_the_platform_it_runs_on():
-    """Console suppression is Windows-only plumbing.
-
-    Asserted against the real platform rather than assuming POSIX: on Windows
-    returning the flags IS the correct answer, and a test that demands {}
-    there would be demanding the bug.
-    """
+    """Console suppression is Windows-only plumbing."""
     kwargs = transport._no_window_kwargs()
     if os.name == "nt":
         assert kwargs.get("creationflags", 0) & subprocess.CREATE_NO_WINDOW
@@ -1163,18 +1105,11 @@ def test_no_window_kwargs_matches_the_platform_it_runs_on():
 
 
 def test_no_window_kwargs_hides_the_console_and_suppresses_a_new_one(monkeypatch):
-    """A console window flashing on every launch is a real, visible bug --
-    this pins the two pieces that prevent it: ``STARTF_USESHOWWINDOW`` (which
-    tells Windows to honour ``wShowWindow`` at all) actually set on the
-    ``STARTUPINFO`` handed back, and ``creationflags`` carrying
-    ``CREATE_NO_WINDOW`` (which stops a console from being allocated in the
-    first place, rather than merely hiding one after the fact).
-
-    None of ``subprocess.STARTUPINFO``, ``CREATE_NO_WINDOW`` or
-    ``STARTF_USESHOWWINDOW`` exist outside Windows, so this fakes them in
-    (``create=True``) the same way the rest of this suite fakes Windows-only
-    filesystem behaviour to verify it without a Windows machine.
-    """
+    """A console window flashing on every launch is a real, visible bug -- this pins the two pieces
+    that prevent it: ``STARTF_USESHOWWINDOW`` (which tells Windows to honour ``wShowWindow`` at
+    all) actually set on the ``STARTUPINFO`` handed back, and ``creationflags`` carrying
+    ``CREATE_NO_WINDOW`` (which stops a console from being allocated in the first place, rather
+    than merely hiding one after the fact)."""
     created = []
 
     class FakeSTARTUPINFO:
@@ -1195,10 +1130,7 @@ def test_no_window_kwargs_hides_the_console_and_suppresses_a_new_one(monkeypatch
 
 
 def test_popen_and_run_both_forward_the_no_window_kwargs(monkeypatch):
-    """The helper is useless if the two places that actually launch a process
-    do not call it. ``_popen`` backs the long-lived cloudflared process;
-    ``_run`` backs every one-shot Tailscale command.
-    """
+    """The helper is useless if the two places that actually launch a process do not call it."""
     sentinel = {"marker": "no-console"}
     monkeypatch.setattr(transport, "_no_window_kwargs", lambda: dict(sentinel))
 
@@ -1225,15 +1157,9 @@ def test_popen_and_run_both_forward_the_no_window_kwargs(monkeypatch):
 
 
 def test_run_passes_an_explicit_utf8_encoding(monkeypatch):
-    """``text=True`` without an explicit ``encoding=`` decodes helper output
-    with ``locale.getpreferredencoding(False)``, which on Windows is commonly
-    a legacy code page rather than UTF-8. A status line with non-ASCII bytes
-    -- a device name, a tailnet name -- would then raise
-    ``UnicodeDecodeError``, which is neither ``OSError`` nor
-    ``SubprocessError`` and so is not one of the exceptions callers already
-    catch. ``_popen`` already pins utf-8/replace for the long-lived helper
-    process; ``_run`` must match.
-    """
+    """``text=True`` without an explicit ``encoding=`` decodes helper output with
+    ``locale.getpreferredencoding(False)``, which on Windows is commonly a legacy code page
+    rather than UTF-8."""
     captured = {}
 
     def fake_run(command, **kwargs):

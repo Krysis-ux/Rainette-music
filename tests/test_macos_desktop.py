@@ -1,20 +1,4 @@
-"""The macOS desktop branch of main.py, and the Cocoa helpers behind it.
-
-Split in two on purpose:
-
-* The branching tests run **everywhere**, including the Windows CI box. They
-  drive ``main``'s macOS path with a stand-in ``macos_support``, so a change that
-  breaks the port is caught by the same suite that guards the Windows build
-  rather than only when somebody happens to run it on a Mac.
-* The Cocoa tests are skipped off macOS, because they need real AppKit.
-
-The regression these exist for: the first port produced no sound at all. The
-cause was not the audio pipeline but window creation -- ``PLAYER_PARK_POS``
-(-32000, -32000) leaves a window on no screen, Cocoa returns nil for
-``window.screen()``, and pywebview's ``windowDidMove_`` dereferences it. The
-resulting exception dropped the app into browser fallback, where the mini-player
-window architecture does not exist. Hence ``test_player_is_never_created_at_the_windows_park_position``.
-"""
+"""The macOS desktop branch of main.py, and the Cocoa helpers behind it."""
 
 from __future__ import annotations
 
@@ -243,12 +227,7 @@ class WindowIconTests(unittest.TestCase):
 
 class UpdaterPlatformGateTests(unittest.TestCase):
     def test_a_platform_with_no_release_artifacts_refuses_to_install(self):
-        """Neither Windows nor macOS means there is nothing to install.
-
-        macOS now updates itself, so the gate is no longer "not Windows" -- it
-        is "Rainette publishes nothing this platform can run", which is what
-        keeps a Linux build from downloading an .exe or a .app.
-        """
+        """Neither Windows nor macOS means there is nothing to install."""
         api = main.WindowApi()
         with patch.object(main.sys, "frozen", True, create=True), \
              patch.object(main, "IS_WINDOWS", False), \
@@ -312,10 +291,9 @@ class CocoaHelperTests(unittest.TestCase):
             )
 
     def test_park_fades_the_window_instead_of_ordering_it_out(self):
-        """Ordering the player out suspends requestAnimationFrame, and Rainette's
-        pause is a rAF-driven volume ramp whose callback calls audio.pause() --
-        so a hidden player plays on forever with a dead pause button. Parking
-        must fade the window and keep it ordered in, never hide()/minimize()."""
+        """Ordering the player out suspends requestAnimationFrame, and Rainette's pause is a
+        rAF-driven volume ramp whose callback calls audio.pause() -- so a hidden player plays on
+        forever with a dead pause button."""
         native = _FakeNativeWindow()
         window = _RecordingWindow()
         window.native = native

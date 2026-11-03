@@ -1,11 +1,7 @@
 import XCTest
 
-/// The iPhone app on a simulator, used the way a person uses it: search, play,
-/// seek, leave the app, come back, skip. It asks the real source over the
-/// internet, so like mobile/scripts/emulator_check.py on Android it is run by
-/// hand rather than in CI (see mobile/README.md). With RAINETTE_OUT set (as
-/// TEST_RUNNER_RAINETTE_OUT), it leaves timings, and a screenshot and the
-/// accessibility tree of any step that fails, in that folder.
+/// The iPhone app on a simulator, used the way a person uses it: search, play, seek, leave the app,
+/// come back, skip.
 final class PlaysOnThePhone: XCTestCase {
     private let app = XCUIApplication()
     private let out = ProcessInfo.processInfo.environment["RAINETTE_OUT"]

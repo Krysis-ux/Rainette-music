@@ -1,10 +1,4 @@
-"""Single source of truth for the running app's version.
-
-Kept in sync with the build: ``build-windows-release.ps1 -Version`` and the
-``v*`` git tag the release workflow fires on must match ``APP_VERSION`` (the
-build script asserts this). The in-app updater compares this against the latest
-GitHub release tag to decide whether an update is available.
-"""
+"""Single source of truth for the running app's version."""
 
 from __future__ import annotations
 
@@ -23,12 +17,7 @@ UPDATE_SIGNER_CERT_SHA256 = ""
 
 
 def parse_version(value: str) -> tuple[int, ...]:
-    """Turn a version/tag string into a comparable tuple of ints.
-
-    Tolerant of a leading ``v`` and a prerelease/build suffix, so ``"v0.3.1"`` and
-    ``"0.3.1-local"`` both parse to ``(0, 3, 1)``. Unparseable input yields ``()``,
-    which compares lower than any real version.
-    """
+    """Turn a version/tag string into a comparable tuple of ints."""
     if not value:
         return ()
     core = str(value).strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]

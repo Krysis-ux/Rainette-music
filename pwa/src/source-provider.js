@@ -1,15 +1,4 @@
-/* Where a track's audio comes from, and which engine plays it.
- *
- * Three sources, decided per track:
- *   - a file on this phone (imported or downloaded): an IndexedDB blob, played
- *     by the <audio> element and never by anything that would upload it;
- *   - a streamed song: resolved on this phone when the native app is present,
- *     otherwise through the paired computer's relay;
- *   - something only the computer has: always through the computer.
- *
- * And one engine per queue: the native app's media service when it can stream
- * every track in the queue itself, the <audio> element otherwise. Never both —
- * player.js silences one before the other starts. */
+/* Where a track's audio comes from, and which engine plays it. */
 
 import { isLocalTrack } from './local.js';
 import { nativeAvailable } from './native-engine.js';

@@ -1,10 +1,4 @@
-"""Tests for the managed HTTPS tunnel and the pairing addresses it produces.
-
-The failure these cover is the one users actually hit: a pairing code minted
-while the computer had no public address carries ``http://127.0.0.1:<port>``,
-which a phone can never call, and the browser reports it only as "Failed to
-fetch" / "Load failed".
-"""
+"""Tests for the managed HTTPS tunnel and the pairing addresses it produces."""
 
 from __future__ import annotations
 
@@ -119,13 +113,7 @@ def test_quick_tunnel_address_is_discovered_and_published(tmp_path, monkeypatch,
 
 
 def test_no_probe_is_sent_before_the_dns_grace_period(tmp_path, monkeypatch):
-    """The first lookup must not happen while the hostname still has no record.
-
-    `trycloudflare.com` has no wildcard, so probing the moment cloudflared
-    prints the name teaches the resolver an NXDOMAIN it then serves from cache
-    for the rest of the startup window — measured: the name never resolves at
-    all, instead of resolving in ~17s.
-    """
+    """The first lookup must not happen while the hostname still has no record."""
     # Arrange
     monkeypatch.setattr(tunnel, "_URL_DISCOVERY_TIMEOUT_S", 3.0)
     monkeypatch.setattr(tunnel, "_REGISTRATION_TIMEOUT_S", 0.1)
@@ -226,13 +214,7 @@ def test_stop_terminates_the_helper_process(tmp_path, monkeypatch, fast_tunnel):
 
 
 def test_a_launch_that_fails_takes_its_helper_down_with_it(tmp_path, monkeypatch, fast_tunnel):
-    """An abandoned attempt must not leave cloudflared running.
-
-    Observed on a real machine: two cloudflared processes reparented to launchd,
-    still holding tunnels, after the app that started them had quit. Each failed
-    or superseded attempt leaked one, and they accumulate for as long as the
-    user keeps pressing the button that is not working.
-    """
+    """An abandoned attempt must not leave cloudflared running."""
     # Arrange: the address is minted but never routes back, so the launch fails.
     process = FakeProcess(QUICK_TUNNEL_LOG)
     manager = build_manager(tmp_path, monkeypatch, process, reachable=lambda url: False)
@@ -526,13 +508,7 @@ def test_written_config_is_valid_json(isolated_config):
 
 
 def test_a_filtered_network_is_named_rather_than_blamed_on_the_internet(monkeypatch):
-    """"Check your internet" is wrong advice on the network that causes this.
-
-    A school or office FortiGate re-signs TLS and blocks the tunnel while the
-    computer's ordinary internet works perfectly. Sitting for three minutes and
-    then saying "check that this computer can reach the internet" sends the
-    user to fix something that is not broken.
-    """
+    """"Check your internet" is wrong advice on the network that causes this."""
     monkeypatch.setattr(tunnel, "_tls_is_intercepted", lambda *a, **k: True)
     message = tunnel.describe_unreachable("https://x.trycloudflare.com")
     assert "firewall" in message
@@ -546,13 +522,7 @@ def test_an_ordinary_failure_does_not_claim_a_firewall(monkeypatch):
 
 
 def test_the_interception_probe_can_actually_run(monkeypatch):
-    """It is all inside a broad `except`, so a coding error looks like "clean".
-
-    This shipped returning False for every network because `socket` was not
-    imported: the NameError was swallowed by the same handler that exists for
-    genuine network failures. Calling it against a stubbed connector proves the
-    body runs rather than failing silently.
-    """
+    """It is all inside a broad `except`, so a coding error looks like "clean"."""
     seen = []
 
     class _FakeTLS:

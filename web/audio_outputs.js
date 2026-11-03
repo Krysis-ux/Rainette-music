@@ -7,11 +7,7 @@ export function canRouteAudio(element) {
 	return typeof element?.setSinkId === 'function';
 }
 
-/**
- * The browser's own output sinks. Labels are empty unless the page holds a
- * media permission, which Rainette deliberately does not request just to name a
- * speaker — an empty label here is expected, not a failure.
- */
+/** The browser's own output sinks. */
 export async function browserSinks() {
 	if (!navigator.mediaDevices?.enumerateDevices) return [];
 	try {

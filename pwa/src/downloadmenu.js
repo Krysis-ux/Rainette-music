@@ -1,27 +1,5 @@
-/* What downloading looks like.
- *
- * `downloads.js` moves the bytes; this is the two places that offer to. It sits
- * in its own module rather than in `extras.js` because `playlists.js` and
- * `catalog.js` need the list half, and neither can import `extras.js` without
- * closing a cycle.
- *
- * Deliberately only two surfaces, and the restraint is the design:
- *
- *   A track's menu   — the "More" sheet, reached by holding a row or from the
- *                      player card. One song at a time lives behind a menu
- *                      because it is an occasional act, not a per-row control:
- *                      a download button on every row is a column of buttons
- *                      nobody asked for, on the surface people scroll most.
- *   The head of a list — a playlist or an album, where "all of it" is the whole
- *                      point and the only place that question makes sense.
- *
- * Three things a menu can offer, and the distinction between them matters:
- *
- *   Download        — keep it on the phone, in Local files, playable offline.
- *   Save a copy     — hand a file to the phone's own storage, where the person
- *                     chooses the folder if the browser can ask.
- *   Remove download — drop the copy. The song stays in the catalog.
- */
+/* What downloading looks like. `downloads.js` moves the bytes; this is the two places that offer
+ * to. */
 
 import { el, toast, tap } from './dom.js';
 import { openSheet } from './sheets.js';
@@ -29,21 +7,12 @@ import { artistName } from './state.js';
 import { isLocalTrack, formatBytes } from './local.js';
 import {
 	downloadTrack, downloadTracks, removeDownload, saveCopy,
-	isDownloaded, isDownloading, canChooseLocation,
+	isDownloaded, isDownloading,
 } from './downloads.js';
 
 /* ── One track, from a menu ───────────────────────────────────────────────*/
 
-/**
- * The download rows for a track's action menu.
- *
- * Returns an array to be spread into `actionSheet`'s items, so a caller adds
- * `...trackDownloadItems(track)` and inherits every state — downloading, here
- * already, not here yet — without knowing which is which.
- *
- * A file imported from this phone gets nothing but "save a copy": it is already
- * as local as a track can be, and offering to download it would be nonsense.
- */
+/** The download rows for a track's action menu. */
 export function trackDownloadItems(track, { onChanged } = {}) {
 	if (!track) return [];
 	const here = isDownloaded(track);
@@ -62,7 +31,6 @@ export function trackDownloadItems(track, { onChanged } = {}) {
 		items.push({
 			id: 'download',
 			label: 'Download',
-			hint: 'Keep on this phone',
 			icon: 'download',
 			run: () => runTrackDownload(track).then(onChanged),
 		});
@@ -71,29 +39,16 @@ export function trackDownloadItems(track, { onChanged } = {}) {
 	items.push({
 		id: 'save-copy',
 		label: 'Save a copy',
-		// Only promise a choice of folder where the browser can actually offer
-		// one. On iOS there is no such API and the file goes to Downloads, so
-		// saying "choose where" there would be a lie the person catches.
-		hint: canChooseLocation() ? 'Choose where to put it' : 'To this phone’s downloads',
 		icon: 'download',
 		run: () => runSaveCopy(track).then(onChanged),
 	});
 
-	/* Offered for anything actually on the phone, which very much includes a
-	 * track opened from Local files.
-	 *
-	 * This used to carry a `!isLocalTrack` guard, and that guard was exactly
-	 * wrong: a downloaded track *is* a local track once it has landed, so the
-	 * one place somebody goes looking for "delete this" -- the menu on the row
-	 * in Local files -- was the one place that never offered it. */
+	/* Anything on the phone, imported files included. */
 	if (here) {
 		const stored = isLocalTrack(track);
 		items.push({
 			id: 'remove-download',
 			label: stored ? 'Remove from this phone' : 'Remove download',
-			// True either way: the catalog row is untouched. What goes is the
-			// copy, and for an imported file the copy is all there ever was.
-			hint: stored ? 'Deletes the file kept here' : 'Keeps the song, drops the file',
 			icon: 'trash',
 			danger: true,
 			run: async () => {
@@ -111,10 +66,7 @@ export function trackDownloadItems(track, { onChanged } = {}) {
 	return items;
 }
 
-/* What the sheet says while there is nothing to measure. `preparing` is the
- * computer resolving the stream (a yt-dlp call, allowed 50s) and `connecting`
- * is the wait for the first byte -- together they are most of a short track's
- * wall time, and they used to read as a frozen 0%. */
+/* What the sheet says while there is nothing to measure. */
 const PHASE_LABEL = {
 	preparing: 'Preparing',
 	connecting: 'Connecting to',
@@ -154,15 +106,8 @@ export async function runSaveCopy(track) {
 
 /* ── A whole list ─────────────────────────────────────────────────────────*/
 
-/**
- * Download a playlist, an album, or any list of tracks, behind a sheet that
- * shows what is happening and can stop it.
- *
- * The sheet exists because a playlist download is not an instant: thirty tracks
- * is thirty yt-dlp resolves and thirty fetches, and a toast that says
- * "downloading" and then nothing for four minutes is indistinguishable from a
- * hang. It reports the track being fetched by name, so the wait is legible.
- */
+/** Download a playlist, an album, or any list of tracks, behind a sheet that shows what is
+ * happening and can stop it. */
 export function runListDownload(tracks, { title = 'Download' } = {}) {
 	const all = [...(tracks || [])].filter(Boolean);
 	const pending = all.filter(track => !isDownloaded(track));
@@ -206,13 +151,8 @@ export function runListDownload(tracks, { title = 'Download' } = {}) {
 
 				body.append(head, bar, now, stop);
 
-				/* The sheet being dismissed is not a cancel: a download the person
-				 * walked away from should still finish. Only Stop stops it.
-				 *
-				 * `openSheet` has no close hook, so the handle's own `close` is
-				 * wrapped rather than a listener added — the sheet can be closed
-				 * from four places (this code, the scrim, Escape, the back
-				 * gesture) and all four go through it. */
+				/* The sheet being dismissed is not a cancel: a download the person walked away from should
+				 * still finish. */
 				const closeSheet = handle.close.bind(handle);
 				handle.close = (fromHistory = false) => {
 					if (!settled) toast('Still downloading in the background', { icon: 'download' });
@@ -222,11 +162,8 @@ export function runListDownload(tracks, { title = 'Download' } = {}) {
 				downloadTracks(pending, {
 					signal: controller.signal,
 					onProgress: ({ done, total, track, ratio, phase, received, bytes }) => {
-						// `done + ratio` reads as fractional progress through the
-						// list rather than a bar that jumps a whole track at a time.
-						// A null ratio means this track's size is unknown, so the
-						// track counts as started but not measurable -- the bar
-						// keeps the position it earned rather than snapping back.
+						// `done + ratio` reads as fractional progress through the list rather than a bar that jumps a
+						// whole track at a time.
 						const share = ratio == null ? 0 : ratio;
 						const at = Math.min(total, done + share);
 						const pct = total ? (at / total) * 100 : 0;

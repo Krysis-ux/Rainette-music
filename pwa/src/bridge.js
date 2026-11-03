@@ -1,8 +1,5 @@
-/* The one way this app talks to the computer.
- *
- * `app.js` owns the transport and installs it here at boot. The indirection
- * keeps the import graph acyclic: UI modules send commands, app.js renders UI.
- */
+/* The one way this app talks to the computer. `app.js` owns the transport and installs it here at
+ * boot. */
 
 import { hasComputer } from './state.js';
 import { phoneCommand } from './ytmusic.js';
@@ -22,10 +19,7 @@ export function events({ after, wait, follow }) {
 	return readEvents({ after, wait, follow });
 }
 
-/** Invoke one allow-listed music command on the computer. The app answers the
- *  catalog ones itself when no computer is paired, and when a paired one
- *  cannot (ytmusic.js), so search, artists, albums and lyrics never depend on a
- *  computer being awake. */
+/** Invoke one allow-listed music command on the computer. */
 export function command(type, payload = {}, timeoutMs) {
 	const phone = phoneCommand(type);
 	if (phone && !hasComputer()) return phone.run(payload);
@@ -33,13 +27,8 @@ export function command(type, payload = {}, timeoutMs) {
 	return phone?.fallback ? asked.catch(() => phone.run(payload)) : asked;
 }
 
-/* This page updates itself the moment it is deployed; the computer it talks to
- * updates only when somebody installs a new Rainette there. So a phone can be
- * ahead of its computer, and asking for something the computer's allow-list
- * predates comes back as a flat 400 reading "command type is not allowed".
- *
- * Shown raw that is a protocol string blaming the wrong thing. Every caller of
- * a command added after the first release routes its failures through here. */
+/* This page updates itself the moment it is deployed; the computer it talks to updates only when
+ * somebody installs a new Rainette there. */
 export function commandError(error, fallback = 'Your computer could not answer that.') {
 	const message = String(error?.message || '');
 	if (error?.status === 400 && /not allowed/i.test(message)) {

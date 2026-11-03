@@ -1,11 +1,4 @@
-"""What the native app may and may not contain, checked from its sources.
-
-Rainette is free, ad-free and needs no account or paid service. Those are
-promises a dependency can break silently -- one advertising or analytics SDK
-pulled in for convenience, one "fallback" resolver that sends every song to
-somebody else's server -- so the allowed dependencies are listed here and
-anything else fails the build. Adding one means arguing for it in this file.
-"""
+"""What the native app may and may not contain, checked from its sources."""
 
 import json
 import re

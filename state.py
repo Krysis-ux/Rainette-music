@@ -1,8 +1,4 @@
-"""SQLite-backed music state: playlists, tracks, and play history.
-
-A compact standalone SQLite state layer for Rainette Music. Its methods and SQL
-support the music bridge directly.
-"""
+"""SQLite-backed music state: playlists, tracks, and play history."""
 
 from __future__ import annotations
 
@@ -41,11 +37,7 @@ def loads_object(value: str | None) -> dict[str, Any]:
 
 
 def loads_value(value: str | None, default: Any = None) -> Any:
-    """Parse a stored JSON value of any shape.
-
-    Settings are booleans, numbers and strings as often as objects, and
-    loads_object flattens all of those to {} — which would turn "fade is off"
-    into "fade is unset" on every read."""
+    """Parse a stored JSON value of any shape."""
     if value is None:
         return default
     try:
@@ -85,17 +77,7 @@ def _add_months(first_of_month: date, months: int) -> date:
 
 
 def plan_insight_buckets(today: date, days: int, earliest: date) -> tuple[str, list[dict[str, Any]]]:
-    """Choose the Insights chart's bucket unit and spans for a range.
-
-    Keeps the bar count small enough that every value label always renders:
-    a 7-day range stays daily, a month rolls up to Monday-start weeks, and
-    all-time (``days == 0``) rolls up to at most the last 12 monthly buckets.
-    The UI only ever asks for 7 / 30 / 0, which map to day / week / month.
-
-    Returns ``(unit, spans)`` where each span is ``{"start", "end", "key"}``:
-    ``start``/``end`` are inclusive local dates and ``key`` is what a play's
-    local date is matched against to fall into that bucket.
-    """
+    """Choose the Insights chart's bucket unit and spans for a range."""
     if days == 0:
         this_month = today.replace(day=1)
         start_month = max(earliest.replace(day=1), _add_months(this_month, -11))
@@ -215,15 +197,7 @@ class MusicState:
         self._add_column(conn, "music_playlists", "rules_json", "rules_json TEXT NOT NULL DEFAULT '{}'")
         self._add_column(conn, "music_playlists", "artwork_key", "artwork_key TEXT NOT NULL DEFAULT ''")
 
-        # Files that live on this computer. `file_path` is the only part of a
-        # local track's identity that is allowed to move; `source_id` is opaque
-        # and assigned once (see upsert_local_track), so reorganising a music
-        # folder or retagging an album never re-creates the row and never drops
-        # it out of a playlist.
-        #
-        # `missing_since` rather than a delete: a scanner marks, it never
-        # removes. An external drive that is merely unplugged must cost a greyed
-        # out row, not a hole in every playlist that referenced it.
+        # Files that live on this computer.
         self._add_column(conn, "music_tracks", "file_path", "file_path TEXT NOT NULL DEFAULT ''")
         self._add_column(conn, "music_tracks", "file_size", "file_size INTEGER NOT NULL DEFAULT 0")
         self._add_column(conn, "music_tracks", "file_mtime", "file_mtime REAL NOT NULL DEFAULT 0")
@@ -277,6 +251,14 @@ class MusicState:
             CREATE INDEX IF NOT EXISTS idx_music_followed_artists_followed
                 ON music_followed_artists(followed_at DESC);
 
+            /* Artist pictures found by name, so a library artist never wears
+               one of their album covers. */
+            CREATE TABLE IF NOT EXISTS music_artist_art (
+                name_key TEXT PRIMARY KEY,
+                thumbnail_url TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
+
             /* Small singleton records that outlive a process. The playback
                target lives here so "where is this playing" survives a restart
                instead of being re-guessed from whichever window spoke last. */
@@ -314,13 +296,8 @@ class MusicState:
             """
         )
 
-        # After the script above, because that is where music_devices is
-        # created and ALTER TABLE cannot precede it on a fresh database.
-        #
-        # What each paired phone reported it can decode, from its own
-        # `canPlayType`. Kept on the device row rather than in
-        # music_device_settings, because that table round-trips to the phone as
-        # its own preferences and this is the computer's note *about* the phone.
+        # After the script above, because that is where music_devices is created and ALTER TABLE
+        # cannot precede it on a fresh database.
         self._add_column(conn, "music_devices", "codec_support_json",
                          "codec_support_json TEXT NOT NULL DEFAULT '{}'")
 
@@ -334,15 +311,7 @@ class MusicState:
 
     @staticmethod
     def _track_artist_key(track: dict[str, Any]) -> str:
-        """Artist identity of a track: artist_id when present, else lowercased name.
-
-        Matches music_library_index so the Artists tab, top artists, and
-        artist-scoped deletes all agree on what counts as one artist. artist_id
-        lives inside metadata_json, so this cannot be expressed in SQL.
-
-        Distinct from _artist_key(), which builds the "id:"/"name:" primary key of
-        the followed-artists table - a different key space, not interchangeable.
-        """
+        """Artist identity of a track: artist_id when present, else lowercased name."""
         metadata = track.get("metadata") if isinstance(track.get("metadata"), dict) else {}
         name = str(track.get("artist") or "").strip() or "Unknown artist"
         artist_id = str(metadata.get("artist_id") or "").strip()
@@ -827,12 +796,7 @@ class MusicState:
     CLEARABLE_CATEGORIES = ("recents", "following", "playlists", "queues")
 
     def clear_user_data(self, categories: Any) -> dict[str, Any]:
-        """Erase whole categories of user data in one transaction.
-
-        Returns the row counts removed plus the playlist artwork keys left
-        orphaned; deleting those files is the caller's job, since artwork path
-        policy lives in music_bridge alongside the other artwork handling.
-        """
+        """Erase whole categories of user data in one transaction."""
         wanted = [c for c in dict.fromkeys(str(c or "").strip() for c in (categories or []))
                   if c in self.CLEARABLE_CATEGORIES]
         if not wanted:
@@ -858,10 +822,7 @@ class MusicState:
                     conn.execute("DELETE FROM music_playlist_tracks")
                     conn.execute("DELETE FROM music_playlist_folders")
                     counts[category] = conn.execute("DELETE FROM music_playlists").rowcount
-            # music_tracks is a cache reachable only via playlists or history. Once
-            # those references are gone the rows are invisible in the UI but still
-            # record what was listened to, so prune them rather than leave a
-            # "cleared" library quietly holding the user's listening behind it.
+            # music_tracks is a cache reachable only via playlists or history.
             counts["tracks_pruned"] = conn.execute(
                 """
                 DELETE FROM music_tracks
@@ -872,13 +833,7 @@ class MusicState:
         return {"cleared": wanted, "counts": counts, "artwork_keys": artwork_keys}
 
     def delete_play_history(self, track_id: str) -> int:
-        """Forget every play of one track.
-
-        list_recent_plays groups history by track and returns the track row, so a
-        Recents entry has no per-play id to delete - "remove this from Recents"
-        can only mean forgetting that track's plays. That also drops it out of
-        Insights and the top-artist tallies, which is what makes the surfaces agree.
-        """
+        """Forget every play of one track."""
         track_id = str(track_id or "").strip()
         if not track_id:
             return 0
@@ -927,6 +882,7 @@ class MusicState:
                 """
             ).fetchall()
         artists: dict[str, dict[str, Any]] = {}
+        pictures = self.artist_pictures()
         for row in rows:
             track = self._track_row(row)
             metadata = track.get("metadata") if isinstance(track.get("metadata"), dict) else {}
@@ -938,24 +894,15 @@ class MusicState:
                 "name": artist_name,
                 "artist_key": artist_key,
                 "play_count": 0,
-                "thumbnail_url": track.get("thumbnail_url") or "",
+                "thumbnail_url": pictures.get(artist_name.casefold(), ""),
             })
             artist["play_count"] += 1
-            if not artist.get("thumbnail_url") and track.get("thumbnail_url"):
-                artist["thumbnail_url"] = track.get("thumbnail_url")
         ranked = sorted(artists.values(), key=lambda a: (-int(a.get("play_count") or 0), str(a.get("name") or "").lower()))
         return ranked[:limit]
 
     def listening_insights(self, *, days: int = 7) -> dict[str, Any]:
-        """Aggregate play history into the Insights payload.
-
-        ``days`` bounds the window (0 = all time). Buckets use the local
-        timezone so "today" matches the user's clock, and the chart adapts its
-        unit to the range (day / week / month) via plan_insight_buckets so a
-        legible handful of bars always fits. For a bounded range the totals
-        window is aligned to the first bucket's start, so the summary strip and
-        the chart agree exactly (sum of bar counts == total_plays).
-        """
+        """Aggregate play history into the Insights payload. ``days`` bounds the window (0 = all
+        time)."""
         try:
             days = max(0, min(int(days or 0), 365))
         except Exception:
@@ -987,10 +934,8 @@ class MusicState:
         bucket_index = {span["key"]: i for i, span in enumerate(bucket_spans)}
         bucket_counts = [0] * len(bucket_spans)
 
-        # A bounded range counts only plays inside the chart's span, so the
-        # totals and the bars line up. All-time (cutoff None) counts every play
-        # into the totals while the chart shows just the last 12 months, so the
-        # strip can legitimately exceed the visible bars on long histories.
+        # A bounded range counts only plays inside the chart's span, so the totals and the bars line
+        # up.
         cutoff = None
         if days and bucket_spans:
             first = bucket_spans[0]["start"]
@@ -1001,6 +946,7 @@ class MusicState:
         total_seconds = 0.0
         track_plays: dict[str, dict[str, Any]] = {}
         artist_plays: dict[str, dict[str, Any]] = {}
+        pictures = self.artist_pictures()
         for played_at, track in plays:
             if cutoff is not None and played_at < cutoff:
                 continue
@@ -1026,11 +972,9 @@ class MusicState:
                 "name": artist_name,
                 "artist_key": artist_key,
                 "play_count": 0,
-                "thumbnail_url": track.get("thumbnail_url") or "",
+                "thumbnail_url": pictures.get(artist_name.casefold(), ""),
             })
             artist["play_count"] += 1
-            if not artist.get("thumbnail_url") and track.get("thumbnail_url"):
-                artist["thumbnail_url"] = track.get("thumbnail_url")
 
         top_tracks = sorted(track_plays.values(),
                             key=lambda t: (-int(t.get("play_count") or 0), str(t.get("title") or "").lower()))[:8]
@@ -1066,12 +1010,7 @@ class MusicState:
         return [self._track_row(row) for row in rows]
 
     def get_track(self, track_id: str) -> dict[str, Any] | None:
-        """One track by primary key, or None.
-
-        The audio route needs this: a local grant names a ``track_id`` and
-        nothing else, so the path on disk is looked up here rather than carried
-        in the capability the phone holds.
-        """
+        """One track by primary key, or None."""
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT * FROM music_tracks WHERE id = ?", (str(track_id or "").strip(),)
@@ -1176,6 +1115,35 @@ class MusicState:
             cur = conn.execute("DELETE FROM music_followed_artists WHERE artist_key = ?", (key,))
             return bool(cur.rowcount)
 
+    def remember_artist_art(self, artists: list[dict[str, Any]]) -> None:
+        """Keep pictures found by name, keyed on the name that was asked for."""
+        now = utc_now()
+        rows = []
+        for artist in artists or []:
+            key = str(artist.get("query") or artist.get("name") or "").strip().casefold()
+            url = str(artist.get("thumbnail_url") or "").strip()[:800]
+            if key and url.startswith("https://"):
+                rows.append((key, url, now))
+        if not rows:
+            return
+        with self.connect() as conn:
+            conn.executemany(
+                "INSERT INTO music_artist_art (name_key, thumbnail_url, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(name_key) DO UPDATE SET thumbnail_url = excluded.thumbnail_url, updated_at = excluded.updated_at",
+                rows,
+            )
+
+    def artist_pictures(self) -> dict[str, str]:
+        """Real artist pictures by casefolded name: followed artists, then lookups."""
+        with self.connect() as conn:
+            found = {
+                str(row["name_key"]): str(row["thumbnail_url"])
+                for row in conn.execute("SELECT name_key, thumbnail_url FROM music_artist_art")
+            }
+            for row in conn.execute("SELECT name, thumbnail_url FROM music_followed_artists WHERE thumbnail_url != ''"):
+                found[str(row["name"]).strip().casefold()] = str(row["thumbnail_url"])
+        return found
+
     def list_followed_artists(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -1218,11 +1186,8 @@ class MusicState:
 
     def set_playback_target(self, patch: dict[str, Any], *,
                             expected_revision: int | None = None) -> dict[str, Any]:
-        """Move ownership. The single writer, so two phones claiming at once
-        resolve to one winner rather than to a torn record.
-
-        `expected_revision` lets a caller refuse to overwrite a decision it has
-        not seen; a mismatch raises rather than silently clobbering."""
+        """Move ownership. The single writer, so two phones claiming at once resolve to one winner
+        rather than to a torn record."""
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT value_json, revision FROM music_kv WHERE key = ?",
@@ -1276,10 +1241,7 @@ class MusicState:
             )
 
     def list_devices(self) -> list[dict[str, Any]]:
-        """Known phones, most recently seen first.
-
-        Used to turn an owner's device id into the name a person recognises,
-        so "playing on" can say "Lennon's iPhone" instead of a hex string."""
+        """Known phones, most recently seen first."""
         with self.connect() as conn:
             rows = conn.execute(
                 "SELECT device_id, name, kind, follows_desktop, last_seen_at "
@@ -1292,10 +1254,7 @@ class MusicState:
         ]
 
     def device_follow(self, device_id: str) -> bool:
-        """Whether this phone asked to mirror the computer.
-
-        Read back on log creation, which is what makes evicting an idle device
-        log cost a resync rather than silently unlinking a phone."""
+        """Whether this phone asked to mirror the computer."""
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT follows_desktop FROM music_devices WHERE device_id = ?",
@@ -1305,15 +1264,8 @@ class MusicState:
 
     def merge_device_settings(self, device_id: str, entries: list[dict[str, Any]], *,
                               origin: str = "phone") -> list[dict[str, Any]]:
-        """Last-write-wins per key, never per blob.
-
-        Prefs travel as one JSON object, so a blob revision would force
-        discarding one side whenever two devices edited different keys. Per-key
-        stamps make the merge commutative and both edits survive.
-
-        This computer's clock arbitrates: a stamp that is absent or implausibly
-        far in the future is replaced, so a phone with a wrong date cannot pin a
-        key forever."""
+        """Last-write-wins per key, never per blob. Prefs travel as one JSON object, so a blob
+        revision would force discarding one side whenever two devices edited different keys."""
         self.upsert_device(device_id)
         now_ms = int(time.time() * 1000)
         horizon = now_ms + 300_000
@@ -1353,25 +1305,14 @@ class MusicState:
 
     @staticmethod
     def _norm_mtime(value: Any) -> float:
-        """Modification times, rounded so two readings of one file agree.
-
-        Move repair matches on ``(size, mtime, basename)``, which only works if
-        the stored number is reproducible. Filesystems disagree about how many
-        digits of sub-second precision they keep, so everything is pinned to
-        milliseconds on the way in and on the way back out.
-        """
+        """Modification times, rounded so two readings of one file agree."""
         try:
             return round(float(value or 0.0), 3)
         except (TypeError, ValueError):
             return 0.0
 
     def get_local_track(self, *, track_id: str = "", source_id: str = "") -> dict[str, Any] | None:
-        """A local row by primary key or by its opaque source id.
-
-        Both lookups are index-backed — the PK and the existing
-        ``UNIQUE(source, source_id)`` — so this stays constant time on a library
-        of any size.
-        """
+        """A local row by primary key or by its opaque source id."""
         track_id = str(track_id or "").strip()
         source_id = str(source_id or "").strip()
         with self.connect() as conn:
@@ -1407,13 +1348,7 @@ class MusicState:
         return dict(row)
 
     def remove_local_root(self, path: str) -> bool:
-        """Stop watching a folder.
-
-        Tracks scanned out of it are deliberately left in place. Forgetting
-        where music came from is not the same as deciding it never existed, and
-        a playlist must not lose entries because somebody tidied a preferences
-        list.
-        """
+        """Stop watching a folder. Tracks scanned out of it are deliberately left in place."""
         with self.connect() as conn:
             cur = conn.execute(
                 "DELETE FROM music_local_roots WHERE path = ?", (str(path or "").strip(),)
@@ -1444,27 +1379,7 @@ class MusicState:
         thumbnail_url: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Record one file, reusing the row it already has wherever possible.
-
-        ``source_id`` is a fresh uuid assigned the first time a file is seen and
-        never derived from anything about the file. That is the whole point:
-        a path-derived id duplicates the library the moment somebody
-        reorganises a music folder, and a ``name|size|mtime`` id (which is what
-        the phone uses, ``pwa/src/local.js:179``) duplicates it on every retag.
-        Playlists reference ``music_tracks.id``, so either would quietly empty
-        them.
-
-        Matching therefore happens explicitly, in two steps:
-
-        1. by ``file_path`` — the ordinary case, including a retag, which
-           changes the tags and the mtime but not where the file is;
-        2. failing that, by ``(file_size, file_mtime, basename)`` against rows
-           already marked missing — a *move repair* that rewrites ``file_path``
-           in place, so a reorganised folder costs nothing.
-
-        Returns the row with an extra ``local_action`` of ``added`` / ``moved``
-        / ``updated`` so a scan can report what it actually did.
-        """
+        """Record one file, reusing the row it already has wherever possible."""
         cleaned_path = str(file_path or "").strip()
         if not cleaned_path:
             raise ValueError("file_path is required")
@@ -1539,26 +1454,10 @@ class MusicState:
         return item
 
     def unchanged_local_paths(self, root: str, stats: dict[str, tuple[int, float]]) -> set[str]:
-        """Which of these files the library already has, byte-identical.
-
-        One query for a whole root rather than one per file, and the comparison
-        happens here because this is where the rounding rule for ``file_mtime``
-        lives — a second copy of it somewhere else is a bug waiting for a
-        filesystem with different precision.
-
-        A row already marked missing is never reported as unchanged: its file
-        has come back, and that has to travel through the upsert so the mark
-        gets cleared.
-        """
-        # normcase'd throughout: a no-op on POSIX, but on Windows this is what
-        # keeps a rescan from re-reading every file just because a path came
-        # back cased differently than the one already stored for it (a mapped
-        # drive, a reparse point, or simply Windows' own realpath). normcase()
-        # runs *before* the trailing separator is stripped, not after: a root
-        # recorded with a forward slash (os.sep is "\\" on Windows) would
-        # otherwise dodge the rstrip, and normcase folding it to "\\" afterwards
-        # leaves a doubled separator that no stored path can ever start with --
-        # silently defeating this whole rescan optimisation for that root.
+        """Which of these files the library already has, byte-identical."""
+        # normcase'd throughout: a no-op on POSIX, but on Windows this is what keeps a rescan from
+        # re-reading every file just because a path came back cased differently than the one already
+        # stored for it (a mapped drive, a reparse point, or simply Windows' own realpath).
         prefix = os.path.normcase(str(root or "")).rstrip(os.sep) + os.sep
         with self.connect() as conn:
             rows = conn.execute(
@@ -1578,12 +1477,7 @@ class MusicState:
         }
 
     def mark_local_tracks_missing(self, root: str, seen_paths: Any) -> int:
-        """Stamp every local track under ``root`` this scan did not encounter.
-
-        Deliberately a stamp and not a delete. The commonest reason a file
-        stops appearing is that its drive is not plugged in, and losing a
-        playlist to that would be an unforgivable trade for a tidier table.
-        """
+        """Stamp every local track under ``root`` this scan did not encounter."""
         cleaned_root = str(root or "").rstrip(os.sep)
         if not cleaned_root:
             return 0
@@ -1615,11 +1509,7 @@ class MusicState:
         return len(gone)
 
     def mark_track_missing(self, track_id: str) -> bool:
-        """Note that a file was not there when somebody tried to play it.
-
-        The audio route calls this on a 404 so the library stops claiming a
-        track is available before the next scan gets round to noticing.
-        """
+        """Note that a file was not there when somebody tried to play it."""
         with self.connect() as conn:
             cur = conn.execute(
                 "UPDATE music_tracks SET missing_since = ? "
@@ -1673,11 +1563,8 @@ class MusicState:
 
     def music_library_index(self, *, limit: int = 500, device_id: str = "") -> dict[str, Any]:
         tracks = self.list_music_tracks(limit=limit)
-        # iOS Safari plays FLAC in an <audio> element but not Ogg or Opus, and a
-        # library the computer can play perfectly is not the same library the
-        # phone can. Marking is per requesting device, so the mark travels with
-        # the id of the device it describes; a phone receiving another device's
-        # fan-out can tell that these marks are not about it.
+        # iOS Safari plays FLAC in an <audio> element but not Ogg or Opus, and a library the
+        # computer can play perfectly is not the same library the phone can.
         codecs = self.device_codecs(device_id) if device_id else {}
         if codecs:
             for track in tracks:
@@ -1690,6 +1577,7 @@ class MusicState:
                 track["unplayable_reason"] = "This computer can play it; your phone can't."
         artists: dict[str, dict[str, Any]] = {}
         albums: dict[str, dict[str, Any]] = {}
+        pictures = self.artist_pictures()
         for track in tracks:
             metadata = track.get("metadata") if isinstance(track.get("metadata"), dict) else {}
             artist_name = str(track.get("artist") or "").strip() or "Unknown artist"
@@ -1699,13 +1587,11 @@ class MusicState:
                 "id": artist_id,
                 "name": artist_name,
                 "track_count": 0,
-                "thumbnail_url": track.get("thumbnail_url") or "",
+                "thumbnail_url": pictures.get(artist_name.casefold(), ""),
                 "added_at": track.get("added_at") or "",
                 "last_played_at": track.get("last_played_at") or "",
             })
             artist["track_count"] += 1
-            if not artist.get("thumbnail_url") and track.get("thumbnail_url"):
-                artist["thumbnail_url"] = track.get("thumbnail_url")
             if str(track.get("added_at") or "") > str(artist.get("added_at") or ""):
                 artist["added_at"] = track.get("added_at") or ""
             if str(track.get("last_played_at") or "") > str(artist.get("last_played_at") or ""):

@@ -90,15 +90,7 @@ class FakeState:
 
 class MusicBridgeFeatureTests(unittest.TestCase):
     def test_network_clients_use_the_windows_system_trust_store(self):
-        """On Windows only — the name was always right, the assertion was not.
-
-        This asserted `no-certifi` on every platform, which is what kept a real
-        bug in place: on a frozen macOS build the OS trust store is unreachable
-        (Python cannot read the Keychain, and the bundled OpenSSL's default
-        paths point at the build machine), so it meant "no roots at all" and
-        every YouTube request failed before it started. The app then blamed the
-        user's network for it.
-        """
+        """On Windows only — the name was always right, the assertion was not."""
         if os.name == "nt":
             self.assertTrue(music_bridge.SYSTEM_TRUST_ENABLED)
             self.assertIn("no-certifi", music_bridge._SEARCH_OPTS["compat_opts"])
@@ -109,13 +101,7 @@ class MusicBridgeFeatureTests(unittest.TestCase):
             self.assertNotIn("no-certifi", music_bridge._STREAM_OPTS["compat_opts"])
 
     def test_import_does_not_replace_the_process_ssl_context(self):
-        """Client trust configuration must not globally replace SSLContext.
-
-        truststore's injected client-only context cannot host the companion TLS
-        server and caused accepted HTTPS connections to be dropped immediately.
-        Check in a fresh interpreter so the assertion is independent of this
-        test process's import order.
-        """
+        """Client trust configuration must not globally replace SSLContext."""
         probe = subprocess.run(
             [
                 sys.executable,
@@ -188,11 +174,10 @@ class MusicBridgeFeatureTests(unittest.TestCase):
         self.assertEqual(deleted["type"], "music_queue_session_deleted")
 
     def test_remote_relay_commands_are_pure_fanout(self):
-        # cmd_music_remote_play / cmd_music_remote_control / cmd_music_request_state
-        # are trusted to relay the inbound message verbatim to every connected
-        # window (the browser and detached player windows reconcile playback
-        # state between themselves) - regression guard against a "fix" that
-        # accidentally starts filtering/renaming fields a client depends on.
+        # cmd_music_remote_play / cmd_music_remote_control / cmd_music_request_state are trusted to
+        # relay the inbound message verbatim to every connected window (the browser and detached
+        # player windows reconcile playback state between themselves) - regression guard against a
+        # "fix" that accidentally starts filtering/renaming fields a client depends on.
         cases = [
             ("music_remote_play", {"tracks": [{"source_id": "abc"}], "index": 0}),
             ("music_remote_control", {"action": "queue_play_index", "index": 2}),
@@ -354,11 +339,7 @@ class DeleteAndClearCommandTests(unittest.TestCase):
 
 
 class RepeatRelayTests(unittest.TestCase):
-    """Repeat is a three-state string with `loop` kept as a derived boolean for
-    older consumers. This relay is where the loop-resets-itself bug lived: it
-    coerced the field with bool(), so a producer that simply omitted `loop` (the
-    phone, which has no repeat control) broadcast loop=False to every window and
-    silently cleared the setting. Mirrors web/repeat_mode.js."""
+    """Repeat is a three-state string with `loop` kept as a derived boolean for older consumers."""
 
     def fields(self, **msg):
         return music_bridge._repeat_fields(msg)
@@ -403,13 +384,7 @@ class RepeatRelayTests(unittest.TestCase):
 
 
 class StreamCacheExpiryTests(unittest.TestCase):
-    """The cache-hit path that produced 'The operation could not be completed'.
-
-    A cached entry used to report its *remaining* life as the TTL hint, the
-    relay grant was sized from that hint, and so an entry with seconds left
-    minted a 60-second audio grant. Roughly a minute into the track every Range
-    request 404'd and AVFoundation surfaced its own error string.
-    """
+    """The cache-hit path that produced 'The operation could not be completed'."""
 
     def setUp(self):
         music_bridge._stream_url_cache.clear()
@@ -467,13 +442,8 @@ if __name__ == "__main__":
 
 
 class PrefetchDoesNotCountAsListeningTests(unittest.TestCase):
-    """Warming the next track's URL is not the same as playing it.
-
-    The phone looks two tracks ahead so advancing needs no round trip. Without
-    the prefetch flag every one of those lookaheads logged a play, so the
-    history filled with songs that were never heard and "recently played"
-    stopped being true.
-    """
+    """Warming the next track's URL is not the same as playing it. The phone looks two tracks ahead
+    so advancing needs no round trip."""
 
     class _CountingState:
         def __init__(self):

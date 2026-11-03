@@ -1,21 +1,4 @@
-"""Audio self-test: is Rainette silent, or is the Mac silent?
-
-"I press play and hear nothing" has two very different causes, and they need
-different fixes:
-
-  * the app never produces audio, or
-  * the app produces audio that never reaches your speakers.
-
-Telling them apart by ear is impossible, so this plays a tone through the exact
-same path Rainette uses -- a pywebview/WKWebView window driving an <audio>
-element with no user gesture -- while asking CoreAudio whether the output device
-is genuinely being driven. It reports both what the browser engine thinks and
-what the hardware is doing.
-
-    python audio_selftest.py
-
-Exit status is 0 when audio reached the device, 1 otherwise.
-"""
+"""Audio self-test: is Rainette silent, or is the Mac silent?"""
 
 from __future__ import annotations
 

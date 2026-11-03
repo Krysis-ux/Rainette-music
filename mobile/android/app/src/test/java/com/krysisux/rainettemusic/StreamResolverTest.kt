@@ -57,6 +57,14 @@ class StreamResolverTest {
     }
 
     @Test
+    fun `data saver picks the smallest AAC`() {
+        val picked = StreamResolver.pickAudio(listOf(
+            candidate(251, 160, "webm"), candidate(139, 48, "m4a"), candidate(140, 128, "m4a"),
+        ), saver = true)
+        assertEquals(139, picked?.itag)
+    }
+
+    @Test
     fun `Opus is used when there is no AAC`() {
         assertEquals(251, StreamResolver.pickAudio(listOf(candidate(250, 70, "webm"), candidate(251, 160, "webm")))?.itag)
     }

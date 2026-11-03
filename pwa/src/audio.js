@@ -1,23 +1,4 @@
-/* The one audio graph, and everything that shapes what comes out of it.
- *
- * Two features need Web Audio and neither worked without it:
- *
- *  - Volume. iOS makes `HTMLMediaElement.volume` read-only — assigning to it is
- *    silently ignored — so the phone's volume slider genuinely did nothing on
- *    every iPhone. A GainNode is the only volume an iOS browser will honour.
- *  - Boost past 100%, which an element cannot do at all: its volume is clamped
- *    to 1. A gain node is not, so the desktop's 150% ceiling is reachable here.
- *  - The equaliser, which was already written against Web Audio.
- *
- * The graph is `element → [5 biquads] → gain → destination`, built once and
- * shared, because `createMediaElementSource` may only be called once per
- * element and permanently re-routes it.
- *
- * The awkward part is the cross-origin rule: routing an element whose media came
- * from another origin without CORS does not throw, it outputs silence forever.
- * So the graph is only ever built after a real request has proved the companion
- * answers with CORS headers, and never speculatively.
- */
+/* The one audio graph, and everything that shapes what comes out of it. */
 
 import { state, STORAGE, persist } from './state.js';
 import { audioElement, reloadCurrent, remoteSetVolume, isLinked, notifyPlayerChanged } from './player.js';
@@ -71,25 +52,8 @@ const IS_IOS_LIKE = (() => {
 	}
 })();
 
-/* Can this page hold a real playback audio session?
- *
- * This decides whether a graph is safe, and it used to be answered "no, never,
- * on any iPhone". WebKit suspended an AudioContext whenever the page was
- * hidden, so the graph that carries volume was also the thing that stopped the
- * music on lock — which is why the iPhone volume slider was taken away.
- *
- * WebKit fixed that: bug 261554, landed March 2024 and shipped in iOS 17.5. A
- * context is now allowed to keep running in the background when the page has
- * declared a `playback` audio session, which this client does on its first
- * `playing` event (see player.js). The Audio Session API and that fix arrived
- * in the same era, so its presence is a fair proxy for "this WebKit keeps the
- * graph alive".
- *
- * The point of writing it this way: this is a *capability* question, not a
- * platform one. "iOS means no graph" was true when it was written, quietly
- * stopped being true, and nothing would ever have noticed — the same shape as
- * pinning a yt-dlp player client, and the same fix.
- */
+/* Can this page hold a real playback audio session? This decides whether a graph is safe, and it
+ * used to be answered "no, never, on any iPhone". */
 const CAN_DECLARE_PLAYBACK_SESSION = (() => {
 	try { return 'audioSession' in navigator; } catch { return false; }
 })();
@@ -98,14 +62,7 @@ const CAN_DECLARE_PLAYBACK_SESSION = (() => {
  * still suspends it and we have no way to say otherwise. */
 const SUSPENDS_GRAPH_IN_BACKGROUND = IS_IOS_LIKE && !CAN_DECLARE_PLAYBACK_SESSION;
 
-/** Can the in-app volume control actually change what comes out?
- *
- *  Only where the element's own volume is writable, or where a graph may be
- *  built to carry it. iOS ignores writes to `element.volume`, so on an iPhone
- *  the graph is the only answer — and it is available again now that a
- *  declared playback session keeps it alive in the background. A slider that
- *  silently does nothing is worse than no slider, so this stays the gate.
- */
+/** Can the in-app volume control actually change what comes out? */
 export function volumeIsAdjustable() {
 	return !SUSPENDS_GRAPH_IN_BACKGROUND || eq.on;
 }
@@ -148,10 +105,8 @@ function persistEq() {
 }
 
 /* ── The graph ────────────────────────────────────────────────────────────
- * 'idle'    → never attempted
- * 'ready'   → built and live
- * 'blocked' → this computer's audio cannot be routed through Web Audio here
- */
+ * 'idle' → never attempted 'ready' → built and live 'blocked' → this computer's audio cannot be
+ * routed through Web Audio here */
 
 let context = null;
 let source = null;
@@ -159,14 +114,8 @@ let filters = [];
 let gainNode = null;
 let limiter = null;
 let graph = 'idle';
-/* There are two ways to be blocked, and conflating them is what made one bad
- * moment disable boost and the equalizer for a whole session:
- *
- *  - This browser cannot build a graph at all. Permanent, so never retried.
- *  - This *track's* media refused a CORS read. Specific to that URL — an
- *    expired grant or a reconnect mid-probe looks exactly like this — so the
- *    next track deserves a fresh answer.
- */
+/* There are two ways to be blocked, and conflating them is what made one bad moment disable boost
+ * and the equalizer for a whole session: - This browser cannot build a graph at all. */
 let blockedPermanently = false;
 let blockedFor = '';
 
@@ -267,23 +216,7 @@ function applyVolume() {
 /* Build the graph if this track's media allows it. Order matters: probe, then
  * flag, then build, then reload — so a phone that cannot support the graph never
  * gets one, and so never goes silent. */
-/* One build at a time, and only one ever.
- *
- * `ensureGraph` awaits a real network probe before it builds, and two callers
- * can reach that await while `graph` is still 'idle' -- a track load and a
- * volume drag land together every time somebody adjusts volume as a track
- * changes. Both would then call `buildGraph`, and
- * `createMediaElementSource` may be called only once per element *ever*: the
- * second throws, which the loser mistook for "this browser refuses graphs",
- * setting `blockedPermanently` and stripping `crossorigin` off the element the
- * winner's live graph was already routing. Every later track then loaded
- * without CORS through a real source node, which the spec renders as silence
- * with no error anywhere -- the music simply stops, and the UI still says
- * playing.
- *
- * Sharing the in-flight promise makes the second caller await the first's
- * answer instead of racing it.
- */
+/* One build at a time, and only one ever. */
 let building = null;
 
 function ensureGraph() {
@@ -350,33 +283,15 @@ async function buildGraphOnce() {
 	return true;
 }
 
-/* Built only when the user asked for something an element cannot do, and only
- * when it is worth what it costs.
- *
- * An earlier pass here removed one trigger for exactly this reason: iOS makes
- * element volume read-only, and treating that as "needs a graph" gave every
- * iPhone one, which stopped the music on lock. But the remaining trigger has
- * the same effect by a slower route — a stored volume of anything other than
- * exactly 1 is enough, and almost nobody leaves a volume slider at precisely
- * unity. So in practice every iPhone still ended up with a graph, and the
- * music still stopped when the screen went off.
- *
- * The trade is only worth making for something the graph alone can do and the
- * platform cannot. The equaliser qualifies: there is no other way to have it,
- * and asking for it is deliberate. Volume does not — the phone has hardware
- * buttons an inch from the user's thumb, and paying for an in-app duplicate of
- * them with playback that dies on lock is a bargain nobody would knowingly
- * make. So volume alone no longer builds a graph where a graph is suspended in
- * the background. */
+/* Built only when the user asked for something an element cannot do, and only when it is worth
+ * what it costs. */
 function graphIsWanted() {
 	if (eq.on) return true;
 	return !SUSPENDS_GRAPH_IN_BACKGROUND && Number(state.volume) !== 1;
 }
 
-/* Restored settings that need the graph mean the very first track should be
- * fetched under CORS from the start. Without this every session would begin by
- * loading a track, discovering it cannot be routed, and reloading it — a restart
- * the user hears, once, for a setting they already made. */
+/* Restored settings that need the graph mean the very first track should be fetched under CORS
+ * from the start. */
 /* Deliberately the cheap half of graphIsWanted(): probing whether volume writes
  * stick would touch the element while modules are still evaluating, and this
  * only needs to catch settings restored from a previous session. */

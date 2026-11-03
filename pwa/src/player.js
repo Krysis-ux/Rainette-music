@@ -13,25 +13,10 @@ import { engineFor, isCatalogTrack, describeError, isCanceled } from './source-p
 
 const audio = new Audio();
 audio.preload = 'metadata';
-/* In the document, not merely in memory.
- *
- * `new Audio()` produces a detached element, and on iOS a detached element is a
- * second-class one: Safari ties background playback and the lock-screen session
- * to media it can find in the page, and an element that was never inserted is
- * liable to be stopped the moment the app is backgrounded or the screen locks.
- * On a Home Screen app that is the whole complaint -- music that stops when you
- * switch away from it.
- *
- * Inserting costs nothing and changes nothing visually: the UA stylesheet gives
- * an <audio> without `controls` `display: none`, and that is left alone -- the
- * same element is `display: none` in a Safari tab, where playback survives
- * backgrounding perfectly, so hiding is demonstrably not what stops it. */
+/* In the document, not merely in memory. */
 function attachAudio() {
-	// Defensive to the point of paranoia, because this is an enhancement and the
-	// player is not: nothing here may be able to stop the module evaluating.
-	// `new Audio()` is an element in every browser, but it is also the one thing
-	// a test harness stubs, and an exception thrown at module scope takes the
-	// whole app down rather than just this.
+	// Defensive to the point of paranoia, because this is an enhancement and the player is not:
+	// nothing here may be able to stop the module evaluating.
 	try {
 		if (!(audio instanceof Node) || audio.isConnected) return;
 		// iOS will not reliably keep a video-capable element playing inline
@@ -41,48 +26,11 @@ function attachAudio() {
 	} catch { /* detached is how it worked before; it still plays */ }
 }
 
-/* Tell iOS this is music, not a sound effect.
- *
- * This is the other half of the same complaint, and the half the DOM-attach
- * above could not fix: audio that plays fine in a Safari tab -- through tab
- * switches, through the screen locking -- stops the moment a Home Screen app
- * is backgrounded.
- *
- * The cause is the audio session category. `navigator.audioSession.type`
- * defaults to `auto`, and `auto` resolves to **ambient** whenever nothing
- * higher-priority is active; WebKit starts there. Ambient is the iOS category
- * for mixable, incidental sound, and iOS silences it as soon as the app stops
- * being frontmost. A Safari *tab* escapes this because Safari itself owns a
- * real playback session that the page borrows -- which is exactly why the same
- * code behaves differently once it is launched from the Home Screen, and why
- * this looked like a bug in the app rather than in what the app had declared
- * itself to be.
- *
- * `playback` is the category for music and podcasts: it survives backgrounding
- * and ignores the Ring/Silent switch, which is what a music player should do.
- * It is also exclusive -- starting playback pauses other apps' audio -- and
- * that is the correct trade for this app.
- *
- * Declared once, and deliberately *after* audio is already playing rather than
- * at startup. This is an iOS behaviour that cannot be tested anywhere outside
- * an iPhone, and the standing rule for those (see CLAUDE.md) is that they must
- * not be able to stop playback from starting. Declared up front, a session that
- * iOS refuses would take the music with it; declared on the first `playing`
- * event, the worst case is that background playback is no better than it was,
- * which is a bug rather than a silence.
- *
- * The timing costs nothing: `playing` fires milliseconds in, long before anyone
- * can lock the phone or switch away.
- */
+/* Tell iOS this is music, not a sound effect. */
 function declarePlaybackSession() {
 	try {
 		if (!('audioSession' in navigator)) return;
-		// Declared everywhere, not only in a Home Screen app. It was briefly
-		// scoped to standalone as the smallest possible fix, but the session is
-		// also what keeps a Web Audio graph alive in the background (WebKit
-		// 261554), and that graph is the phone's volume control. Scoping the
-		// session would have meant a volume slider that silently costs
-		// background playback in a tab -- the exact bug this replaced.
+		// Declared everywhere, not only in a Home Screen app.
 		navigator.audioSession.type = 'playback';
 	} catch { /* not supported here; a tab plays regardless */ }
 }
@@ -126,10 +74,8 @@ export function isLinked() {
 	return state.linked && !!state.remote;
 }
 
-/* Who makes the sound when this phone does: the <audio> element, or the native
- * app's media service. Exactly one at a time -- `claimNative` silences the
- * element before the service starts, `releaseNative` stops the service before
- * the element starts -- so a track can never play twice over itself. */
+/* Who makes the sound when this phone does: the <audio> element, or the native app's media
+ * service. */
 let owner = 'element';
 
 export function nativeOwns() {
@@ -149,11 +95,8 @@ export function isLoading() {
 	return !isLinked() && state.loading;
 }
 
-/* AVFoundation reads some YouTube m4a streams as exactly twice their real
- * length: 261.04s for a file AudioToolbox reads as 130.52s. It renders the
- * frames the file actually has and then plays silence for the remainder, so the
- * clock stays honest but the total is wrong and `ended` arrives minutes late.
- * iOS decodes through it, so the computer's duration_s is the authority. */
+/* AVFoundation reads some YouTube m4a streams as exactly twice their real length: 261.04s for a
+ * file AudioToolbox reads as 130.52s. */
 function isStretched() {
 	const known = trackDuration(state.currentTrack);
 	const raw = Number.isFinite(audio.duration) ? audio.duration : 0;
@@ -228,10 +171,7 @@ function remoteControl(action, payload = {}) {
 }
 
 /* ── Stream URLs ───────────────────────────────────────────────────────────
- * Resolved URLs are kept so the next track can start without asking the
- * computer first. That is what keeps the music going with the screen off: a
- * backgrounded page may only start audio as a continuation of the track that
- * just ended, and awaiting the network breaks that chain. */
+ * Resolved URLs are kept so the next track can start without asking the computer first. */
 
 const HALF_LIFE = 0.9;   // refresh before the grant expires, not at the edge
 const PREFETCH_AHEAD = 2;
@@ -249,12 +189,8 @@ const streams = new Map();
 const prefetching = new Set();
 
 function rememberStream(track, result) {
-	// The grant is the thing that stops resolving, so the grant's life is what
-	// this window has to track. `expires_hint_s` describes the upstream URL
-	// behind it, which the computer now refreshes on our behalf — and on a
-	// cache hit that number used to be the few seconds the entry had left,
-	// which collapsed this window to nothing and made a healthy track look
-	// expired. Older desktops only send the hint, so it stays as the fallback.
+	// The grant is the thing that stops resolving, so the grant's life is what this window has to
+	// track.
 	const seconds = Number(result?.grant_expires_in_s)
 		|| Math.min(Math.max(Number(result?.expires_hint_s) || 3600, 60), 21600);
 	streams.set(trackKey(track), { url: result.url, expiresAt: Date.now() + seconds * 1000 * HALF_LIFE });
@@ -448,12 +384,8 @@ export async function restoreNative() {
 	emit();
 }
 
-/* In the app, a queue holds one kind of track: streamed songs (the native
- * service) or files on this phone (the element). A mixed list -- Recently
- * Played after one imported file -- used to hand every streamed song in it to
- * the element, which on a real phone meant no lock-screen controls and a queue
- * that only advanced while Android let the page run. Now the tapped track's
- * kind decides, and the queue keeps only tracks of that kind. */
+/* In the app, a queue holds one kind of track: streamed songs (the native service) or files on
+ * this phone (the element). */
 function queueOfOneKind(track, queue, index) {
 	if (!nativeAvailable() || !Array.isArray(queue)) return { queue, index };
 	const streamed = isCatalogTrack(track);
@@ -479,10 +411,7 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 	// Playing something from the phone takes ownership of the session back from
 	// the desktop, which is the only sane reading of "I pressed play here".
 	state.remote = null;
-	// And say so, so every other surface stops claiming the computer is
-	// playing. Starting playback *is* the claim — there is nothing to hand
-	// over, so it needs no handshake, which is why pressing play here works
-	// without performing a transfer first.
+	// And say so, so every other surface stops claiming the computer is playing.
 	if (!isLinked() && !options.forceRefresh) claimPlaybackHere();
 	if (!options.forceRefresh) ({ queue, index } = queueOfOneKind(track, queue, index));
 	state.queue = queue.slice();
@@ -505,10 +434,7 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 	state.loading = !ready;
 	emit();
 
-	// `loading` drives a spinner in place of the play glyph. Any exit from here
-	// has to clear it, or a failure — a refused autoplay, an expired stream, a
-	// computer that went to sleep mid-resolve — leaves the transport spinning
-	// forever with no way back.
+	// `loading` drives a spinner in place of the play glyph.
 	try {
 		const url = ready || await resolveStream(track, options.forceRefresh);
 
@@ -518,10 +444,9 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 		if (request !== playRequests || trackKey(state.currentTrack) !== trackKey(track)) return;
 
 		const resumeAt = Number(options.resumeAt || 0);
-		// A blob URL, or one this phone resolved itself, is already absolute,
-		// and there may be no companion to resolve it against -- local files and
-		// on-device streams are meant to play with no computer paired at all.
-		// Only the computer's relative relay paths go through mediaUrl().
+		// A blob URL, or one this phone resolved itself, is already absolute, and there may be no
+		// companion to resolve it against -- local files and on-device streams are meant to play with no
+		// computer paired at all.
 		audio.src = isLocalTrack(track) || /^(blob:|https?:)/.test(url) ? url : mediaUrl(url);
 		audio.load();
 		if (resumeAt > 0) {
@@ -544,16 +469,8 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 		try {
 			await started;
 		} catch (error) {
-			// `play()` rejects for two reasons that are not failures, and
-			// reporting them is what made switching tracks quickly throw a wall
-			// of red and then play the song anyway.
-			//
-			// AbortError: a newer load or pause superseded this play. That is
-			// the normal shape of tapping a second song before the first has
-			// started, and the newer action is the one the user wants.
-			//
-			// NotAllowedError: the browser wants a gesture first. Real, but it
-			// is a one-line instruction, not a stack trace.
+			// `play()` rejects for two reasons that are not failures, and reporting them is what made
+			// switching tracks quickly throw a wall of red and then play the song anyway.
 			if (!isSupersededPlay(error)) throw await playFailure(error, audio.currentSrc || audio.src);
 		}
 		rememberRecent(track);
@@ -568,22 +485,8 @@ export async function playTrack(track, queue = [track], index = 0, options = {})
 	}
 }
 
-/* `play` and `pause` state an *intent*; `toggle` states a flip, and a flip is
- * only correct if the sender's idea of what is playing is current.
- *
- * CarPlay's is not. It sends the absolute verb, and it re-sends it whenever its
- * own view and the phone's disagree -- on connect, on route changes, and after
- * any state it did not expect. Answering an absolute verb with a flip turns
- * that into an oscillator: `play` arrives while playing, we pause; the car sees
- * paused, sends `play` again, we play. A second of music, a second of silence,
- * for the whole song, on CarPlay only -- Bluetooth never drives the session
- * this way, it just carries the audio.
- *
- * So the transport has three entry points now: two that assert a state and are
- * safe to repeat, and one flip for the in-app button, where a tap genuinely
- * does mean "the other one". The desktop learned this already (see the `play`
- * and `pause` arms in web/miniplayer.js); this client had not.
- */
+/* `play` and `pause` state an *intent*; `toggle` states a flip, and a flip is only correct if the
+ * sender's idea of what is playing is current. */
 
 /** Start playing. Repeating it while already playing does nothing. */
 export async function play() {
@@ -605,11 +508,8 @@ export async function play() {
 		await nativeResume().catch(error => reportError(nativeFailure(error)));
 		return;
 	}
-	// No `if (!audio.paused) return` guard: `play()` on a playing element is
-	// already a no-op per spec, so the guard bought nothing -- and it could
-	// strand playback outright. After an iOS interruption an element can read
-	// `paused === false` while producing no sound, and a guard would turn the
-	// one command that recovers it into a no-op.
+	// No `if (!audio.paused) return` guard: `play()` on a playing element is already a no-op per spec,
+	// so the guard bought nothing -- and it could strand playback outright.
 	try {
 		await audio.play();
 	} catch (error) {
@@ -632,10 +532,7 @@ export function pause() {
 		nativePause().catch(() => { /* nothing playing to pause */ });
 		return;
 	}
-	// Unconditional for the same reason as `play()`: `pause()` on a paused
-	// element is a no-op. Notably this is *not* guarded on `state.loading` --
-	// a track still resolving is not paused, and "stop" during a load has to
-	// mean cancel it, which is the desktop's reasoning for the same arm.
+	// Unconditional for the same reason as `play()`: `pause()` on a paused element is a no-op.
 	audio.pause();
 }
 
@@ -660,10 +557,8 @@ export async function skip(offset) {
 	if (isLinked()) { remoteControl(offset > 0 ? 'next' : 'prev'); return; }
 	if (!state.queue.length) return;
 	if (nativeOwns()) {
-		// Same rules as below, applied by the service so the notification and a
-		// headset behave identically: previous restarts a track past 3 s, repeat
-		// all wraps. The one gap is the end of the queue, where the service would
-		// do nothing; stop on the last track instead, as the element does.
+		// Same rules as below, applied by the service so the notification and a headset behave
+		// identically: previous restarts a track past 3 s, repeat all wraps.
 		const last = state.queueIndex >= state.queue.length - 1;
 		if (offset > 0 && last && state.repeat !== 'all') {
 			await nativePause().catch(() => {});
@@ -722,10 +617,8 @@ export function seekTo(seconds) {
 	audio.currentTime = Math.max(0, Math.min(seconds, duration()));
 }
 
-/* Volume itself lives in audio.js, because on iOS an element's volume is
- * read-only and the only control that works is a gain node in the Web Audio
- * graph — which is that module's business. This is the hook it drives the
- * desktop through when the phone is only a remote. */
+/* Volume itself lives in audio.js, because on iOS an element's volume is read-only and the only
+ * control that works is a gain node in the Web Audio graph — which is that module's business. */
 export function remoteSetVolume(value) {
 	remoteControl('set_volume', { value: Math.max(0, Math.min(2, Number(value) || 0)) });
 }
@@ -742,10 +635,8 @@ export function cycleRepeat() {
 	return state.repeat;
 }
 
-/* Shuffle reorders the queue rather than randomising playback order on the fly,
- * so the queue the user is looking at is the order they will actually hear. The
- * pre-shuffle order is kept so turning it off is a restore, not a second
- * shuffle. */
+/* Shuffle reorders the queue rather than randomising playback order on the fly, so the queue the
+ * user is looking at is the order they will actually hear. */
 export function toggleShuffle() {
 	if (isLinked()) { remoteControl('queue_shuffle'); return state.shuffled; }
 	const playing = state.queue[state.queueIndex] || null;
@@ -839,9 +730,8 @@ export function queueClearUpNext() {
 }
 
 /* ── Output transfer ───────────────────────────────────────────────────────
- * The desktop hands its session over and waits for an acknowledgement before it
- * pauses itself, so this must not answer until the audio has genuinely loaded.
- * Answering early is what turns a failed handoff into silence on both devices. */
+ * The desktop hands its session over and waits for an acknowledgement before it pauses itself, so
+ * this must not answer until the audio has genuinely loaded. */
 
 export async function adoptTransfer(message) {
 	const queue = Array.isArray(message.queue) ? message.queue : [];
@@ -863,9 +753,8 @@ export async function adoptTransfer(message) {
 }
 
 /* ── Media Session ─────────────────────────────────────────────────────────
- * The lock screen and the car stereo are the surfaces this app is used through
- * most, so they get the same metadata and the same controls as the in-app
- * transport. */
+ * The lock screen and the car stereo are the surfaces this app is used through most, so they get
+ * the same metadata and the same controls as the in-app transport. */
 
 function publishMediaSession(track) {
 	if (!('mediaSession' in navigator)) return;
@@ -953,11 +842,7 @@ function refillRetryBudget() {
 function finishTrack() {
 	if (state.repeat === 'one') {
 		audio.currentTime = 0;
-		// Re-arm the true-end guard. It is normally cleared by `playTrack`, and
-		// repeating in place deliberately does not go through it -- so without
-		// this the guard fires once and never again, and every loop after the
-		// first plays the whole silent tail of a stretched track before the
-		// native `ended` finally arrives.
+		// Re-arm the true-end guard.
 		endGuardKey = '';
 		audio.play().catch(reportError);
 		return;
@@ -986,14 +871,8 @@ audio.addEventListener('ended', finishTrack);
 async function diagnoseStreamFailure(url) {
 	if (!url || url.startsWith('blob:')) return 'This file could not be played on this phone.';
 	try {
-		// `bytes=0-` and not `bytes=0-0`: the open-ended range is the one a media
-		// element actually opens with, and it is the *only* one some upstreams
-		// refuse. Asking a bounded range here made this function answer 206 to
-		// the exact failure it exists to catch, so every unplayable track was
-		// reported as "your phone could not play this format" -- which sent
-		// four days of debugging at codecs instead of at the stream.
-		// The body is cancelled the moment the status is known, so this costs
-		// headers rather than a whole track.
+		// `bytes=0-` and not `bytes=0-0`: the open-ended range is the one a media element actually opens
+		// with, and it is the *only* one some upstreams refuse.
 		const response = await fetch(url, { headers: { Range: 'bytes=0-' }, cache: 'no-store' });
 		try { await response.body?.cancel(); } catch { /* already drained */ }
 		if (response.status === 404) return 'That audio link expired. Reconnecting to your computer…';
@@ -1002,11 +881,7 @@ async function diagnoseStreamFailure(url) {
 		if (response.ok || response.status === 206) return 'Your phone could not play this format.';
 		return `Your computer answered ${response.status}.`;
 	} catch {
-		// No readable answer. That is either nothing there at all (no tunnel, or
-		// yesterday's quick-tunnel address) or the tunnel's edge standing in for
-		// a computer that is up but failed to fetch the track: Cloudflare swaps
-		// that error for its own page, which carries no CORS headers and cannot
-		// be read from here. Only the first is fixed by rescanning, so ask.
+		// No readable answer.
 		if (await computerAnswers()) return 'Your computer is connected but could not load this song.';
 		return 'Cannot reach your computer. Open Rainette there, then rescan the code to reconnect.';
 	}
@@ -1022,10 +897,7 @@ async function computerAnswers() {
 }
 
 audio.addEventListener('error', async () => {
-	// A stream URL the computer resolved earlier can expire mid-session. That is
-	// expected and recoverable, so it is retried rather than reported — but a
-	// bounded number of times, because a track that cannot play at all must not
-	// loop forever pretending to recover.
+	// A stream URL the computer resolved earlier can expire mid-session.
 	if (!state.currentTrack || state.streamRetries >= STREAM_RETRY_MAX) {
 		reportError(new Error(await diagnoseStreamFailure(audio.currentSrc || audio.src)));
 		return;
@@ -1057,10 +929,8 @@ export function pauseLocal() {
 }
 
 /* ── Audio graph access ────────────────────────────────────────────────────
- * The equaliser needs the element itself, because Web Audio routes an element
- * rather than a stream, and it needs a way to reload what is playing after it
- * changes the element's CORS mode. Both are deliberately narrow: nothing else
- * should be reaching for the element. */
+ * The equaliser needs the element itself, because Web Audio routes an element rather than a
+ * stream, and it needs a way to reload what is playing after it changes the element's CORS mode. */
 
 export function audioElement() {
 	return audio;
@@ -1106,14 +976,9 @@ export function resetPlayback() {
 }
 
 /* ── Transport arriving from the computer ──────────────────────────────────
- *
- * Deliberately at the end of the file: a test slices player.js from
- * `export async function playTrack` to the next `export ` and asserts on what
- * is inside, so a new export placed between them silently truncates it.
- *
- * The guards below are the difference between "the computer can control this
- * phone" and "any device can control any device". The broker already routes,
- * but routing is delivery, not authorisation. */
+ * Deliberately at the end of the file: a test slices player.js from `export async function
+ * playTrack` to the next `export ` and asserts on what is inside, so a new export placed between
+ * them silently truncates it. */
 export async function applyRemoteVerb(message) {
 	if (!message || typeof message !== 'object') return;
 
@@ -1164,12 +1029,7 @@ export async function applyRemoteVerb(message) {
 	}
 }
 
-/* Tell the computer this phone is the one making the sound now.
- *
- * Fire-and-forget: the authoritative answer comes back as a broadcast that
- * every device receives, so waiting on this response would only delay the very
- * thing it is announcing. An older computer that does not know the command
- * simply refuses it, and the phone falls back to its own linked flag. */
+/* Tell the computer this phone is the one making the sound now. */
 function claimPlaybackHere() {
 	if (!state.deviceId) return;
 	command('music_playback_target_set', { owner_kind: 'phone', reason: 'claim_by_play' })

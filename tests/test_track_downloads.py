@@ -1,18 +1,5 @@
-"""Downloading a track onto the computer.
-
-Two things are being protected here and they are different in kind.
-
-The first is a boundary: a phone must not be able to make this computer write
-files. The phone has its own download path and its own storage, and the same
-reasoning that stops it naming a scan root (``cmd_music_local_roots``) stops it
-naming a download. That check is worth a test because it is invisible when it
-works and unnoticeable when it breaks.
-
-The second is a shape: a download has to arrive as something the existing
-library machinery already understands -- a tagged file, in a watched folder,
-complete or not there at all. The partial-file rule matters most: a scan that
-runs against a half-written ``.part`` would index a fragment as a song.
-"""
+"""Downloading a track onto the computer. Two things are being protected here and they are
+different in kind."""
 
 import io
 import tempfile
@@ -53,11 +40,7 @@ class FakeResponse(io.BytesIO):
 
 class PhoneMayNotWriteToThisComputerTests(unittest.TestCase):
     def test_a_command_stamped_with_a_device_id_is_refused(self):
-        """The stamp is the gateway's mark of a command that came from a phone.
-
-        ``server.py`` overwrites whatever the phone supplied, so its presence
-        cannot be forged and its absence cannot be faked from off-machine.
-        """
+        """The stamp is the gateway's mark of a command that came from a phone."""
         sent = []
         with mock.patch.object(shared, "notify_browsers", sent.append):
             music_bridge.cmd_music_download_track({
@@ -117,12 +100,8 @@ class DownloadShapeTests(unittest.TestCase):
                 self.assertEqual(landed.read_bytes(), self.body)
 
     def test_nothing_partial_is_left_behind(self):
-        """A ``.part`` survivor is the failure this is about.
-
-        ``local_library`` walks the folder on a timer. A fragment left with a
-        real audio suffix would be indexed as a song and play as silence, so the
-        rename is the last thing that happens and only happens once.
-        """
+        """A ``.part`` survivor is the failure this is about. ``local_library`` walks the folder on
+        a timer."""
         with mock.patch.object(music_bridge, "resolve_stream_url_sync", return_value="https://x/y"), \
              mock.patch.object(music_bridge, "stream_request_headers", return_value={}), \
              mock.patch.object(music_bridge.urllib.request, "urlopen",
@@ -172,11 +151,7 @@ class DownloadShapeTests(unittest.TestCase):
 
 class WorkerTests(unittest.TestCase):
     def test_the_folder_is_watched_even_when_every_track_fails(self):
-        """Registered before anything is written, not after a success.
-
-        A run where every track failed still leaves a folder the user can drop
-        files into and have indexed, rather than an orphan nobody watches.
-        """
+        """Registered before anything is written, not after a success."""
         state = RecordingState()
         sent = []
         with mock.patch.object(shared, "STATE", state), \

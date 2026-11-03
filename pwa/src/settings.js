@@ -1,20 +1,20 @@
-/* The settings screen, and the sheets it opens.
- *
- * Every row here changes something real. That was the complaint worth taking
- * seriously about the old panel: several of its rows opened a page that looked
- * like a control and then did nothing, which is worse than not offering it.
- */
+/* The settings screen and the sheets it opens.
+ * Rows show a label and the current value; explanations live behind each sheet's "?". */
 
 import { $, el, icon, toast } from './dom.js';
-import { openSheet, actionSheet, confirmSheet } from './sheets.js';
+import { openSheet, actionSheet, confirmSheet, helpFooter } from './sheets.js';
 import { state, STORAGE } from './state.js';
 import {
 	THEMES, ACCENTS, DEFAULTS, currentTheme, currentAccent,
 	applyTheme, applyAccent, pref, setPref, resetPrefs,
 } from './prefs.js';
-import { setVolume, volume as currentVolume, boostAvailable, resumeContext, volumeMax } from './audio.js';
+import {
+	setVolume, volume as currentVolume, boostAvailable, resumeContext, volumeMax,
+	graphState, graphCostsBackgroundPlayback,
+} from './audio.js';
 import { createSlider } from './slider.js';
-import { isLinked } from './player.js';
+import { isLinked, audioElement } from './player.js';
+import { nativeAvailable, nativeConfigure, nativeInfo } from './native-engine.js';
 import {
 	pickFiles, importOne, localArtworkUrl,
 	localTrackCount, localBytes, formatBytes, clearLocalTracks,
@@ -23,213 +23,328 @@ import { downloadBackup, pickBackup, restoreBackup } from './backup.js';
 import { openImportPlaylist } from './import.js';
 import { command } from './bridge.js';
 
-/* ── Appearance ───────────────────────────────────────────────────────────*/
+/* ── Building blocks ──────────────────────────────────────────────────────*/
 
-export function openAppearance({ onChanged } = {}) {
+/** A sheet with a title, its rows, and an optional "?" footer. */
+function settingsSheet(title, build, help) {
 	openSheet({
-		title: 'Appearance',
+		title,
 		className: 'sheet-catalog',
 		full: true,
-		build: ({ body }) => {
-			body.append(el('h2', 'sheet-title sheet-drag', 'Appearance'));
-			body.append(el('p', 'sheet-message',
-				'The same four themes your computer has, by the same names, so the two can be set to match.'));
-
-			body.append(el('h3', 'settings-group', 'Theme'));
-			const themes = el('div', 'theme-grid');
-			for (const theme of THEMES) {
-				const card = el('button', `theme-card theme-swatch-${theme.id}`);
-				card.type = 'button';
-				card.dataset.theme = theme.id;
-				card.append(
-					el('span', 'theme-swatch', ''),
-					el('b', '', theme.label),
-					el('small', '', theme.hint),
-				);
-				card.addEventListener('click', () => {
-					applyTheme(theme.id);
-					paint();
-					onChanged?.();
-				});
-				themes.append(card);
-			}
-			body.append(themes);
-
-			body.append(el('h3', 'settings-group', 'Accent'));
-			const accents = el('div', 'accent-row');
-			for (const accent of ACCENTS) {
-				const dot = el('button', `accent-dot accent-dot-${accent.id}`);
-				dot.type = 'button';
-				dot.dataset.accent = accent.id;
-				dot.setAttribute('aria-label', accent.label);
-				dot.title = accent.label;
-				dot.addEventListener('click', () => {
-					applyAccent(accent.id);
-					paint();
-					onChanged?.();
-				});
-				accents.append(dot);
-			}
-			body.append(accents);
-
-			body.append(toggleRow('Reduce motion', 'Turns off the entrance and sheet animations.',
-				'reduceMotion', onChanged));
-			body.append(toggleRow('Haptic feedback', 'A short buzz when a swipe or a drag commits.',
-				'haptics', onChanged));
-			body.append(toggleRow('Swipe actions on rows', 'Swipe a track right to play next, left to queue it.',
-				'swipeActions', onChanged));
-
-			function paint() {
-				const theme = currentTheme();
-				for (const card of themes.querySelectorAll('button')) {
-					const on = card.dataset.theme === theme;
-					card.classList.toggle('active', on);
-					card.setAttribute('aria-pressed', String(on));
-				}
-				const accent = currentAccent();
-				for (const dot of accents.querySelectorAll('button')) {
-					const on = dot.dataset.accent === accent;
-					dot.classList.toggle('active', on);
-					dot.setAttribute('aria-pressed', String(on));
-				}
-			}
-			paint();
+		build: async handle => {
+			handle.body.append(el('h2', 'sheet-title sheet-drag', title));
+			await build(handle);
+			if (help) handle.body.append(helpFooter(help));
 		},
 	});
 }
 
-/** A labelled switch bound to one preference. */
-function toggleRow(label, hint, name, onChanged) {
-	const row = el('button', 'settings-toggle');
-	row.type = 'button';
-	const copy = el('span', '');
-	copy.append(el('b', '', label), el('small', '', hint));
-	const mark = el('span', 'settings-state');
-	row.append(copy, mark);
+/** A grouped list of rows, like the settings panel itself. */
+function group(...rows) {
+	return el('div', 'settings-list in-sheet', ...rows.filter(Boolean));
+}
 
-	const paint = () => {
-		const on = pref(name) === true;
-		row.setAttribute('aria-pressed', String(on));
-		row.classList.toggle('on', on);
-		mark.innerHTML = icon(on ? 'check' : 'close', 18);
-	};
+/** A labelled switch bound to one boolean preference. */
+function switchRow(label, name, onChanged, { onSet } = {}) {
+	const row = el('button', 'settings-switch');
+	row.type = 'button';
+	row.setAttribute('role', 'switch');
+	row.append(el('b', '', label), el('span', 'switch', ''));
+
+	const paint = () => row.setAttribute('aria-checked', String(pref(name) === true));
 	row.addEventListener('click', () => {
 		setPref(name, pref(name) !== true);
 		paint();
+		onSet?.(pref(name));
 		onChanged?.();
 	});
 	paint();
 	return row;
 }
 
+/** A row that opens a list of choices and shows the chosen one. */
+function choiceRow(label, choices, name, onChanged, { onSet } = {}) {
+	const row = el('button', 'settings-choice');
+	row.type = 'button';
+	const value = el('span', 'settings-value');
+	row.append(el('b', '', label), value);
+	const paint = () => {
+		const found = choices.find(([id]) => id === pref(name)) || choices[0];
+		value.textContent = found[1];
+	};
+	row.addEventListener('click', async () => {
+		await actionSheet({
+			title: label,
+			items: choices.map(([id, text]) => ({
+				id, label: text, active: pref(name) === id,
+				run: () => { setPref(name, id); paint(); onSet?.(id); onChanged?.(); },
+			})),
+		});
+	});
+	paint();
+	return row;
+}
+
+/* ── Appearance ───────────────────────────────────────────────────────────*/
+
+export function openAppearance({ onChanged } = {}) {
+	settingsSheet('Appearance', ({ body }) => {
+		const themes = el('div', 'theme-grid');
+		for (const theme of THEMES) {
+			const card = el('button', `theme-card theme-swatch-${theme.id}`);
+			card.type = 'button';
+			card.dataset.theme = theme.id;
+			card.append(el('span', 'theme-swatch', ''), el('b', '', theme.label));
+			card.addEventListener('click', () => { applyTheme(theme.id); paint(); onChanged?.(); });
+			themes.append(card);
+		}
+
+		const accents = el('div', 'accent-row');
+		for (const accent of ACCENTS) {
+			const dot = el('button', `accent-dot accent-dot-${accent.id}`);
+			dot.type = 'button';
+			dot.dataset.accent = accent.id;
+			dot.setAttribute('aria-label', accent.label);
+			dot.title = accent.label;
+			dot.addEventListener('click', () => { applyAccent(accent.id); paint(); onChanged?.(); });
+			accents.append(dot);
+		}
+
+		body.append(
+			themes,
+			accents,
+			group(
+				switchRow('Silver titles', 'silver', onChanged),
+				switchRow('Glass effects', 'glass', onChanged),
+				switchRow('Reduce motion', 'reduceMotion', onChanged),
+				switchRow('Haptics', 'haptics', onChanged),
+				switchRow('Swipe actions', 'swipeActions', onChanged),
+			),
+		);
+
+		function paint() {
+			const theme = currentTheme();
+			for (const card of themes.querySelectorAll('button')) {
+				const on = card.dataset.theme === theme;
+				card.classList.toggle('active', on);
+				card.setAttribute('aria-pressed', String(on));
+			}
+			const accent = currentAccent();
+			for (const dot of accents.querySelectorAll('button')) {
+				const on = dot.dataset.accent === accent;
+				dot.classList.toggle('active', on);
+				dot.setAttribute('aria-pressed', String(on));
+			}
+		}
+		paint();
+	}, [
+		['Themes', 'The same four your computer has, by the same names. Midnight is true black, Graphite is the Mac app’s grey, Monochrome has no colour, Light is for daylight.'],
+		['Silver titles', 'A brushed-metal sheen on large headings.'],
+		['Glass effects', 'Frosted blur behind the bars and sheets. Turn it off on an older phone for smoother scrolling.'],
+		['Reduce motion', 'Turns off entrance and sheet animations.'],
+		['Haptics', 'A short buzz when a swipe or a drag commits.'],
+		['Swipe actions', 'Swipe a track right to play it next, left to add it to the queue.'],
+	]);
+}
+
 /* ── Playback ─────────────────────────────────────────────────────────────*/
 
-export function openPlaybackSettings({ onChanged } = {}) {
-	openSheet({
-		title: 'Playback',
-		className: 'sheet-catalog',
-		full: true,
-		build: ({ body }) => {
-			body.append(el('h2', 'sheet-title sheet-drag', 'Playback'));
+const RATES = [[0.75, '0.75×'], [1, '1×'], [1.25, '1.25×'], [1.5, '1.5×'], [2, '2×']];
 
-			// ── Volume ──────────────────────────────────────────────────────
-			const volumeRow = el('div', 'settings-slider-row');
-			const volumeLabel = el('div', 'settings-slider-copy');
-			volumeLabel.append(el('b', '', 'Volume'), el('small', '', ''));
+/** Push speed, quality and silence skipping to whichever player makes the sound. */
+export function applyPlaybackPrefs() {
+	const rate = Number(pref('rate')) || 1;
+	const audio = audioElement();
+	if (audio) {
+		audio.defaultPlaybackRate = rate;
+		audio.playbackRate = rate;
+	}
+	if (!nativeAvailable()) return;
+	nativeConfigure({
+		rate,
+		quality: pref('quality') === 'saver' ? 'saver' : 'high',
+		skip_silence: pref('skipSilence') === true,
+	}).catch(() => { /* an older app without it plays at 1x, high */ });
+}
 
-			const describeVolume = percent => {
-				const hint = volumeLabel.querySelector('small');
-				if (isLinked()) hint.textContent = `${percent}% on ${state.computerName || 'your computer'}`;
-				else if (percent > 100) hint.textContent = `${percent}% — boosted past this phone's normal maximum`;
-				else hint.textContent = `${percent}%`;
-			};
+function volumeRow() {
+	const row = el('div', 'settings-slider-row');
+	const value = el('span', 'settings-value', '');
+	row.append(el('div', 'settings-slider-copy', el('b', '', 'Volume'), value));
 
-			const slider = createSlider({
-				min: 0,
-				max: Math.round(volumeMax() * 100),
-				step: 1,
-				value: Math.round(currentVolume() * 100),
-				variant: 'volume',
-				label: 'Volume',
-				keyStep: 5,
-				boostAbove: 100,
-				format: percent => `${percent}%`,
-				// A suspended Web Audio context is silence with no error anywhere, and
-				// only a gesture may resume it. This is one.
-				onGrab: resumeContext,
-				onInput: percent => { describeVolume(percent); setVolume(percent / 100).catch(() => {}); },
-				// Checked once, on release. Reading boostAvailable() on every frame of
-				// a drag races ensureGraph() still building and snaps the thumb back
-				// mid-gesture — which is why the snap-back looked intermittent.
-				onCommit: async percent => {
-					const applied = await setVolume(percent / 100);
-					if (percent <= 100 || boostAvailable() || isLinked()) return;
-					slider.setValue(Math.round(applied * 100), 'force');
-					describeVolume(slider.value);
-					toast('Extra volume is not available for this track. Try the next one.', { icon: 'volume' });
-				},
-			});
-
-			describeVolume(slider.value);
-			volumeRow.append(volumeLabel, slider.root);
-			body.append(volumeRow);
-			body.append(el('p', 'catalog-note',
-				'Above 100% Rainette amplifies the signal itself, with a limiter after it so louder does not become distorted.'));
-
-			// ── Behaviour ───────────────────────────────────────────────────
-			body.append(el('h3', 'settings-group', 'Behaviour'));
-			body.append(toggleRow('Fade on play and pause',
-				'A soft ramp instead of a hard cut.', 'fade', onChanged));
-			body.append(toggleRow('Autoplay similar when the queue ends',
-				'Keep going with a mix seeded from the last track.', 'autoplaySimilar', onChanged));
-			body.append(toggleRow('Remember what I play',
-				'Off means nothing is written to this phone’s history or play counts.', 'history', onChanged));
-			body.append(toggleRow('Fetch artist pictures',
-				'Looks up a photo for artists in your library. Off saves requests.', 'artistArtwork', onChanged));
-
-			// ── Landing tab ─────────────────────────────────────────────────
-			const tabs = [['home', 'Home'], ['search', 'Search'], ['library', 'Library']];
-			const landing = el('button', 'settings-choice');
-			landing.type = 'button';
-			const landingCopy = el('span', '');
-			landingCopy.append(el('b', '', 'Open Rainette on'), el('small', '', ''));
-			const landingValue = el('span', 'settings-value');
-			landing.append(landingCopy, landingValue);
-			const paintLanding = () => {
-				const found = tabs.find(([id]) => id === pref('landingTab')) || tabs[0];
-				landingValue.textContent = found[1];
-				landingCopy.querySelector('small').textContent = 'Which tab this app starts on.';
-			};
-			landing.addEventListener('click', async () => {
-				await actionSheet({
-					title: 'Open Rainette on',
-					items: tabs.map(([id, label]) => ({
-						id, label, active: pref('landingTab') === id,
-						run: () => { setPref('landingTab', id); paintLanding(); onChanged?.(); },
-					})),
-				});
-			});
-			paintLanding();
-			body.append(landing);
+	const describe = percent => {
+		value.textContent = isLinked() ? `${percent}% on ${state.computerName || 'computer'}` : `${percent}%`;
+	};
+	const slider = createSlider({
+		min: 0,
+		max: Math.round(volumeMax() * 100),
+		step: 1,
+		value: Math.round(currentVolume() * 100),
+		variant: 'volume',
+		label: 'Volume',
+		keyStep: 5,
+		boostAbove: 100,
+		format: percent => `${percent}%`,
+		// Only a gesture may resume a suspended audio context.
+		onGrab: resumeContext,
+		onInput: percent => { describe(percent); setVolume(percent / 100).catch(() => {}); },
+		// Checked on release: reading boostAvailable() mid-drag snapped the thumb back.
+		onCommit: async percent => {
+			const applied = await setVolume(percent / 100);
+			if (percent <= 100 || boostAvailable() || isLinked()) return;
+			slider.setValue(Math.round(applied * 100), 'force');
+			describe(slider.value);
+			toast('Extra volume isn’t available for this track.', { icon: 'volume' });
 		},
 	});
+	describe(slider.value);
+	row.append(slider.root);
+	return row;
+}
+
+export function openPlaybackSettings({ onChanged } = {}) {
+	const native = nativeAvailable();
+	const tabs = [['home', 'Home'], ['search', 'Search'], ['library', 'Library']];
+	settingsSheet('Playback', ({ body }) => {
+		body.append(
+			volumeRow(),
+			group(
+				choiceRow('Speed', RATES, 'rate', onChanged, { onSet: applyPlaybackPrefs }),
+				switchRow('Fade on play and pause', 'fade', onChanged),
+				native && globalThis.Capacitor?.getPlatform?.() === 'android'
+					? switchRow('Skip silence', 'skipSilence', onChanged, { onSet: applyPlaybackPrefs })
+					: null,
+				switchRow('Autoplay similar', 'autoplaySimilar', onChanged),
+			),
+			group(
+				switchRow('Remember what I play', 'history', onChanged),
+				switchRow('Artist pictures', 'artistArtwork', onChanged),
+				choiceRow('Open on', tabs, 'landingTab', onChanged),
+			),
+		);
+	}, [
+		['Volume', volumeMax() > 1
+			? 'Above 100% Rainette amplifies the signal itself, with a limiter so louder doesn’t distort.'
+			: 'The phone’s own player stops at 100%. Use the side buttons for more.'],
+		['Speed', 'Plays faster or slower without changing the pitch. Applies to this phone’s player.'],
+		['Fade', 'A soft ramp instead of a hard cut when you play or pause.'],
+		['Skip silence', 'Drops long silent stretches, like quiet intros and gaps.'],
+		['Autoplay similar', 'When the queue runs out, keep going with a mix seeded from the last track.'],
+		['Remember what I play', 'Off means nothing is written to this phone’s history or play counts.'],
+		['Artist pictures', 'Looks up a photo for every artist. Off saves requests.'],
+		['Open on', 'Which tab the app starts on.'],
+	]);
+}
+
+/* ── Audio quality ────────────────────────────────────────────────────────*/
+
+const QUALITIES = [['high', 'High'], ['saver', 'Data saver']];
+
+export function openQualitySettings({ onChanged } = {}) {
+	settingsSheet('Audio quality', ({ body }) => {
+		body.append(group(
+			choiceRow('Streaming', QUALITIES, 'quality', onChanged, { onSet: applyPlaybackPrefs }),
+		));
+	}, [
+		['High', 'The best AAC stream the source offers, about 128 kbps.'],
+		['Data saver', 'The smallest stream, about 48 kbps. Uses roughly a third of the data.'],
+		['Already played songs', 'Songs this phone has cached keep the quality they were saved in.'],
+		['Your own files', 'Music you add from this phone plays exactly as the file is, lossless included.'],
+		['With a computer', 'When this phone follows your computer, the computer’s own quality applies.'],
+	]);
+}
+
+export function qualityLabel() {
+	return (QUALITIES.find(([id]) => id === pref('quality')) || QUALITIES[0])[1];
+}
+
+/* ── Developer ────────────────────────────────────────────────────────────*/
+
+const MOTION_SCALES = [[0.5, 'Fast'], [1, 'Normal'], [1.5, 'Slow'], [3, 'Very slow']];
+const REGIONS = [
+	['US', 'United States'], ['GB', 'United Kingdom'], ['CA', 'Canada'], ['AU', 'Australia'],
+	['IE', 'Ireland'], ['DE', 'Germany'], ['FR', 'France'], ['ES', 'Spain'], ['IT', 'Italy'],
+	['NL', 'Netherlands'], ['SE', 'Sweden'], ['BR', 'Brazil'], ['MX', 'Mexico'], ['JP', 'Japan'],
+	['KR', 'South Korea'], ['IN', 'India'], ['PH', 'Philippines'], ['NG', 'Nigeria'], ['ZA', 'South Africa'],
+];
+
+/** What is actually running: the cached build, the worker and the audio graph. */
+async function describeBuild() {
+	const lines = [];
+	try {
+		const names = (await caches.keys()).filter(name => name.startsWith('rainette-pwa-'));
+		lines.push(['Page build', names.join(', ') || 'no offline copy yet']);
+		lines.push(['Service worker', navigator.serviceWorker?.controller ? 'active' : 'not in control']);
+	} catch {
+		lines.push(['Page build', 'unknown']);
+	}
+	const graph = graphState() === 'ready';
+	lines.push(['Audio graph', graph ? 'built' : 'none']);
+	lines.push(['In background', graph && graphCostsBackgroundPlayback() ? 'stops when hidden' : 'keeps playing']);
+	if (nativeAvailable()) {
+		const info = await nativeInfo().catch(() => null);
+		lines.push(['App', `${globalThis.Capacitor?.getPlatform?.() || 'native'} ${info?.version || ''}`.trim()]);
+		lines.push(['Player protocol', String(info?.protocol ?? '?')]);
+	}
+	lines.push(['Computer', state.connected ? (state.computerName || 'connected') : 'none']);
+	return lines;
+}
+
+export function openDeveloper({ onChanged } = {}) {
+	settingsSheet('Developer', async ({ body }) => {
+		const info = el('dl', 'dev-info');
+		body.append(
+			group(
+				choiceRow('Animation speed', MOTION_SCALES, 'motionScale', onChanged),
+				switchRow('Compact rows', 'compact', onChanged),
+				nativeAvailable() ? choiceRow('Catalog region', REGIONS, 'region', onChanged) : null,
+			),
+			info,
+		);
+		const copy = el('button', 'ghost small', 'Copy details');
+		copy.type = 'button';
+		body.append(copy);
+
+		const lines = await describeBuild();
+		for (const [term, value] of lines) info.append(el('dt', '', term), el('dd', '', value));
+		copy.addEventListener('click', async () => {
+			const text = lines.map(([term, value]) => `${term}: ${value}`).join('\n');
+			try {
+				await navigator.clipboard.writeText(text);
+				toast('Copied');
+			} catch {
+				toast('Couldn’t copy here.', { icon: 'close' });
+			}
+		});
+	}, [
+		['Animation speed', 'Scales every transition. Slow is handy for checking motion.'],
+		['Compact rows', 'Tighter track lists that fit more on screen.'],
+		['Catalog region', 'Which country YouTube Music answers searches and artist pages for.'],
+		['Details', 'What is running, for a bug report. Nothing here is sent anywhere.'],
+	]);
+}
+
+/* ── About ────────────────────────────────────────────────────────────────*/
+
+export function openAbout() {
+	settingsSheet('About', async ({ body }) => {
+		const version = nativeAvailable() ? (await nativeInfo().catch(() => null))?.version : '';
+		body.append(el('div', 'about-mark',
+			Object.assign(document.createElement('img'), { src: './icon.svg', alt: '', width: 64, height: 64 }),
+			el('b', '', 'Rainette Music'),
+			el('span', '', version ? `Version ${version}` : 'Web app'),
+		));
+	}, [
+		['Privacy', 'Your pairing key never leaves this device. It travels in the link fragment, which browsers keep to themselves, so the site hosting this page never receives it.'],
+		['Your music', 'Search and streams come from YouTube Music, or from your own computer when paired. Nothing goes through a Rainette server.'],
+		['Licence', 'The phone apps are free software under the GPL-3.0.'],
+	]);
 }
 
 /* ── Files on this phone ──────────────────────────────────────────────────
- *
- * Importing a folder of music is the one moment this app is visibly doing work
- * on the user's behalf, and it used to spend that moment on a single line
- * reading "12 files · 84.1 MB used on this phone". A number that only moves at
- * the end cannot tell you whether anything is happening, which of your files
- * arrived, or which one is the reason it stopped.
- *
- * So every file gets a card, drawn before a single byte is read, and each card
- * says which of four things it is currently doing. `local.js` has always
- * reported that per file; nothing was listening.
- */
+ * Every file in an import gets a card that shows what it is doing right now. */
 
-/* What each phase puts on the second line of a card. `stored` is the only one
- * that has learned anything the filename did not already say. */
+/* The second line of a card, per phase. */
 const IMPORT_PHASES = {
 	queued:  { className: 'is-queued',  line: () => 'Waiting…' },
 	reading: { className: 'is-reading', line: () => 'Reading…' },
@@ -240,8 +355,7 @@ const IMPORT_PHASES = {
 
 const PHASE_CLASSES = Object.values(IMPORT_PHASES).map(phase => phase.className);
 
-/* A ring rather than an icon, matching the one the play button already shows
- * while a track resolves — the same wait should look the same everywhere. */
+/* The same spinner the play button shows while a track loads. */
 const PHASE_GLYPHS = {
 	queued:  '<span class="import-dot" aria-hidden="true"></span>',
 	reading: '<span class="spin" aria-hidden="true"></span>',
@@ -250,11 +364,7 @@ const PHASE_GLYPHS = {
 	failed:  icon('close', 18),
 };
 
-/* A transparent pixel, so the artwork slot is an <img> from the start without
- * being a *broken* one. An <img> with sized boxes and no `src` draws the engine's
- * own broken-image chrome — a hairline frame around an empty square, on every
- * row of a hundred-file import. This lets the CSS's grey placeholder be the only
- * thing on screen until a real cover replaces it. */
+/* A transparent pixel: an <img> with no src draws a broken-image frame. */
 const BLANK_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
 
 /** One file, as a row that can change its mind four times. */
@@ -300,9 +410,7 @@ function importCard(entry, { onRetry }) {
 			retry.hidden = phase !== 'failed';
 			if (phase === 'stored' && event?.row) {
 				title.textContent = event.row.title || entry.name;
-				// Only when there is art to show. localArtworkUrl owns the URL
-				// and hands the same one to every surface, so nothing here mints
-				// a blob URL it would then have to remember to revoke.
+				// localArtworkUrl owns the blob URL, so nothing here has to revoke it.
 				if (event.row.artwork) {
 					art.dataset.localArt = event.row.id;
 					art.src = localArtworkUrl({ source_id: event.row.id });
@@ -333,9 +441,7 @@ function importBatch(host, { plan, files, controller, onStored }) {
 	stop.type = 'button';
 	stop.addEventListener('click', () => {
 		if (stop.dataset.role === 'clear') { host.replaceChildren(); return; }
-		// The abort lands between files, so the one already being read still
-		// finishes and lands. Saying "Stopping" rather than "Stopped" is the
-		// difference between a promise kept and one broken by a 12 MB file.
+		// The abort lands between files, so the current one still finishes.
 		controller.abort();
 		stop.disabled = true;
 		stop.textContent = 'Stopping…';
@@ -371,8 +477,7 @@ function importBatch(host, { plan, files, controller, onStored }) {
 			card.setPhase('failed', { error });
 		}
 	};
-	// Keyed by index, not id: the same file picked twice in one folder hashes to
-	// the same id, and two cards must still be able to move independently.
+	// Keyed by index: the same file picked twice hashes to the same id.
 	for (const entry of plan) {
 		const card = importCard(entry, { onRetry: retryOne });
 		cards.set(entry.index, card);
@@ -414,10 +519,8 @@ export function openLocalFiles({ onChanged, onShowLibrary } = {}) {
 		title: 'Music on this phone',
 		className: 'sheet-catalog',
 		full: true,
-		build: async ({ body }) => {
+		build: async ({ body, close }) => {
 			body.append(el('h2', 'sheet-title sheet-drag', 'Music on this phone'));
-			body.append(el('p', 'sheet-message',
-				'Add MP3s and other audio from this phone. They stay on this phone: nothing is uploaded to Rainette, to your computer, or to any website, and they play with no connection at all.'));
 
 			const batchHost = el('div', 'import-host');
 			const library = el('div', 'import-library');
@@ -428,27 +531,19 @@ export function openLocalFiles({ onChanged, onShowLibrary } = {}) {
 
 			const refresh = async () => {
 				const [count, bytes] = await Promise.all([localTrackCount(), localBytes()]);
-				if (count) {
-					library.replaceChildren(el('p', 'catalog-note',
-						`${count} file${count === 1 ? '' : 's'} · ${formatBytes(bytes)} used on this phone`));
-				} else {
-					library.replaceChildren(el('div', 'import-empty',
-						el('b', '', 'Nothing here yet'),
-						el('span', '', 'Music you add stays on this phone. It plays with no connection at all, and nothing is uploaded — not to Rainette, not to your computer, not anywhere.'),
-					));
-				}
-				// Nothing to remove is not a reason to offer removing it.
+				library.replaceChildren(count
+					? el('p', 'catalog-note', `${count} file${count === 1 ? '' : 's'} · ${formatBytes(bytes)}`)
+					: el('div', 'import-empty', el('b', '', 'Nothing here yet')));
 				wipe.hidden = !count;
 				onChanged?.();
 			};
 
-			const addFiles = el('button', 'primary', 'Add music files');
+			const addFiles = el('button', 'primary', 'Add files');
 			addFiles.type = 'button';
-			const addFolder = el('button', 'ghost', 'Add a folder of music');
+			const addFolder = el('button', 'ghost', 'Add a folder');
 			addFolder.type = 'button';
 
-			/* One path for both buttons, because the only difference between them
-			 * is a flag on the input element. */
+			/* One path for both buttons; only the input's directory flag differs. */
 			const runPick = async options => {
 				addFiles.disabled = true;
 				addFolder.disabled = true;
@@ -465,11 +560,8 @@ export function openLocalFiles({ onChanged, onShowLibrary } = {}) {
 					});
 					batch?.settle(result);
 					await refresh();
-					// The cards are the acknowledgement. A toast is only owed when
-					// there was nothing to draw them from.
-					if (!batch && !result.cancelled) {
-						toast('Nothing playable in there.', { icon: 'close' });
-					}
+					// The cards are the acknowledgement; a toast only when there were none.
+					if (!batch && !result.cancelled) toast('Nothing playable in there.', { icon: 'close' });
 				} finally {
 					addFiles.disabled = false;
 					addFolder.disabled = false;
@@ -478,52 +570,23 @@ export function openLocalFiles({ onChanged, onShowLibrary } = {}) {
 
 			addFiles.addEventListener('click', () => runPick({}));
 			addFolder.addEventListener('click', () => runPick({ directory: true }));
-
-			// Not `.sheet-buttons`: that lays two buttons out side by side at 46%
-			// each, and "Add a folder of music" wraps to two lines in the half it
-			// gets. These are a primary and its alternative, not a pair of equals.
 			body.append(el('div', 'import-actions', addFiles, addFolder));
-			body.append(el('p', 'hint',
-				'Your phone won’t let a website look through its storage on its own, so pick a folder and Rainette takes everything playable inside it — including everything in the folders under it.'));
 
-			/* The thing people actually ask for is "import all the music on my
-			 * phone", and no browser can do it. The nearest honest version is the
-			 * computer sending its library across, which needs a desktop that can
-			 * answer — so it is shown, disabled, with the reason, in the same
-			 * register as the boost notice on the volume slider. */
-			/* The thing people ask for is "bring over all the music on my
-			 * computer", and the honest answer is that it is already here —
-			 * the computer's own files play straight through, the same way
-			 * anything else it holds does. Copying gigabytes into this phone's
-			 * storage would be the wrong favour; what is worth saying is how
-			 * much is there and where to find it. */
+			/* The computer's own files already play here, so offer a way to them. */
 			const computerName = state.computerName || 'your computer';
 			const fromComputer = el('button', 'ghost', `Music on ${computerName}`);
 			fromComputer.type = 'button';
-			fromComputer.disabled = true;
-			const fromComputerNote = el('p', 'hint', `Checking what ${computerName} has…`);
-			body.append(el('div', 'import-actions', fromComputer), fromComputerNote);
-
-			command('music_local_status').then(result => {
-				const tracks = Number(result?.tracks) || 0;
-				const roots = Number(result?.roots?.length) || 0;
-				if (!roots) {
-					fromComputerNote.textContent = `${computerName} has no music folders set up yet. Add one there, in Settings, and everything inside it plays here without taking up space on this phone.`;
-					return;
-				}
-				if (!tracks) {
-					fromComputerNote.textContent = `${computerName} is watching ${roots === 1 ? 'a folder' : `${roots} folders`} but has not found anything playable in ${roots === 1 ? 'it' : 'them'} yet.`;
-					return;
-				}
-				fromComputer.disabled = false;
-				fromComputer.textContent = `${tracks} song${tracks === 1 ? '' : 's'} on ${computerName}`;
-				fromComputer.addEventListener('click', () => { handle.close(); onShowLibrary?.(); });
-				fromComputerNote.textContent = 'These play straight from your computer, so they cost nothing here. Add files below only for the ones you want with no connection at all.';
-			}).catch(() => {
-				// An older computer simply does not answer this, which is not a
-				// failure worth a red line — it is a feature that is not there.
-				fromComputerNote.textContent = `${computerName} is running an older Rainette that cannot share its own files yet.`;
-			});
+			fromComputer.hidden = true;
+			body.append(el('div', 'import-actions', fromComputer));
+			if (state.connected) {
+				command('music_local_status').then(result => {
+					const tracks = Number(result?.tracks) || 0;
+					if (!tracks) return;
+					fromComputer.hidden = false;
+					fromComputer.textContent = `${tracks} song${tracks === 1 ? '' : 's'} on ${computerName}`;
+					fromComputer.addEventListener('click', () => { close(); onShowLibrary?.(); });
+				}).catch(() => { /* an older computer does not answer this */ });
+			}
 
 			body.append(batchHost, library);
 
@@ -541,9 +604,13 @@ export function openLocalFiles({ onChanged, onShowLibrary } = {}) {
 				toast('Local files removed');
 			});
 
-			body.append(wipe);
-			body.append(el('p', 'catalog-note',
-				'Titles, artists and cover art are read out of the files themselves. A file with no tags falls back to its filename.'));
+			body.append(wipe, helpFooter([
+				['Where they go', 'Files you add stay on this phone. Nothing is uploaded, and they play with no connection.'],
+				['Folders', 'A phone won’t let an app look through its storage on its own, so pick a folder and Rainette takes everything playable inside it, subfolders included.'],
+				['Tags', 'Titles, artists and covers come from the files. A file with no tags uses its filename.'],
+				['Quality', 'Files play exactly as they are, lossless formats included.'],
+				[`Music on ${computerName}`, 'Your computer’s own music plays straight through without taking space here.'],
+			]));
 			await refresh();
 		},
 	});
@@ -552,43 +619,35 @@ export function openLocalFiles({ onChanged, onShowLibrary } = {}) {
 /* ── Backup ───────────────────────────────────────────────────────────────*/
 
 export function openBackup({ onChanged } = {}) {
-	openSheet({
-		title: 'Backup',
-		className: 'sheet-catalog',
-		full: true,
-		build: ({ body }) => {
-			body.append(el('h2', 'sheet-title sheet-drag', 'Backup'));
-			body.append(el('p', 'sheet-message',
-				'Saves the playlists you made here, your settings, your play counts and your recent list to a file on this phone. It is a download, not an upload — the file goes wherever you put it and nowhere else.'));
+	settingsSheet('Backup', ({ body }) => {
+		const save = el('button', 'primary', 'Save a backup');
+		save.type = 'button';
+		save.addEventListener('click', () => downloadBackup());
 
-			const save = el('button', 'primary', 'Save a backup file');
-			save.type = 'button';
-			save.addEventListener('click', () => downloadBackup());
+		const status = el('p', 'sheet-message', '');
 
-			const status = el('p', 'sheet-message', '');
+		const load = el('button', 'ghost', 'Restore');
+		load.type = 'button';
+		load.addEventListener('click', async () => {
+			const file = await pickBackup();
+			if (!file) return;
+			try {
+				const { playlists, taken } = await restoreBackup(file);
+				const count = `${playlists} playlist${playlists === 1 ? '' : 's'}`;
+				status.textContent = taken ? `Restored ${count} from ${taken.slice(0, 10)}.` : `Restored ${count}.`;
+				onChanged?.();
+				toast('Backup restored', { icon: 'check' });
+			} catch (error) {
+				status.textContent = error?.message || 'That backup could not be read.';
+			}
+		});
 
-			const load = el('button', 'ghost', 'Restore from a backup');
-			load.type = 'button';
-			load.addEventListener('click', async () => {
-				const file = await pickBackup();
-				if (!file) return;
-				try {
-					const { playlists, taken } = await restoreBackup(file);
-					status.textContent = taken
-						? `Restored ${playlists} playlist${playlists === 1 ? '' : 's'} from the backup taken ${taken.slice(0, 10)}.`
-						: `Restored ${playlists} playlist${playlists === 1 ? '' : 's'}.`;
-					onChanged?.();
-					toast('Backup restored', { icon: 'check' });
-				} catch (error) {
-					status.textContent = error?.message || 'That backup could not be read.';
-				}
-			});
-
-			body.append(save, load, status);
-			body.append(el('p', 'catalog-note',
-				'The pairing key is deliberately left out, so a backup file is never a way into your computer. Audio files are left out too — they belong in your phone’s own backup.'));
-		},
-	});
+		body.append(el('div', 'import-actions', save, load), status);
+	}, [
+		['What it saves', 'Your playlists, settings, play counts and recent list, as a file on this phone.'],
+		['What it leaves out', 'The pairing key, so a backup is never a way into your computer, and audio files, which belong in the phone’s own backup.'],
+		['Where it goes', 'Wherever you save it. It is a download, not an upload.'],
+	]);
 }
 
 /* ── Reset ────────────────────────────────────────────────────────────────*/
@@ -602,6 +661,7 @@ export async function resetEverything() {
 	});
 	if (!sure) return false;
 	resetPrefs();
+	applyPlaybackPrefs();
 	applyTheme('midnight');
 	applyAccent('default');
 	for (const key of Object.keys(localStorage)) {
@@ -614,10 +674,27 @@ export async function resetEverything() {
 
 /* ── Rows the panel shows ─────────────────────────────────────────────────*/
 
+/** Draw each row's icon and trailing chevron from its data-icon. */
+function paintRowIcons() {
+	for (const row of document.querySelectorAll('.settings-list > button[data-icon]')) {
+		const slot = row.querySelector('.settings-icon');
+		if (slot && !slot.firstChild) slot.innerHTML = icon(row.dataset.icon, 18);
+		if (row.getAttribute('role') !== 'switch' && !row.querySelector('.settings-chevron')) {
+			const chevron = el('span', 'settings-chevron');
+			chevron.innerHTML = icon('chevronRight', 16);
+			row.append(chevron);
+		}
+	}
+}
+
 /** Wire the settings panel's buttons. `refresh` repaints the value column. */
 export function wireSettings({ refresh, onLibraryChanged, onShowLibrary }) {
+	paintRowIcons();
 	$('#appearanceButton')?.addEventListener('click', () => openAppearance({ onChanged: refresh }));
 	$('#playbackButton')?.addEventListener('click', () => openPlaybackSettings({ onChanged: refresh }));
+	$('#qualityButton')?.addEventListener('click', () => openQualitySettings({ onChanged: refresh }));
+	$('#developerButton')?.addEventListener('click', () => openDeveloper({ onChanged: refresh }));
+	$('#aboutButton')?.addEventListener('click', () => openAbout());
 	$('#localFilesButton')?.addEventListener('click', () => openLocalFiles({
 		onChanged: () => { refresh(); onLibraryChanged?.(); },
 		onShowLibrary,
@@ -638,7 +715,13 @@ export async function paintSettingsValues() {
 	if (appearance) appearance.textContent = theme?.label || 'Midnight';
 
 	const playback = $('#playbackState');
-	if (playback) playback.textContent = `${Math.round(currentVolume() * 100)}%`;
+	if (playback) {
+		const rate = Number(pref('rate')) || 1;
+		playback.textContent = rate === 1 ? `${Math.round(currentVolume() * 100)}%` : `${rate}×`;
+	}
+
+	const quality = $('#qualityState');
+	if (quality) quality.textContent = qualityLabel();
 
 	const local = $('#localFilesState');
 	if (local) {

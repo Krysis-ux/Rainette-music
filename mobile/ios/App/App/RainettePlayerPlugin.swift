@@ -1,16 +1,11 @@
+import AVFoundation
+import AVKit
 import Capacitor
 import Foundation
 import RainettePlayerCore
 import UIKit
 
-/// The page's only door into native playback on iPhone. Method for method it
-/// is what RainettePlayerPlugin.kt is on Android, so pwa/src/native-engine.js
-/// never needs to know which phone it is on. Nothing here accepts a URL to
-/// play: the page names a song, and the player finds where it comes from.
-///
-/// Events go through `watch`, not Capacitor's listeners: `state` on every
-/// change and each second while playing, `error` for a failure the player has
-/// given up on. Both carry the page's `generation`.
+/// The page's only door into native playback on iPhone.
 @objc(RainettePlayerPlugin)
 public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPickerDelegate {
     public let identifier = "RainettePlayerPlugin"
@@ -34,6 +29,10 @@ public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPicker
         CAPPluginMethod(name: "installUpdate", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stageFile", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "saveFile", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "configure", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "outputs", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "pickOutput", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "showOutputPicker", returnType: CAPPluginReturnPromise),
     ]
 
     /// Must match PROTOCOL in pwa/src/native-engine.js and RainettePlayerPlugin.kt.
@@ -54,11 +53,17 @@ public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPicker
     private var watchingPage = ""
     /// The save waiting on the Files sheet, and the copy it is exporting. Main thread only.
     private var pendingSave: (call: CAPPluginCall, file: URL)?
+    /// The system's device picker, kept in the view so its sheet can stay up. Main thread only.
+    private var routePicker: AVRoutePickerView?
 
     override public func load() {
         // Closing the app from the app switcher closes the music with it.
         NotificationCenter.default.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { _ = self?.engine.stop() }
+        }
+        // Headphones in, AirPods connected, a car: tell the page where the sound goes.
+        NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.send("route", Self.route()) }
         }
         // A page that was asleep missed events; give it the truth on return.
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
@@ -278,6 +283,85 @@ public class RainettePlayerPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPicker
         pendingSave = nil
         try? FileManager.default.removeItem(at: pending.file.deletingLastPathComponent())
         pending.call.resolve(["saved": saved])
+    }
+
+    // MARK: - Speed, quality and outputs
+
+    /// Playback speed and streaming quality, from the page's settings.
+    @objc func configure(_ call: CAPPluginCall) {
+        let rate = Float(min(2, max(0.5, call.getDouble("rate") ?? 1)))
+        let saver = call.getString("quality") == "saver"
+        Task { @MainActor in
+            await StreamResolver.shared.setDataSaver(saver)
+            call.resolve(engine.setRate(rate).json)
+        }
+    }
+
+    /// Where the sound is going now. iOS lets an app see the route, not choose
+    /// among Bluetooth devices, so the choosing happens in `showOutputPicker`.
+    @objc func outputs(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { call.resolve(Self.route()) }
+    }
+
+    /// Nothing to pick directly on iPhone; the system picker does it.
+    @objc func pickOutput(_ call: CAPPluginCall) {
+        showOutputPicker(call)
+    }
+
+    /// The system's own list of AirPlay and Bluetooth devices.
+    @objc func showOutputPicker(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let view = self.bridge?.viewController?.view else {
+                return call.reject("The device list isn't available.", PlayerError.invalid)
+            }
+            let picker = self.routePicker ?? AVRoutePickerView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+            if picker.superview == nil {
+                picker.alpha = 0.011
+                view.addSubview(picker)
+                self.routePicker = picker
+            }
+            picker.layoutIfNeeded()
+            guard let button = Self.firstButton(in: picker) else {
+                return call.reject("The device list isn't available.", PlayerError.invalid)
+            }
+            // Newer iOS wires the picker to the button's primary action, older to touch up.
+            button.sendActions(for: button.allControlEvents.contains(.primaryActionTriggered) ? .primaryActionTriggered : .touchUpInside)
+            call.resolve()
+        }
+    }
+
+    /// The picker's own button, wherever this iOS version nests it.
+    static func firstButton(in view: UIView) -> UIButton? {
+        for child in view.subviews {
+            if let button = child as? UIButton { return button }
+            if let nested = firstButton(in: child) { return nested }
+        }
+        return nil
+    }
+
+    static func route() -> [String: Any] {
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
+        var devices: [[String: Any]] = outputs.map {
+            ["id": $0.uid, "name": $0.portName, "kind": kind(of: $0.portType), "active": true]
+        }
+        // The phone itself is always somewhere to play; choosing it goes through the picker.
+        if !devices.contains(where: { ($0["kind"] as? String) == "speaker" }) {
+            devices.append(["id": "speaker", "name": "iPhone", "kind": "speaker", "active": devices.isEmpty])
+        }
+        let current = devices.first { ($0["active"] as? Bool) == true } ?? devices[0]
+        return ["current": current, "devices": devices, "can_pick": false]
+    }
+
+    static func kind(of port: AVAudioSession.Port) -> String {
+        switch port {
+        case .bluetoothA2DP, .bluetoothLE, .bluetoothHFP: return "bluetooth"
+        case .headphones, .headsetMic: return "headphones"
+        case .airPlay: return "airplay"
+        case .carAudio: return "car"
+        case .usbAudio: return "usb"
+        case .HDMI: return "hdmi"
+        default: return "speaker"
+        }
     }
 
     // MARK: - Internals

@@ -4,15 +4,7 @@
 
 export const $ = selector => document.querySelector(selector);
 
-/** Create an element with an optional class and any number of children, in one
- *  call. A string child becomes text; a node is appended.
- *
- *  It used to take exactly one `text` argument, which several callers were
- *  already passing elements to — `el('span', 'copy', el('b', '', name), …)`.
- *  Assigning a node to `textContent` stringifies it, so every playlist row in
- *  the library rendered the literal words "[object HTMLElement]" in place of its
- *  name. Accepting children is what those call sites always meant.
- */
+/** Create an element with an optional class and any number of children, in one call. */
 export function el(tag, className = '', ...children) {
 	const node = document.createElement(tag);
 	if (className) node.className = className;
@@ -23,10 +15,8 @@ export function el(tag, className = '', ...children) {
 	return node;
 }
 
-/* The OS setting and the app's own switch are the same answer as far as any
- * caller is concerned: either one turns the animations off. The class is set by
- * prefs.js, which this module deliberately does not import — dom.js is a leaf,
- * and reading the DOM keeps it one. */
+/* The OS setting and the app's own switch are the same answer as far as any caller is concerned:
+ * either one turns the animations off. */
 export function motionOff() {
 	if (document.documentElement.classList.contains('reduce-motion')) return true;
 	return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
@@ -59,7 +49,7 @@ const ICONS = {
 	close: '<path d="M18 6 6 18"/><path d="M6 6l12 12"/>',
 	plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
 	trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
-	grip: '<path d="M8 7h.01M8 12h.01M8 17h.01M16 7h.01M16 12h.01M16 17h.01" stroke-width="2.6"/>',
+	handle: '<path d="M4 8h16"/><path d="M4 12h16"/><path d="M4 16h16"/>',
 	speaker: '<rect x="5" y="2" width="14" height="20" rx="2"/><circle cx="12" cy="15" r="3.2"/><path d="M12 6h.01"/>',
 	bluetooth: '<path d="m7 7 10 10-5 4V3l5 4L7 17"/>',
 	laptop: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/>',
@@ -77,6 +67,21 @@ const ICONS = {
 	download: '<path d="M12 3v12"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>',
 	// The same tray, closed and ticked: on the phone already.
 	downloaded: '<path d="m8 12.5 2.8 2.8L16 10"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><circle cx="12" cy="12" r="9" opacity=".28"/>',
+	// Settings rows.
+	contrast: '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/>',
+	playCircle: '<circle cx="12" cy="12" r="8.5"/><path d="M10.2 8.7v6.6l5.2-3.3z" fill="currentColor" stroke="none"/>',
+	waveform: '<path d="M4 10v4"/><path d="M8 6.5v11"/><path d="M12 3.5v17"/><path d="M16 7.5v9"/><path d="M20 10.5v3"/>',
+	archive: '<rect x="3.5" y="4" width="17" height="5" rx="1.4"/><path d="M5.2 9v9a2 2 0 0 0 2 2h9.6a2 2 0 0 0 2-2V9"/><path d="M10 13h4"/>',
+	pulse: '<path d="M3 12h4l2.4-5.5 5.2 11 2.4-5.5h4"/>',
+	plusSquare: '<rect x="4" y="4" width="16" height="16" rx="4.5"/><path d="M12 8.5v7"/><path d="M8.5 12h7"/>',
+	code: '<path d="m8.5 7-5 5 5 5"/><path d="m15.5 7 5 5-5 5"/>',
+	info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5"/><path d="M12 7.7h.01"/>',
+	reset: '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4h4"/>',
+	logout: '<path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14"/><path d="m9.5 16-4-4 4-4"/><path d="M5.5 12H15"/>',
+	chevronRight: '<path d="m9.5 6 6 6-6 6"/>',
+	help: '<circle cx="12" cy="12" r="8.5"/><path d="M9.7 9.5a2.4 2.4 0 0 1 4.6 1c0 1.6-2.3 2-2.3 3.6"/><path d="M12 16.9h.01"/>',
+	grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.8"/>',
+	gauge: '<path d="M4.5 16a7.5 7.5 0 1 1 15 0"/><path d="m12 16 3.5-4.5"/>',
 };
 
 export function icon(name, size = 20) {
@@ -95,9 +100,8 @@ export function iconButton(name, { label, className = '', size = 20, onClick }) 
 }
 
 /* ── Toast ─────────────────────────────────────────────────────────────────
- * Actions that take effect somewhere the user is not currently looking — adding
- * to a queue they have not opened, say — need an acknowledgement or they feel
- * like they did nothing. Actions with visible results do not get one. */
+ * Actions that take effect somewhere the user is not currently looking — adding to a queue they
+ * have not opened, say — need an acknowledgement or they feel like they did nothing. */
 
 let toastTimer = 0;
 
@@ -112,10 +116,8 @@ export function toast(message, { icon: glyph = 'check' } = {}) {
 }
 
 /* ── Staggered entrance ────────────────────────────────────────────────────
- * A list that appears all at once reads as a flash. Offsetting each row by a
- * few milliseconds gives the eye an order to follow it in. Capped, because past
- * roughly a dozen rows the stagger stops reading as one movement and starts
- * reading as a slow list. */
+ * A list that appears all at once reads as a flash. Offsetting each row by a few milliseconds
+ * gives the eye an order to follow it in. */
 export function stagger(container, selector = ':scope > *') {
 	if (motionOff()) return;
 	const rows = container.querySelectorAll(selector);
@@ -127,10 +129,7 @@ export function stagger(container, selector = ':scope > *') {
 }
 
 /* ── FLIP ──────────────────────────────────────────────────────────────────
- * Reordering the queue re-renders it, which normally teleports every row. FLIP
- * measures where rows were, lets the re-render happen, then animates each row
- * from its old position to its new one, so a moved item is visibly the same
- * item that moved. */
+ * Reordering the queue re-renders it, which normally teleports every row. */
 export function flip(container, rowSelector, mutate) {
 	if (motionOff()) { mutate(); return; }
 	const before = new Map();

@@ -1,17 +1,4 @@
-/* Bringing a playlist in from somewhere else — Spotify, Apple Music, a text
- * file a friend sent.
- *
- * A word on what this deliberately does not do. Reading somebody's Spotify
- * playlist straight off a link needs a Spotify API key and an OAuth login, and
- * this app has neither: it is a static page with no server of its own, and
- * asking for a Spotify password to paste into a third-party page is exactly the
- * habit nobody should be taught. So the import works from what Spotify already
- * lets you take out for free — a copied selection, or a CSV from an exporter —
- * and matches each line against your own computer's catalog.
- *
- * The matching is the interesting part: a line is a title and an artist, and a
- * search returns candidates ranked by how well they agree with both.
- */
+/* Bringing a playlist in from somewhere else — Spotify, Apple Music, a text file a friend sent. */
 
 import { el, toast } from './dom.js';
 import { openSheet } from './sheets.js';
@@ -21,12 +8,7 @@ import { createLocalPlaylist } from './playlists.js';
 
 /* ── Parsing what was pasted ──────────────────────────────────────────────*/
 
-/* The shapes that actually turn up:
- *   Exportify CSV   "Track Name","Artist Name(s)","Album Name",...
- *   Spotify copy    spotify:track:4uLU6hMCjMI75M1A2tKUQC
- *   Plain text      Artist - Title      /      Title - Artist
- *   Numbered list   1. Artist - Title
- */
+/* The shapes that actually turn up: Exportify CSV "Track Name","Artist Name(s)","Album Name",... */
 export function parseImport(text) {
 	const lines = String(text || '')
 		.split(/\r?\n/)

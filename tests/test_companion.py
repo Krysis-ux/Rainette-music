@@ -109,11 +109,7 @@ class CompanionRegistryTests(unittest.TestCase):
         self.assertIsNone(registry.resolve_relay("made-up-grant"))
 
     def test_a_grant_remembers_what_it_was_resolved_from(self):
-        """So a stale googlevideo URL can be replaced without the phone noticing.
-
-        Those URLs are bound to the IP and time that produced them, so a VPN
-        toggle kills one while the grant around it is still perfectly valid.
-        """
+        """So a stale googlevideo URL can be replaced without the phone noticing."""
         registry = CompanionRegistry(now=lambda: 1_000)
         device = pair_device(registry)
         grant = registry.create_relay_grant(
@@ -269,10 +265,9 @@ class CompanionSessionIsolationTests(unittest.TestCase):
             [m["type"] for m in self.events_for("phone-a")],
             ["music_progress", "music_remote_play"],
         )
-        # music_remote_control is routed at whoever owns the audio rather than
-        # returned to its sender: an unaddressed one means "the desktop", and
-        # the sender has no use for a copy of an instruction it just issued.
-        # Echoing it would double-apply the verbs that are not idempotent.
+        # music_remote_control is routed at whoever owns the audio rather than returned to its
+        # sender: an unaddressed one means "the desktop", and the sender has no use for a copy of an
+        # instruction it just issued.
         self.assertEqual(self.events_for("phone-b"), [])
 
     def test_shared_library_changes_still_reach_every_phone(self):
@@ -379,12 +374,7 @@ class CompanionHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(revoked.status, 404)
 
     async def test_polling_while_someone_walks_to_the_computer_is_not_throttled(self):
-        """A phone polls every ~1.5s until a human approves it.
-
-        The attempt limiter is far tighter than that on purpose, so the poll
-        endpoint must have its own budget: otherwise a user who takes half a
-        minute to reach their computer is rate-limited out of their own pairing.
-        """
+        """A phone polls every ~1.5s until a human approves it."""
         invitation = self.registry.create_invitation(ttl_s=300)
         requested = await self.client.post(
             "/pair/request",

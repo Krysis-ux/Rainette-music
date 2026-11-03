@@ -1,27 +1,8 @@
-/* One slider. Four call sites: seek, volume, the five EQ bands, settings volume.
- *
- * A native range input cannot separate the visual thumb from the hit target —
- * `::-webkit-slider-thumb`'s box is both — so honouring --touch there means a
- * 48px dot. Here the rail is 4px because that is what reads as a progress line
- * and the row is 48px because that is what a thumb can find. Those are
- * different numbers and this component keeps them apart.
- *
- * The other half of the reason it exists: the interaction contract — the
- * render-vs-drag guard, the settle window, capture ordering, haptics — is
- * component state. With four native ranges each site re-implemented it, which
- * is how commitSeek ended up bound to `change`.
- *
- * The cost, paid in full below: a11y is hand-written. role, aria-value*,
- * arrows, Home/End, PageUp/Down and an aria-valuetext that says "1:34 of 3:20"
- * rather than "94".
- */
+/* One slider. Four call sites: seek, volume, the five EQ bands, settings volume. */
 
 import { el, tap } from './dom.js';
 
-/* How long after a commit the thumb keeps its own value. seekTo() writes
- * audio.currentTime, which fires timeupdate synchronously — and that first tick
- * still carries the pre-seek position. Without a window the thumb is yanked
- * back to where the drag started, by our own seek. */
+/* How long after a commit the thumb keeps its own value. */
 const SETTLE_MS = 400;
 /* keyup is unreliable when focus moves during a key repeat, so a held arrow
  * also releases on idle rather than hanging the guard open for ever. */
@@ -122,10 +103,8 @@ export function createSlider({
 		if (detent !== null) {
 			const at = span > 0 ? clamp01((detent - min) / span) : 0.5;
 			root.style.setProperty('--rs-detent-at', String(at));
-			// A band cut to -6 is not "less full", it is negative — so the fill
-			// starts at the detent and runs toward the thumb, in either
-			// direction. translate-then-scale is what expresses that with one
-			// composited transform; scaleX alone can only grow from an edge.
+			// A band cut to -6 is not "less full", it is negative — so the fill starts at the detent and
+			// runs toward the thumb, in either direction.
 			root.style.setProperty('--rs-from', String(Math.min(ratio, at)));
 			root.style.setProperty('--rs-span', String(Math.abs(ratio - at)));
 		}
@@ -168,11 +147,8 @@ export function createSlider({
 		feel(before, current);
 	}
 
-	/* Haptics fire for a committed gesture whose result is off-screen, never for
-	 * a value the user is watching change — so there is no per-step tick on a
-	 * drag. These two are the exceptions because both are *mode* changes rather
-	 * than value changes, and both are stateless crossing tests: entering only,
-	 * once, however many frames the crossing took. */
+	/* Haptics fire for a committed gesture whose result is off-screen, never for a value the user is
+	 * watching change — so there is no per-step tick on a drag. */
 	function feel(before, after) {
 		if (!haptic) return;
 		// The one value in an EQ worth feeling is the one you are trying to

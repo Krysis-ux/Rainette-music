@@ -47,10 +47,8 @@ export function startEventLoop() {
 					onAuthLost(error);
 					return;
 				}
-				// A flat retry hammered a computer that was simply gone, and on
-				// a phone that is battery the user can feel. Backing off with
-				// jitter also stops two phones waking together from arriving at
-				// the tunnel in lockstep.
+				// A flat retry hammered a computer that was simply gone, and on a phone that is battery the
+				// user can feel.
 				onStatus('', 'Reconnecting…');
 				await new Promise(resolve => setTimeout(resolve, backoffDelay(attempt)));
 				attempt += 1;
@@ -59,11 +57,7 @@ export function startEventLoop() {
 	})();
 }
 
-/** Abandon the in-flight poll and start a fresh one immediately.
- *
- *  A poll that was suspended mid-flight while the phone slept is not going to
- *  answer; waiting out its timeout is the difference between a session that
- *  resumes when you look at it and one that resumes a minute later. */
+/** Abandon the in-flight poll and start a fresh one immediately. */
 export function restartEventLoop() {
 	if (!state.connected) return;
 	stopEventLoop();
@@ -82,18 +76,12 @@ function handleEvent(message) {
 			acceptTransfer(message);
 			return;
 
-		/* The computer driving this phone's playback. Without this case the
-		 * message fell through to `default:` and was dropped, so pressing pause
-		 * on the desktop could never stop a phone — not because the routing was
-		 * wrong, but because nothing here was listening. */
+		/* The computer driving this phone's playback. */
 		case 'music_remote_control':
 			applyRemoteVerb(message);
 			return;
 
-		/* Who owns the audio. Fans out to every paired device rather than to
-		 * one session, because a phone showing "playing on the computer" has to
-		 * stop saying that the moment another device takes over — and it cannot
-		 * learn that from its own session's events. */
+		/* Who owns the audio. */
 		case 'music_playback_target':
 			absorbPlaybackTarget(message);
 			return;
@@ -113,10 +101,8 @@ function handleEvent(message) {
 			notifyPlayerChanged();
 			return;
 
-		/* The desktop broadcasts a command's result to every paired device as well
-		 * as answering the caller over HTTP, so this arrives for work this phone
-		 * asked for. Render what it carries; re-issuing the command here would
-		 * produce another result, and the two would chase each other forever. */
+		/* The desktop broadcasts a command's result to every paired device as well as answering the
+		 * caller over HTTP, so this arrives for work this phone asked for. */
 		case 'music_library_index_result':
 			if (message.ok !== false && Array.isArray(message.tracks || message.items)) {
 				state.library = message.tracks || message.items;
@@ -134,11 +120,7 @@ function handleEvent(message) {
 	}
 }
 
-/* The desktop's session, as this phone sees it while linked.
- *
- * Playback the phone itself caused comes back through the same channel, so
- * state that says it came from a phone output is ignored: adopting it would
- * make the phone a mirror of its own echo. */
+/* The desktop's session, as this phone sees it while linked. */
 function absorbRemoteState(message) {
 	if (!state.linked) return;
 	if (String(message.output_device_id || 'desktop') !== 'desktop') return;

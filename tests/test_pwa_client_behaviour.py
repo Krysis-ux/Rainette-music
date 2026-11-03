@@ -1,11 +1,4 @@
-"""The phone client, driven in a real browser against a fake computer.
-
-The fake answers a command over HTTP *and* echoes the same result back on the
-event stream, which is what the desktop genuinely does — every catalog result
-fans out to all paired devices, including the one that asked. Reproducing that
-here is the point: the client used to answer each echo with a fresh request and
-repaint the list forever.
-"""
+"""The phone client, driven in a real browser against a fake computer."""
 
 import json
 
@@ -47,10 +40,7 @@ class QuietStaticHandler(SimpleHTTPRequestHandler):
 
 class QuietThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
-    # The page opens ~40 ES modules at once. socketserver's default backlog of
-    # 5 overflows, macOS resets a connection, and a module that never arrives
-    # leaves the app unbooted with no page error -- a timeout in whichever test
-    # drew it. That was this suite's intermittent failure, not the app.
+    # The page opens ~40 ES modules at once.
     request_queue_size = 128
 
 
@@ -290,13 +280,7 @@ class TestLibraryDoesNotThrash:
 
 
 class TestArtistLinks:
-    """The artist name is a control everywhere it appears, not just on the card.
-
-    Two things have to be true at once, and they pull against each other: the
-    whole row plays the track, and the name inside it goes to the artist. Get
-    the stacking wrong and either the link is unreachable or it swallows the
-    tap that should have started the song.
-    """
+    """The artist name is a control everywhere it appears, not just on the card."""
 
     def test_the_row_plays_and_the_name_inside_it_does_not(self, browser, static_server):
         computer = FakeComputer()
@@ -387,12 +371,7 @@ class TestTransport:
         page.close()
 
     def test_changing_track_quickly_does_not_raise_a_playback_error(self, browser, static_server):
-        """Tapping a second song before the first starts is not a failure.
-
-        `audio.play()` rejects with AbortError whenever a new load supersedes a
-        pending play, which is exactly what a second tap does. Reporting it put
-        a red toast on screen for a song that then played perfectly well.
-        """
+        """Tapping a second song before the first starts is not a failure."""
         computer = FakeComputer()
         page, errors = open_phone(browser, static_server, computer)
         page.locator("#appView").wait_for(state="visible")
@@ -400,10 +379,8 @@ class TestTransport:
         row = page.locator("#recentList .track").first
         row.wait_for(state="visible")
 
-        # The race needs a play() that is still pending when the next load
-        # lands, and against a fake computer that answers instantly it never is.
-        # So the rejection itself is staged: this is precisely what the browser
-        # hands back when a second tap supersedes the first.
+        # The race needs a play() that is still pending when the next load lands, and against a fake
+        # computer that answers instantly it never is.
         page.evaluate(
             """() => {
                 const audio = window.__rainetteAudio;
@@ -504,24 +481,11 @@ class TestBackgroundPlayback:
 
 
 class TestAudioSessionCategory:
-    """The Home Screen app has to declare itself a music player, not a page.
-
-    Installed to the Home Screen, the same client that plays perfectly in a
-    Safari tab stopped the instant the phone was locked or switched away from.
-    The cause is not the code that plays -- it is what the app declared its
-    audio to *be*: `navigator.audioSession.type` defaults to `auto`, `auto`
-    resolves to ambient, and iOS silences ambient audio the moment the app is
-    no longer frontmost. A Safari tab is exempt only because Safari itself owns
-    a real playback session the page borrows.
-    """
+    """The Home Screen app has to declare itself a music player, not a page."""
 
     def test_nothing_is_declared_before_any_audio_plays(self, browser, static_server):
-        """Playback must never be gated on an iOS call we cannot test.
-
-        Declaring the session up front would mean a session iOS refuses takes
-        the music with it. Declared after `playing`, the worst case is that
-        background playback is no better than before -- a bug, not a silence.
-        """
+        """Playback must never be gated on an iOS call we cannot test. Declaring the session up
+        front would mean a session iOS refuses takes the music with it."""
         computer = FakeComputer()
         page, errors = open_phone(browser, static_server, computer, standalone=True)
         page.locator("#appView").wait_for(state="visible")
@@ -549,13 +513,8 @@ class TestAudioSessionCategory:
         page.close()
 
     def test_the_session_is_written_once_and_not_per_track(self, browser, static_server):
-        """Once, not before every play.
-
-        An earlier version re-asserted the category immediately before every
-        `audio.play()`. Mutating an audio session at the exact moment playback
-        starts is a way to interrupt it, not a way to be safe. A sentinel set
-        after the first track proves the second does not write again.
-        """
+        """Once, not before every play. An earlier version re-asserted the category immediately
+        before every `audio.play()`."""
         computer = FakeComputer()
         page, errors = open_phone(browser, static_server, computer, standalone=True)
         page.locator("#appView").wait_for(state="visible")
@@ -579,14 +538,8 @@ class TestAudioSessionCategory:
         page.close()
 
     def test_a_tab_gets_the_session_too(self, browser, static_server):
-        """Not only the Home Screen app.
-
-        This was briefly scoped to standalone, as the smallest fix for the
-        background-playback bug. It cannot stay that way: the same session is
-        what keeps a Web Audio graph alive in the background, and that graph is
-        the phone's volume control. A tab without it would mean a slider that
-        silently costs background playback -- the exact bug this replaced.
-        """
+        """Not only the Home Screen app. This was briefly scoped to standalone, as the smallest fix
+        for the background-playback bug."""
         computer = FakeComputer()
         page, errors = open_phone(browser, static_server, computer)
         page.locator("#appView").wait_for(state="visible")
@@ -599,20 +552,7 @@ class TestAudioSessionCategory:
 
     def test_the_volume_slider_returns_where_the_session_keeps_a_graph_alive(
             self, browser, static_server):
-        """The iPhone volume slider, and why it is a capability check.
-
-        It was removed because a Web Audio graph -- the only volume iOS honours
-        -- was suspended whenever the page was hidden, so the control that
-        carried volume also stopped the music on lock. WebKit fixed that (bug
-        261554, iOS 17.5): a graph survives backgrounding under a declared
-        playback session.
-
-        So the gate is "can this engine hold a playback session", not "is this
-        iOS". Hardcoding the platform was true when written, stopped being
-        true, and nothing would have noticed -- the same shape as pinning a
-        yt-dlp player client. This test pins the *capability*, on a page
-        pretending to be an iPhone.
-        """
+        """The iPhone volume slider, and why it is a capability check."""
         computer = FakeComputer()
         page = browser.new_page(viewport={"width": 390, "height": 844})
         page.set_default_timeout(8_000)
@@ -659,12 +599,8 @@ class TestAudioSessionCategory:
 
     def test_no_slider_and_no_essay_where_a_graph_would_cost_playback(
             self, browser, static_server):
-        """Remove it completely rather than explain it.
-
-        Where no slider can work, the row is hidden. A paragraph about audio
-        graphs in the middle of a now-playing card is worse than the space it
-        fills, and the hardware buttons need no instructions.
-        """
+        """Remove it completely rather than explain it. Where no slider can work, the row is
+        hidden."""
         computer = FakeComputer()
         page = browser.new_page(viewport={"width": 390, "height": 844})
         page.set_default_timeout(8_000)
@@ -752,16 +688,7 @@ class TestAudioSessionCategory:
 
 
 class TestCarTransportCommands:
-    """A car states an intent; answering it with a flip is an oscillator.
-
-    CarPlay sends the absolute verb -- `play`, `pause` -- and re-sends it
-    whenever its own view of the phone disagrees, which is often. Both action
-    handlers used to call `toggle()`. So `play` arriving while playing paused
-    the music, the car saw paused and sent `play` again, and the result was a
-    second of music and a second of silence for the whole song, on CarPlay
-    only. Bluetooth never drives the session this way; it just carries audio,
-    which is why it was fine.
-    """
+    """A car states an intent; answering it with a flip is an oscillator."""
 
     def _play_first_track(self, page):
         page.locator("#appView").wait_for(state="visible")
@@ -845,13 +772,7 @@ class TestCarTransportCommands:
 
 
 class TestDownloadedMusicWithoutPairing:
-    """Downloads are on the phone, so the pairing screen must not gate them.
-
-    A downloaded track plays from a blob in this phone's own storage and never
-    touches the network. Requiring a pairing first was a gate with nothing
-    behind it, and it bit hardest exactly when the computer was off or
-    unreachable -- the moment the downloads exist for.
-    """
+    """Downloads are on the phone, so the pairing screen must not gate them."""
 
     def _unpaired_phone(self, browser, base_url):
         page = browser.new_page(viewport={"width": 390, "height": 844})
@@ -924,15 +845,7 @@ class TestDownloadedMusicWithoutPairing:
 
 
 class TestDownloadsSurviveABadLink:
-    """A download must finish over the ordinary tunnel, on a link that drops.
-
-    This is the WAN path -- the default, and what most people use. `fetch` has
-    no timeout, so a connection that dies mid-transfer used to leave the read
-    hanging forever with no error: the download sat at whatever percentage it
-    had reached, including 0%, until the app was closed. Resuming matters as
-    much as retrying, because restarting a whole track on a metered link is how
-    a download never finishes at all.
-    """
+    """A download must finish over the ordinary tunnel, on a link that drops."""
 
     def _phone_with_flaky_network(self, browser, base_url, computer):
         page = browser.new_page(viewport={"width": 390, "height": 844})
@@ -1171,11 +1084,7 @@ class TestPlayingFromAnArtistPage:
 
     @staticmethod
     def _player_on_top(page):
-        """Is the mini bar the thing under your thumb, or is a sheet over it?
-
-        `is_visible` only reports layout, and the bar stays laid out behind a
-        sheet — so it answers True for a bar nobody can see or tap.
-        """
+        """Is the mini bar the thing under your thumb, or is a sheet over it?"""
         return page.evaluate(
             """() => {
                 const bar = document.querySelector('#player');

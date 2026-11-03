@@ -1,14 +1,5 @@
-/* Velocity handoff. A gesture that ends does not stop — it continues into an
- * animation that started at the speed the finger was moving. That continuity is
- * the difference between "the sheet I threw" and "an animation that played
- * after I let go", and no CSS easing can express it: a keyframe always starts
- * from a standstill.
- *
- * Critically damped by default: it settles without overshoot, because a sheet
- * that bounces past its resting place reads as a toy rather than a surface.
- *
- * This module drives requestAnimationFrame, which is invisible to both CSS
- * reduced-motion layers, so it answers motionOff() itself — see dom.js:30. */
+/* Velocity handoff. A gesture that ends does not stop — it continues into an animation that
+ * started at the speed the finger was moving. */
 
 import { motionOff } from './dom.js';
 
@@ -23,17 +14,7 @@ const MAX_FRAME_MS = 32;
 /* Sub-stepping keeps semi-implicit Euler stable at the stiffnesses we use. */
 const SUB_STEP_MS = 4;
 
-/**
- * Integrate `from` → `to`, entering at `velocity` (px/ms, sign-consistent with
- * `to - from`). `onFrame(value, velocity)` runs every frame; `onDone(settled)`
- * runs once, with `false` when the motion was cancelled.
- *
- * Returns `cancel()`, which stops the motion and hands back its live
- * `{ value, velocity }` so a new gesture can pick the movement up mid-flight
- * instead of waiting it out. That return value **is** the interruptibility
- * mechanism; a cancel that returns nothing forces the next gesture to either
- * restart from zero or sit out the animation.
- */
+/** Integrate `from` → `to`, entering at `velocity` (px/ms, sign-consistent with `to - from`). */
 export function spring(from, to, velocity = 0, {
 	stiffness = 210,
 	damping = 28,
@@ -79,11 +60,7 @@ export function spring(from, to, velocity = 0, {
 			return;
 		}
 		onFrame?.(x, v);
-		// A caller may cancel from inside its own onFrame. Without this the
-		// next frame is queued anyway and the motion runs to completion after
-		// having already reported itself cancelled — two onDone calls, and a
-		// cancel handle that later reports the target instead of where the
-		// motion actually stopped.
+		// A caller may cancel from inside its own onFrame.
 		if (finished) return;
 		raf = requestAnimationFrame(step);
 	};

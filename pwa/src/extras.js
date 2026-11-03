@@ -9,6 +9,7 @@ import { command, commandError } from './bridge.js';
 import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
 import { playlistChoices, addTrackToPlaylist, isLocalPlaylist, createLocalPlaylist } from './playlists.js';
 import { trackDownloadItems } from './downloadmenu.js';
+import { nativeAvailable, nativeOutputs, nativePickOutput, nativeShowOutputs, onNativeRoute } from './native-engine.js';
 import {
 	queueAddNext, queueAddEnd, isPlaying, toggle, playTrack, pauseLocal, localSession,
 	currentTrack, currentTime, seekTo, subscribe,
@@ -43,7 +44,6 @@ export async function openAddToPlaylist(track) {
 	items.push({
 		id: 'new',
 		label: hasComputer() ? 'New playlist on this phone' : 'New playlist',
-		hint: 'Kept here, works offline',
 		icon: 'plus',
 		run: () => openNewLocalPlaylist(track),
 	});
@@ -137,9 +137,8 @@ function openNewPlaylist(track) {
 }
 
 /* ── Lyrics ────────────────────────────────────────────────────────────────
- * From LRCLIB, through the computer when one is paired and by the app itself
- * when not (ytmusic.js). When a timed LRC comes back the sheet follows the
- * song and a tapped line seeks. */
+ * From LRCLIB, through the computer when one is paired and by the app itself when not
+ * (ytmusic.js). */
 
 /** Parse LRC ("[mm:ss.xx]text", repeated tags for a chorus) into timed lines. */
 function parseSyncedLyrics(lrc) {
@@ -332,14 +331,48 @@ export async function openSleepTimer() {
 }
 
 /* ── Play on ───────────────────────────────────────────────────────────────
- * Picking a device here moves the music to it. The old version only changed
- * which device this phone was watching, so every row except the one already
- * playing appeared to do nothing. */
+ * Picking a row moves the music there: this phone, a Bluetooth or wired device
+ * on it, or the computer. */
 
 const OUTPUT_ICONS = {
-	bluetooth: 'bluetooth', headphones: 'headphones', builtin: 'laptop',
-	hdmi: 'speaker', airplay: 'speaker', usb: 'speaker', virtual: 'speaker',
+	bluetooth: 'bluetooth', headphones: 'headphones', builtin: 'laptop', speaker: 'phone',
+	hdmi: 'speaker', airplay: 'speaker', usb: 'speaker', car: 'speaker', virtual: 'speaker',
 };
+
+/* The phone's current output, kept fresh by the native route events. */
+let phoneRoute = null;
+
+/** The name of where this phone's sound is going, e.g. "AirPods Pro". */
+export function phoneOutputName() {
+	return phoneRoute?.current?.kind && phoneRoute.current.kind !== 'speaker' ? phoneRoute.current.name : '';
+}
+
+export function phoneOutputKind() {
+	return phoneRoute?.current?.kind || 'speaker';
+}
+
+async function readPhoneRoute() {
+	if (!nativeAvailable()) return null;
+	try {
+		phoneRoute = await nativeOutputs();
+	} catch {
+		phoneRoute = null;   // an older app without outputs
+	}
+	return phoneRoute;
+}
+
+const routeWatchers = new Set();
+
+if (nativeAvailable()) {
+	onNativeRoute(route => { phoneRoute = route; for (const listener of routeWatchers) listener(); });
+	readPhoneRoute();
+}
+
+/** Repaint `listener` when the phone's output changes. */
+export function watchPhoneRoute(listener) {
+	routeWatchers.add(listener);
+	return () => routeWatchers.delete(listener);
+}
 
 /* Take the computer's session over at the point it reached, then silence the
  * computer — in that order, so a phone that cannot load the track leaves the
@@ -395,49 +428,82 @@ async function playOnComputer() {
 }
 
 export async function openOutputPicker() {
-	let devices = [];
-	try {
-		const result = await command('music_output_devices', {}, 8000);
-		devices = Array.isArray(result?.devices) ? result.devices : [];
-	} catch { /* the list is a convenience; the two rows below always work */ }
+	const [devices, route] = await Promise.all([
+		hasComputer()
+			? command('music_output_devices', {}, 8000).then(result => (Array.isArray(result?.devices) ? result.devices : [])).catch(() => [])
+			: Promise.resolve([]),
+		readPhoneRoute(),
+	]);
 
 	const computer = state.computerName || 'Your computer';
 	const onPhone = !state.linked;
+	const items = [];
 
-	const items = [{
-		id: 'phone',
-		label: 'This phone',
-		icon: 'phone',
-		hint: onPhone ? 'Playing here' : '',
-		active: onPhone,
-		run: () => playOnThisPhone(),
-	}, {
-		id: 'desktop',
-		label: computer,
-		icon: 'laptop',
-		hint: onPhone ? '' : 'Playing here',
-		active: !onPhone,
-		run: () => playOnComputer(),
-	}];
-
-	for (const device of devices) {
-		if (device.kind === 'builtin') continue;   // the computer row already is this
+	// This phone's own outputs. With none reported, one plain row.
+	const outputs = Array.isArray(route?.devices) && route.devices.length ? route.devices : [{ id: '', name: 'This phone', kind: 'speaker', active: true }];
+	for (const device of outputs) {
+		const here = onPhone && device.active;
 		items.push({
-			id: device.id,
-			label: device.name,
+			id: `phone:${device.id}`,
+			label: device.kind === 'speaker' ? 'This phone' : device.name,
 			icon: OUTPUT_ICONS[device.kind] || 'speaker',
-			hint: device.is_default ? `In use on ${computer}` : `Plugged into ${computer}`,
-			// Which speaker the computer uses is a system-level choice there, so
-			// this follows the computer and says where the rest of it happens
-			// rather than silently doing nothing.
-			run: () => {
-				setLinked(true);
-				toast(`Following ${computer} — pick the speaker there`, { icon: 'laptop' });
+			hint: device.kind === 'bluetooth' ? 'Bluetooth' : '',
+			active: here,
+			run: async () => {
+				if (!onPhone) await playOnThisPhone();
+				if (!device.active) {
+					// iPhone shows routes but only its own picker can change them.
+					const move = route?.can_pick ? nativePickOutput(device.id) : nativeShowOutputs();
+					await move.catch(() => toast('That device didn’t take it.', { icon: 'close' }));
+				}
+				readPhoneRoute();
 			},
 		});
 	}
 
-	await actionSheet({ title: 'Play on', items });
+	if (hasComputer()) {
+		items.push({
+			id: 'desktop',
+			label: computer,
+			icon: 'laptop',
+			active: !onPhone,
+			run: () => playOnComputer(),
+		});
+		for (const device of devices) {
+			if (device.kind === 'builtin') continue;   // the computer row already is this
+			items.push({
+				id: device.id,
+				label: device.name,
+				icon: OUTPUT_ICONS[device.kind] || 'speaker',
+				hint: device.is_default ? `On ${computer}` : computer,
+				// The computer picks its speaker at system level, so follow it and say so.
+				run: () => {
+					setLinked(true);
+					toast(`Following ${computer}. Pick the speaker there.`, { icon: 'laptop' });
+				},
+			});
+		}
+	}
+
+	if (nativeAvailable()) {
+		const ios = globalThis.Capacitor?.getPlatform?.() === 'ios';
+		items.push({
+			id: 'more',
+			label: ios ? 'Bluetooth and AirPlay…' : 'Connect a device…',
+			icon: 'bluetooth',
+			run: () => nativeShowOutputs().catch(() => toast('Open Bluetooth in your phone’s settings.', { icon: 'bluetooth' })),
+		});
+	}
+
+	await actionSheet({
+		title: 'Play on',
+		items,
+		help: [
+			['This phone', 'Bluetooth headphones, speakers and cars connected to this phone show up here.'],
+			['Your computer', 'Moves the music to Rainette on your computer, at the same point in the song.'],
+			['Connect a device', 'Opens your phone’s own device list to pair or pick something new.'],
+		],
+	});
 }
 
 /* Linked mode is what "synced with the computer" actually is: the phone stops
@@ -459,9 +525,8 @@ export function setLinked(linked) {
 }
 
 /* ── Track overflow menu ───────────────────────────────────────────────────
- * Reachable from the now-playing card and from a press-and-hold on any row,
- * which is what makes an artist reachable from every list in the app rather
- * than only from a search result. */
+ * Reachable from the now-playing card and from a press-and-hold on any row, which is what makes an
+ * artist reachable from every list in the app rather than only from a search result. */
 
 export async function openTrackMenu(track, list = []) {
 	const artist = trackArtist(track);

@@ -807,10 +807,7 @@ function readAtSize(bits, width, height, { topLeft, topRight, bottomLeft }, size
 		topRight.y + bottomLeft.y - topLeft.y,
 	];
 
-	/* Two readings of the fourth corner. The alignment pattern is the accurate
-	 * one when the code is tilted, but a bullseye picked out of background clutter
-	 * is worse than none, so the plain estimate stays as a fallback rather than
-	 * being replaced by it. */
+	/* Two readings of the fourth corner. */
 	const attempts = [{
 		from: [3.5, 3.5, size - 3.5, 3.5, size - 3.5, size - 3.5, 3.5, size - 3.5],
 		corner: estimate,

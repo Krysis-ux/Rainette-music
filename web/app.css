@@ -1,7 +1,5 @@
-/* Standalone-app overrides.
-
-   Rainette Music is a full-window application, so the
-   page fills the window and the body carries the base surface. */
+/* Standalone-app overrides. Rainette Music is a full-window application, so the page fills the
+   window and the body carries the base surface. */
 
 html, body {
 	height: 100%;

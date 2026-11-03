@@ -1,16 +1,4 @@
-/* The native Mac app's look, for the desktop window (Windows, and the Mac's
-   Classic Interface).
-
-   The Mac app (macos/) is SwiftUI; this window is the same product drawn in a
-   web view, so it borrows the Mac app's rules rather than its code: system
-   greys and system blue (rainette_tokens.css), a sidebar of glyphs grouped
-   under quiet headings, a large-title header, frameless artwork cards whose
-   controls appear on hover, a floating glass player bar, and Now Playing drawn
-   over the song's own artwork.
-
-   Loaded after rainette_pages.css and app.css, and kept to one file on
-   purpose: everything here is a restyle of something that already exists, so
-   removing the <link> brings the previous look back whole. */
+/* The native Mac app's look, for the desktop window (Windows, and the Mac's Classic Interface). */
 
 /* ── Ground ───────────────────────────────────────────────────────────── */
 
@@ -32,9 +20,8 @@
 #rwMusicPage ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--rw-text) 36%, transparent); }
 
 /* ── Shell ────────────────────────────────────────────────────────────────
-   The sidebar runs the full height and the player bar belongs to the content
-   column, as on the Mac. The bar still owns a real grid row, so nothing can
-   end up underneath it. */
+   The sidebar runs the full height and the player bar belongs to the content column, as on the
+   Mac. */
 
 @media (min-width: 901px) {
 	.rw-music-shell {
@@ -262,7 +249,9 @@
 	transition: transform 240ms var(--rw-spring), box-shadow 240ms var(--rw-ease);
 }
 
-#rwMusicPage .rw-artist-card .rw-track-thumb { border-radius: 50%; }
+#rwMusicPage .rw-artist-card .rw-track-thumb,
+#rwMusicPage .rw-artist-thumb { border-radius: 50%; overflow: hidden; }
+#rwMusicPage .rw-detail-head .rw-artist-thumb { flex: none; width: 56px; height: 56px; }
 
 #rwMusicPage .rw-track-list.layout-grid .rw-track-card:hover .rw-track-thumb {
 	transform: scale(1.015);

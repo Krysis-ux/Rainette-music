@@ -79,7 +79,7 @@ final class NowPlaying {
     }
     #endif
 
-    func update(_ song: QueueItem?, _ state: PlayerSnapshot) {
+    func update(_ song: QueueItem?, _ state: PlayerSnapshot, rate: Double = 1) {
         let center = MPNowPlayingInfoCenter.default()
         guard let song else {
             center.nowPlayingInfo = nil
@@ -90,7 +90,7 @@ final class NowPlaying {
             MPMediaItemPropertyArtist: song.artist,
             MPMediaItemPropertyPlaybackDuration: state.durationS,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: state.positionS,
-            MPNowPlayingInfoPropertyPlaybackRate: state.playing && !state.loading ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyPlaybackRate: state.playing && !state.loading ? rate : 0.0,
         ]
         if artworkFor == song.thumbnailURL, let artwork { info[MPMediaItemPropertyArtwork] = artwork }
         center.nowPlayingInfo = info

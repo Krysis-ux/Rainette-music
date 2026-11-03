@@ -57,20 +57,16 @@ private struct GeneralSettings: View {
                 }
             } header: {
                 Text("Sound Effects")
-            } footer: {
-                Text("Soft clicks when you press play, skip, or add a song. They follow the volume above, not your music.")
-                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section {
                 LabeledContent("Classic interface") {
                     Button("Relaunch in Classic") { ClassicInterface.relaunchClassic() }
                 }
-            } header: {
-                Text("Interface")
-            } footer: {
-                Text("Opens the previous interface once. Rainette returns to this one the next time it starts.")
-                    .font(.footnote).foregroundStyle(.secondary)
             }
+            HelpFooter([
+                ("Sound effects", "Soft clicks when you press play, skip, or add a song. They follow their own volume, not your music."),
+                ("Classic interface", "Opens the previous interface once. Rainette returns to this one the next time it starts."),
+            ])
         }
         .formStyle(.grouped)
         .frame(width: 480)
@@ -85,14 +81,12 @@ private struct PlaybackSettings: View {
 
     var body: some View {
         Form {
-            Toggle(isOn: $fade) {
-                Text("Fade on play and pause")
-                Text("A short volume ramp instead of a hard stop.")
-            }
-            Toggle(isOn: $autoplay) {
-                Text("Keep playing similar music")
-                Text("When the queue runs out, Rainette starts a mix from the last song.")
-            }
+            Toggle("Fade on play and pause", isOn: $fade)
+            Toggle("Autoplay similar", isOn: $autoplay)
+            HelpFooter([
+                ("Fade", "A short volume ramp instead of a hard stop."),
+                ("Autoplay similar", "When the queue runs out, Rainette starts a mix from the last song."),
+            ])
         }
         .formStyle(.grouped)
         .frame(width: 480)
@@ -117,7 +111,7 @@ private struct PhoneSettings: View {
                     }
                 }
                 if let provider = phone.providers.first(where: { $0.id == phone.selectedProvider }), !provider.description.isEmpty {
-                    Text(provider.description).font(.callout).foregroundStyle(.secondary)
+                    HStack { Spacer(); HelpButton(text: provider.description) }
                 }
                 if !phone.stabilityMessage.isEmpty {
                     Label(phone.stabilityMessage, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
@@ -370,5 +364,40 @@ private struct UpdateSettings: View {
             // The engine quitting to install the update ends this loop too.
             if progress["phase"].text != "installing" { self.error = error.localizedDescription }
         }
+    }
+}
+
+// MARK: - Help
+
+/// A "?" that shows an explanation in a popover.
+@available(macOS 14, *)
+private struct HelpButton: View {
+    let text: String
+    @State private var shown = false
+
+    var body: some View {
+        Button { shown.toggle() } label: { Image(systemName: "questionmark.circle") }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Help")
+            .popover(isPresented: $shown, arrowEdge: .bottom) {
+                Text(text).font(.callout).frame(width: 280, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true).padding(14)
+            }
+    }
+}
+
+/// The explanations for a settings tab, behind one "?" at its foot.
+@available(macOS 14, *)
+private struct HelpFooter: View {
+    let entries: [(String, String)]
+    init(_ entries: [(String, String)]) { self.entries = entries }
+
+    var body: some View {
+        HStack {
+            Spacer()
+            HelpButton(text: entries.map { "\($0.0): \($0.1)" }.joined(separator: "\n\n"))
+        }
+        .listRowBackground(Color.clear)
     }
 }

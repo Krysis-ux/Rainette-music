@@ -1,13 +1,5 @@
-/* Themes, accents, and the handful of preferences that change how the app
- * behaves rather than what it shows.
- *
- * The four themes and three accents are the desktop's, by the same names and
- * the same ids, so a phone and the computer it pairs with can be set to look
- * like each other rather than merely similar.
- *
- * Everything here is read at boot and applied before the first paint, because a
- * theme that arrives a frame late is a flash of the wrong one.
- */
+/* Themes, accents and behaviour preferences.
+ * Applied at import, before the first paint, so a theme never flashes in late. */
 
 import { STORAGE } from './state.js';
 
@@ -25,6 +17,7 @@ export const ACCENTS = [
 	{ id: 'purple', label: 'Purple' },
 	{ id: 'amber', label: 'Amber' },
 	{ id: 'rose', label: 'Rose' },
+	{ id: 'silver', label: 'Silver' },
 ];
 
 const THEME_IDS = THEMES.map(theme => theme.id);
@@ -67,10 +60,8 @@ export function applyTheme(theme) {
 	root.style.colorScheme = id === 'light' ? 'light' : 'dark';
 	const meta = document.querySelector('meta[name="theme-color"]');
 	if (meta) meta.setAttribute('content', THEME_COLOR[id] || THEME_COLOR.midnight);
-	// In the Android app the status bar sits over the page (newer WebViews) or
-	// over the window behind it (older ones). Both, and the icons on them, follow
-	// the theme, or the clock vanishes into the background. Through the bridge
-	// directly: this module stays a leaf, and in a browser nothing happens.
+	// In the Android app the status bar sits over the page (newer WebViews) or over the window behind
+	// it (older ones).
 	try {
 		const cap = globalThis.Capacitor;
 		if (cap?.isPluginAvailable?.('SystemBars')) {
@@ -92,9 +83,7 @@ export function applyAccent(accent) {
 }
 
 /* ── Preferences ──────────────────────────────────────────────────────────
- * One object, one storage key. Each entry names its default, so a preference
- * added later is simply absent from an existing user's stored copy and falls
- * back rather than reading as `undefined` somewhere far away. */
+ * One object, one storage key. */
 
 export const DEFAULTS = {
 	/* Where the app opens. "Wherever I was" is not offered: a music app that
@@ -117,6 +106,21 @@ export const DEFAULTS = {
 	history: true,
 	/* Artwork resolution for artists costs a request per new name. */
 	artistArtwork: true,
+	/* Streaming quality on the phone: 'high' or 'saver'. */
+	quality: 'high',
+	/* Playback speed. */
+	rate: 1,
+	/* Android only: drop silent stretches. */
+	skipSilence: false,
+	/* Brushed-silver large titles. */
+	silver: true,
+	/* Frosted glass behind bars and sheets; off is faster on old phones. */
+	glass: true,
+	/* Developer: animation speed multiplier and tighter rows. */
+	motionScale: 1,
+	compact: false,
+	/* Developer: the catalog region YouTube Music answers for. */
+	region: 'US',
 };
 
 let cache = null;
@@ -150,7 +154,7 @@ export function setPref(name, value) {
 	const all = { ...readAll(), [name]: value };
 	cache = all;
 	try { localStorage.setItem(STORAGE.prefs, JSON.stringify(all)); } catch { /* quota */ }
-	if (name === 'reduceMotion' || name === 'haptics') applyMotion();
+	if (LOOK_KEYS.has(name)) applyMotion();
 	onPrefChanged(name);
 	return value;
 }
@@ -179,11 +183,18 @@ export function importPrefs(payload) {
 
 /* The preference and the OS setting are the same switch as far as the app is
  * concerned: either one turns the animations off. dom.js reads the class. */
+const LOOK_KEYS = new Set(['reduceMotion', 'haptics', 'swipeActions', 'silver', 'glass', 'motionScale', 'compact']);
+
 function applyMotion() {
 	const root = document.documentElement;
 	root.classList.toggle('reduce-motion', pref('reduceMotion') === true);
 	root.classList.toggle('no-haptics', pref('haptics') === false);
 	root.classList.toggle('no-swipe-actions', pref('swipeActions') === false);
+	root.classList.toggle('silver-titles', pref('silver') !== false);
+	root.classList.toggle('no-glass', pref('glass') === false);
+	root.classList.toggle('compact', pref('compact') === true);
+	const scale = Number(pref('motionScale'));
+	root.style.setProperty('--motion-scale', String(scale > 0 && scale <= 3 ? scale : 1));
 }
 
 // Applied at import time, which is before the first paint, so the app never

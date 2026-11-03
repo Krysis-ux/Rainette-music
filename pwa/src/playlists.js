@@ -1,17 +1,4 @@
-/* Playlists you can actually change from the phone.
- *
- * Before this the client could create one and add a track to it, and that was
- * the whole of it — no rename, no reorder, no removal, no cover, no deletion.
- * Opening a playlist showed a list you could only read.
- *
- * Two kinds live here and they behave the same way on screen:
- *
- *  - The computer's playlists, edited through the companion commands that were
- *    already on its allow-list.
- *  - Playlists made on the phone, held on the phone. These are the only ones
- *    that can hold local files, since the computer has never seen those, and
- *    they work with no computer paired at all.
- */
+/* Playlists you can actually change from the phone. */
 
 import { el, icon, toast, flip, collapseAway, tap } from './dom.js';
 import { openSheet, actionSheet, confirmSheet } from './sheets.js';

@@ -190,15 +190,7 @@ def test_github_release_pipeline_splits_tests_platform_builds_and_publish_permis
 
 
 def test_macos_ships_a_signed_update_manifest_of_its_own():
-    """macOS updates itself, and the trust for that costs nothing from Apple.
-
-    The root of trust is the same Ed25519 manifest signature Windows uses, so
-    the macOS manifest must be signed by the same isolated job rather than
-    shipped unsigned -- an unsigned manifest is a file that only looks
-    meaningful.  Notarisation is a separate concern: it removes Gatekeeper's
-    prompt on a manual download and has no bearing on whether an update
-    verifies.
-    """
+    """macOS updates itself, and the trust for that costs nothing from Apple."""
     workflow = _release_workflow()
     macos_build_job = _workflow_job(workflow, "macos-build")
     windows_sign_job = _workflow_job(workflow, "windows-sign")
@@ -224,11 +216,7 @@ def test_macos_ships_a_signed_update_manifest_of_its_own():
 
 
 def test_macos_download_states_the_gatekeeper_step_it_requires():
-    """An unnotarized build is reported as damaged, which needs explaining.
-
-    Shipping it without the one command that clears quarantine leaves a user
-    with an app that appears broken and no way to tell that it is not.
-    """
+    """An unnotarized build is reported as damaged, which needs explaining."""
     publish_job = _workflow_job(_release_workflow(), "publish")
 
     assert "xattr -dr com.apple.quarantine" in publish_job
@@ -330,18 +318,7 @@ def test_github_actions_are_pinned_to_full_commit_shas():
 
 
 def test_dynamically_loading_packages_are_collected_on_both_platforms():
-    """Packages that import part of themselves at run time need --collect-all.
-
-    PyInstaller works from static analysis, so a package that reaches for its
-    own submodules from inside a function body is invisible to it. mutagen is
-    the sharp case behind this test: ``mutagen.File()`` imports twenty-odd
-    format handlers from within its own body, so a bundle missing them reads
-    tags perfectly in development and then returns None for every file once
-    packaged — a failure that only ever shows up in the shipped app.
-
-    Asserted for both builds together, because the two scripts are deliberately
-    separate and drift is the normal failure here.
-    """
+    """Packages that import part of themselves at run time need --collect-all."""
     windows = (ROOT / "release" / "build-windows-release.ps1").read_text(encoding="utf-8")
     macos = (ROOT / "release" / "build-macos-release.sh").read_text(encoding="utf-8")
 

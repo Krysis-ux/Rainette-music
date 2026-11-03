@@ -1,10 +1,4 @@
-/* Newer versions of the app itself. A sideloaded app has no store to tell it.
- *
- * Android downloads the release APK and opens the system's own "update this
- * app?" screen; Android always asks. A sideloaded iPhone app cannot install
- * itself, so there the same call opens the download page.
- * (RainettePlayerPlugin.installUpdate, on each.)
- * Asked at most every few hours, and "Not now" holds until the next version. */
+/* Newer versions of the app itself. A sideloaded app has no store to tell it. */
 
 import { toast } from './dom.js';
 import { confirmSheet } from './sheets.js';

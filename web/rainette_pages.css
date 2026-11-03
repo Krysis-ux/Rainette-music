@@ -1,17 +1,9 @@
-/* ==========================================================================
-   Rainette pages — full-page views for Chat, Coder, Memory, Webcam, Telegram.
-   Consumes only --rw-* tokens from rainette_tokens.css. The classic dark UI
-   keeps its own styles; these pages sit above it as route surfaces.
-   ========================================================================== */
+/* ========================================================================== Rainette pages —
+   full-page views for Chat, Coder, Memory, Webcam, Telegram. */
 
-/* The user agent's `[hidden] { display: none }` is a single-selector rule, so
-   any class here that sets `display` outranks it and `element.hidden = true`
-   quietly stops working — the element keeps its box, its padding and its
-   background, and paints as an empty card nobody asked for.
-
-   This had already been patched three separate times further down, once per
-   class that hit it (.rw-update-badge, .rw-command-palette, .rw-now-view).
-   Doing it once here ends the pattern instead of waiting for the fourth. */
+/* The user agent's `[hidden] { display: none }` is a single-selector rule, so any class here that
+   sets `display` outranks it and `element.hidden = true` quietly stops working — the element keeps
+   its box, its padding and its background, and paints as an empty card nobody asked for. */
 [hidden] { display: none !important; }
 
 /* ── Page shell ─────────────────────────────────────────────────────────── */
@@ -737,10 +729,8 @@ html.rw-reduced-motion .rw-kage-loader-orbit { opacity: .7; }
 .rw-pa-muted  .rw-pa-label, .rw-pa-muted  .rw-pa-icon { color: var(--rw-text-muted); }
 
 /* ── Chat/Coder "about to act" reasoning trace ─────────────────────────────
-   Only ever populated when the agent parses a real action out of a reply
-   (see rainette_agent.js's parseAgentActions) - empty and invisible for
-   plain conversational turns. Generalized from the PC Agent timeline above
-   for the smaller ~7-event vocabulary RainetteAgent emits. */
+   Only ever populated when the agent parses a real action out of a reply (see rainette_agent.js's
+   parseAgentActions) - empty and invisible for plain conversational turns. */
 .rw-trace-list {
 	display: flex; flex-direction: column; gap: 2px;
 	max-height: 160px; overflow-y: auto;
@@ -765,11 +755,9 @@ html.rw-reduced-motion .rw-kage-loader-orbit { opacity: .7; }
 @keyframes rwTraceIn { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: translateY(0); } }
 
 /* ── Custom select (CustomSelect / .rh-selectx) ──────────────────────────
-   Deliberately unscoped (no .rainette-page ancestor prefix): call sites
-   include modal dialogs (rainette_modal.js), which attach straight to
-   document.body outside .rainette-page, same reasoning as .rw-modal-backdrop
-   below. A scoped version silently lost all styling - including the
-   display:none default - inside those dialogs. */
+   Deliberately unscoped (no .rainette-page ancestor prefix): call sites include modal dialogs
+   (rainette_modal.js), which attach straight to document.body outside .rainette-page, same
+   reasoning as .rw-modal-backdrop below. */
 .rh-selectx { position: relative; display: inline-block; min-width: 150px; }
 .rh-selectx-button {
 	appearance: none; cursor: pointer; width: 100%;
@@ -798,14 +786,7 @@ html.rw-reduced-motion .rw-kage-loader-orbit { opacity: .7; }
 .rh-selectx.open .rh-selectx-button::after { transform: translateY(-30%) rotate(225deg); }
 .rh-selectx-list {
 	display: none;
-	/* position/left/top/width are computed and set inline by
-	   rainette_select.js's positionList(). Fixed positioning alone still gets
-	   clipped by an overflow:auto ancestor (e.g. the smart-playlist dialog) -
-	   an element stays clipped by a scrolling ancestor's box regardless of its
-	   own position value as long as it's still a DOM descendant of it. So
-	   openSelf() also reparents this to document.body while open, which is
-	   why visibility is keyed off a class on the list itself, not a
-	   .rh-selectx.open ancestor selector (that wouldn't match once detached). */
+	/* position/left/top/width are computed and set inline by rainette_select.js's positionList(). */
 	position: fixed; z-index: 2100;
 	max-height: 280px; overflow-y: auto;
 	background: var(--rw-surface-raised);
@@ -927,11 +908,10 @@ body.rw-page-open #infoPanel {
 	transition: width 0.25s linear;
 }
 .rw-update-badge.busy > * { position: relative; }
-/* [hidden] and .rw-update-badge are both single-selector (0,1,0) specificity,
-   so without this the unconditional `display: inline-flex` above wins the
-   cascade tie and the badge stays visible even with hidden=true - it showed
-   "Update available" permanently regardless of whether a real update existed.
-   [hidden] here is (0,2,0), so it always wins instead. */
+/* [hidden] and .rw-update-badge are both single-selector (0,1,0) specificity, so without this the
+   unconditional `display: inline-flex` above wins the cascade tie and the badge stays visible even
+   with hidden=true - it showed "Update available" permanently regardless of whether a real update
+   existed. */
 .rw-update-badge[hidden] { display: none; }
 .rw-update-dot {
 	width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
@@ -1632,6 +1612,13 @@ html.rw-reduced-motion .rw-now-art.rw-art-swap { animation: none; }
 .rw-settings-wrap { display: flex; flex-direction: column; gap: 14px; margin-top: 10px; overflow: visible; padding-bottom: 4px; }
 .rw-settings-card-title { margin: 0 0 2px; font-size: 15px; font-weight: 650; }
 .rw-settings-card-sub { margin: 0 0 14px; font-size: 12.5px; color: var(--rw-text-soft); }
+.rw-settings-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.rw-settings-help {
+	display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0;
+	border: 1px solid var(--rw-border); border-radius: 50%; background: none;
+	color: var(--rw-text-muted); font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.rw-settings-help:hover, .rw-settings-help[aria-expanded="true"] { color: var(--rw-text); border-color: var(--rw-text-muted); }
 .rw-settings-row {
 	display: flex; align-items: center; justify-content: space-between; gap: 16px;
 	padding: 12px 0;
@@ -1786,10 +1773,9 @@ html.rw-reduced-motion .rw-now-art.rw-art-swap { animation: none; }
 	cursor: grab; touch-action: none;
 }
 .rw-mp-grip:active { cursor: grabbing; }
-/* Themed circle + note-glyph fallback, mirroring miniplayer.html's
-   .mp-art-shell/.mp-note pattern — the art slot always stays occupied
-   (blank theme-color circle), never collapses to a broken-looking gap when
-   a track has no thumbnail. */
+/* Themed circle + note-glyph fallback, mirroring miniplayer.html's .mp-art-shell/.mp-note pattern
+   — the art slot always stays occupied (blank theme-color circle), never collapses to a
+   broken-looking gap when a track has no thumbnail. */
 .rw-mp-art-shell {
 	position: relative; display: grid; place-items: center;
 	width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
@@ -1890,11 +1876,8 @@ html.rw-reduced-motion .rw-now-art.rw-art-swap { animation: none; }
 .rw-mp-toast.in { opacity: 1; transform: translateY(0); }
 
 /* ── Docked bottom bar — always shows in the main window once a track starts
-   playing, coexisting with the optional floating pop-out mini player (both
-   stay synced; the Settings toggle only controls whether the separate
-   floating window also pops out). New surface, deliberately not a reskin of
-   .rw-music-player: full-width and always shows transport, no collapse step.
-   Clicking the art/title opens the full Now Playing view. */
+   playing, coexisting with the optional floating pop-out mini player (both stay synced; the
+   Settings toggle only controls whether the separate floating window also pops out). */
 .rw-now-bar {
 	grid-area: player;
 	position: relative;
@@ -2165,9 +2148,7 @@ html.rw-reduced-motion .rw-shortcuts-panel { animation: none; }
 @media (prefers-reduced-motion: reduce) { .rw-shortcuts-panel { animation: none; } }
 
 /* ── Insights tab ─────────────────────────────────────────────────────────
-   Local listening stats. One quiet summary strip (deliberately not a wall of
-   hero-number cards), a single-series plays-per-day bar chart in the accent
-   hue, then ranked heavy-rotation lists with leading rank numbers. */
+   Local listening stats. */
 .rw-insights-scroll {
 	flex: 0 0 auto; min-height: auto; overflow: visible;
 	display: flex; flex-direction: column; gap: 10px;
@@ -2193,10 +2174,7 @@ html.rw-reduced-motion .rw-shortcuts-panel { animation: none; }
 	display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px;
 	cursor: default;
 }
-/* The plotting area, excluding the day tick. Both the bar's height and the
-   label's offset resolve their percentage against this box, which is what keeps
-   the two locked together - the label used to be positioned against the whole
-   column at a fixed `top`, so tall bars simply grew over it. */
+/* The plotting area, excluding the day tick. */
 .rw-insights-plot {
 	position: relative;
 	flex: 1; min-height: 0; width: 100%;
@@ -2344,10 +2322,8 @@ html.rw-reduced-motion .rw-insights-bar { animation: none; }
 .rw-smart-row { display: grid; grid-template-columns: 1fr minmax(92px, 0.62fr); gap: 8px; }
 
 /* ── Rainette AI orb (Home) ─────────────────────────────────────────────── */
-/* The assistant's living presence: a luminous liquid-glass sphere with a slow
-   orbital ring pair, internal energy that drifts, a crisp specular highlight,
-   and a soft accent rim-light. Colour + tempo shift per state. Pure SVG so it
-   stays razor-crisp at any resolution. */
+/* The assistant's living presence: a luminous liquid-glass sphere with a slow orbital ring pair,
+   internal energy that drifts, a crisp specular highlight, and a soft accent rim-light. */
 #rwOrb {
 	position: fixed; left: 50%; bottom: 46px; transform: translateX(-50%);
 	width: 172px; height: 172px; z-index: 40;
@@ -2574,9 +2550,8 @@ html.rw-reduced-motion .rw-now-btn:hover, html.rw-reduced-motion .rw-now-output:
 }
 
 /* ── Download status ─────────────────────────────────────────────────────
-   A pill rather than a dialog. A download is not a question the user has to
-   answer, and a modal per track would make downloading an album unusable. It
-   sits above the player bar so it never covers the transport. */
+   A pill rather than a dialog. A download is not a question the user has to answer, and a modal
+   per track would make downloading an album unusable. */
 .rw-download-pill {
 	position: fixed;
 	right: 18px;

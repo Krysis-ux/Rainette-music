@@ -1,12 +1,4 @@
-"""Smoke-test a release APK on a device, through its real UI.
-
-Usage: python release_smoke.py <apk> <out-dir>
-
-Release builds are not debuggable, so there is no DevTools: the UI is driven
-through Android's accessibility tree (uiautomator), the way a finger would,
-and playback is read from `dumpsys media_session` and `dumpsys audio`. Run it
-on the exact APK CI built before publishing that APK.
-"""
+"""Smoke-test a release APK on a device, through its real UI."""
 import re
 import sys
 import time

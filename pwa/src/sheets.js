@@ -16,10 +16,8 @@ const DISMISS_VELOCITY = 0.55;
  * way gone before letting go means closing it. */
 const DISMISS_FRACTION = 0.33;
 
-/* An upward drag is resisted rather than blocked, so the sheet answers the
- * gesture at first touch and becomes immovable at the limit. The old `delta / 6`
- * was linear, which meant an upward drag still travelled without limit — just at
- * a sixth speed. A surface with an edge does not do that. */
+/* An upward drag is resisted rather than blocked, so the sheet answers the gesture at first touch
+ * and becomes immovable at the limit. */
 const RUBBER_LIMIT = 120;
 
 function rubber(delta) {
@@ -28,10 +26,7 @@ function rubber(delta) {
 	return -(RUBBER_LIMIT * (1 - Math.exp(-over / RUBBER_LIMIT)));
 }
 
-/* How far from the true top a sheet's content may still be and have a pull-down
- * dismiss it. Deliberately below the 8px drag threshold: a finger that means to
- * scroll still gets to scroll, but one resting a pixel short of the top is not
- * silently denied the gesture it is plainly making. */
+/* How far from the true top a sheet's content may still be and have a pull-down dismiss it. */
 const SHEET_TOP_SLACK_PX = 2;
 /* Slowest a continuation close is allowed to start, so a sheet dragged past the
  * threshold and released dead still leaves rather than creeping. px/ms. */
@@ -41,14 +36,8 @@ function topSheet() {
 	return open[open.length - 1] || null;
 }
 
-/* Each sheet owns one history entry, so closing one programmatically has to pop
- * that entry — and the pop comes back as a popstate indistinguishable from the
- * user's own back gesture. Left unclaimed it closed the sheet *underneath* as
- * well, which is why opening an artist from a track menu used to flash and
- * vanish: the menu's pop landed after the artist sheet had pushed its own entry
- * and took it instead.
- *
- * Counting the pops we caused lets the listener tell the two apart. */
+/* Each sheet owns one history entry, so closing one programmatically has to pop that entry — and
+ * the pop comes back as a popstate indistinguishable from the user's own back gesture. */
 let selfPops = 0;
 /* Work that must not start until our pop has landed. Anything that pushes a new
  * history entry belongs here; running it earlier hands it to the pending pop. */
@@ -109,11 +98,9 @@ export function openSheet({ title = '', className = '', full = false, build }) {
 				selfPops += 1;
 				history.back();
 			}
-			// The keyframe must stay out of a close that JS is already driving:
-			// a CSS animation outranks the inline transform, so re-adding
-			// `.closing` over a panel the spring has carried to the bottom
-			// would snap it back to zero for one frame and play sheet-down from
-			// there. By the time this runs the panel is already off-screen.
+			// The keyframe must stay out of a close that JS is already driving: a CSS animation outranks the
+			// inline transform, so re-adding `.closing` over a panel the spring has carried to the bottom
+			// would snap it back to zero for one frame and play sheet-down from there.
 			if (motionOff() || panel.dataset.jsClose === '1') { root.remove(); return; }
 			// A close arriving from elsewhere — Escape, the back gesture, a
 			// scrim tap — while a snap-back is still running.
@@ -139,23 +126,11 @@ export function openSheet({ title = '', className = '', full = false, build }) {
 /* How far a sheet dims as it is pulled down, toward the page behind it. */
 const DRAG_MIN_OPACITY = 0.35;
 
-/* Drag-to-dismiss, starting only from the grabber, the header, or a body already
- * scrolled to the top. Otherwise a swipe meant to scroll a long queue drags the
- * sheet away instead.
- *
- * Dismissal was already velocity-aware. What it lacked was continuity: the drag
- * wrote an inline transform, and the release handed the panel to a CSS keyframe
- * that starts from `transform: none` — so a sheet flicked 300px down snapped
- * *upward* to zero for one frame before animating away. Both the close and the
- * snap-back now run through the same integrator the gesture feeds, seeded with
- * the velocity of the throw.
- */
+/* Drag-to-dismiss, starting only from the grabber, the header, or a body already scrolled to the
+ * top. */
 function wireDrag(panel, handle) {
 	const body = handle.body;
-	/* The live motion's cancel handle. Holding it is what makes the sheet
-	 * catchable: a pointerdown during a close or a snap-back stops the spring
-	 * and takes its exact position, rather than waiting the animation out or
-	 * restarting from zero. */
+	/* The live motion's cancel handle. */
 	let inFlight = null;
 	let baseY = 0;
 	let carried = 0;
@@ -167,10 +142,8 @@ function wireDrag(panel, handle) {
 
 	const height = () => panel.offsetHeight || window.innerHeight || 1;
 
-	/* Opacity is written directly, never through a custom property: a custom
-	 * property is inherited, so setting one on the panel restyled every node in
-	 * it on every frame. On a Pixel 3a that held Now Playing's pull-down at
-	 * ~15fps; written straight, the drag is a compositor-only change at 60. */
+	/* Opacity is written directly, never through a custom property: a custom property is inherited,
+	 * so setting one on the panel restyled every node in it on every frame. */
 	const paint = y => {
 		paintedY = y;
 		panel.style.transform = `translateY(${y}px)`;
@@ -184,14 +157,10 @@ function wireDrag(panel, handle) {
 		panel.style.opacity = '';
 	};
 
-	/* The panel is where the finger left it, so the close continues from there.
-	 * The fade is driven all the way to 0 on the way out — the old dismiss
-	 * path returned before clearing it and closed at whatever opacity the drag
-	 * happened to leave behind. */
-	/* Under reduced motion `spring()` delivers its single frame and its onDone
-	 * synchronously, before it has returned — so assigning its cancel handle to
-	 * `inFlight` afterwards would leave a finished motion looking live, and the
-	 * next tap would "catch" it. The live flag closes that window. */
+	/* The panel is where the finger left it, so the close continues from there. */
+	/* Under reduced motion `spring()` delivers its single frame and its onDone synchronously, before
+	 * it has returned — so assigning its cancel handle to `inFlight` afterwards would leave a
+	 * finished motion looking live, and the next tap would "catch" it. */
 	const track = start => {
 		let live = true;
 		const cancel = start(() => { live = false; });
@@ -231,19 +200,13 @@ function wireDrag(panel, handle) {
 		}));
 	};
 
-	/* An Escape, a back gesture or a scrim tap can land while a snap-back is
-	 * still running. Without this the panel would keep its `.dragging` class,
-	 * which suppresses the close keyframe, and sit on screen until the safety
-	 * timeout removed it. */
+	/* An Escape, a back gesture or a scrim tap can land while a snap-back is still running. */
 	handle.releaseDrag = () => {
 		if (inFlight) { inFlight(); inFlight = null; }
 		clear();
 	};
 
-	/* Read where the panel actually is right now, including mid-keyframe. This
-	 * plus cancelling the running animations is what makes a sheet catchable
-	 * while it is still sliding up — four lines, and most of what "not robotic"
-	 * means. */
+	/* Read where the panel actually is right now, including mid-keyframe. */
 	const currentY = () => {
 		const raw = getComputedStyle(panel).transform;
 		if (!raw || raw === 'none') return 0;
@@ -253,16 +216,7 @@ function wireDrag(panel, handle) {
 	dragGesture(panel, {
 		axis: 'y',
 		threshold: 8,
-		/* Only a downward move may engage a sheet at rest. An upward one at the
-		 * top of a list is the scroller's, and stealing it would make every
-		 * sheet fight the gesture that scrolls it. Once engaged, upward travel
-		 * is rubber-banded rather than blocked.
-		 *
-		 * A sheet caught mid-close is the exception, and it is not a small one:
-		 * the panel is already displaced, the pointer already owns it, and
-		 * pulling it back up is the entire reason for catching it. Holding the
-		 * downward-only rule there means a caught sheet can only ever be let go
-		 * of, which makes catching it pointless. */
+		/* Only a downward move may engage a sheet at rest. */
 		direction: () => (caught ? 'both' : 'positive'),
 		canStart: event => {
 			const target = event.target;
@@ -270,13 +224,7 @@ function wireDrag(panel, handle) {
 			// The sliders own their own pointers outright; the grip owns the
 			// queue reorder.
 			if (target.closest('.rs, .queue-row-grip')) return false;
-			// Not `<= 0`. A list flicked back to the top routinely settles a
-			// pixel or two short, and momentum can leave a fractional offset
-			// that never reaches zero at all — so an exact test made the
-			// pull-down refuse to start for reasons invisible to the person
-			// doing it, which is the "sometimes it just doesn't swipe" case.
-			// The slack is smaller than the drag threshold, so a genuine scroll
-			// still wins.
+			// Not `<= 0`.
 			return body.scrollTop <= SHEET_TOP_SLACK_PX;
 		},
 		onStart: () => {
@@ -368,7 +316,7 @@ window.addEventListener('popstate', () => {
 
 /** A menu of choices. `items` are `{ label, hint, icon, active, danger, run }`.
  *  Resolves with the chosen id once closed, or null on dismissal. */
-export function actionSheet({ title = 'Actions', items = [] } = {}) {
+export function actionSheet({ title = 'Actions', items = [], help = null } = {}) {
 	return new Promise(resolve => {
 		let answer = null;
 		const handle = openSheet({
@@ -407,6 +355,7 @@ export function actionSheet({ title = 'Actions', items = [] } = {}) {
 				}
 				if (!items.length) list.append(el('p', 'empty', 'Nothing available here yet.'));
 				body.append(list);
+				if (help) body.append(helpFooter(help));
 			},
 		});
 		// Resolve on removal so callers can rely on the sheet being gone.
@@ -449,4 +398,26 @@ export function confirmSheet({ title, message, confirmLabel = 'Confirm', cancelL
 
 export function closeAllSheets() {
 	while (open.length) open[open.length - 1].close();
+}
+
+/** A "?" at the foot of a sheet. Explanations stay hidden until it is tapped.
+ *  `entries` is a list of [label, explanation] pairs. */
+export function helpFooter(entries) {
+	const toggle = el('button', 'help-toggle');
+	toggle.type = 'button';
+	toggle.innerHTML = icon('help', 22);
+	toggle.setAttribute('aria-label', 'What these do');
+	toggle.setAttribute('aria-expanded', 'false');
+
+	const list = el('dl', 'help-list');
+	list.hidden = true;
+	for (const [term, text] of entries) list.append(el('dt', '', term), el('dd', '', text));
+
+	toggle.addEventListener('click', () => {
+		list.hidden = !list.hidden;
+		toggle.setAttribute('aria-expanded', String(!list.hidden));
+		toggle.classList.toggle('on', !list.hidden);
+		if (!list.hidden) list.scrollIntoView({ block: 'nearest', behavior: motionOff() ? 'auto' : 'smooth' });
+	});
+	return el('div', 'help', toggle, list);
 }

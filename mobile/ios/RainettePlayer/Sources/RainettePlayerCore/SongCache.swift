@@ -1,13 +1,7 @@
 import Foundation
 
-/// Songs already heard, kept on disk in the same 1 MB pieces the loader asks
-/// for, so a replay starts at once, needs no address from the source, and
-/// plays with no connection. It lives in Caches, which iOS may clear under
-/// storage pressure, and keeps the most recently played `limitBytes`.
-///
-/// A piece is only ever joined to pieces of the same file: the whole file's
-/// length is stored beside them, and a download that reports another length
-/// (the source now serving a different encoding) replaces what was kept.
+/// Songs already heard, kept on disk in the same 1 MB pieces the loader asks for, so a replay
+/// starts at once, needs no address from the source, and plays with no connection.
 public final class SongCache: @unchecked Sendable {
     public static let shared = SongCache()
     static let limitBytes: Int64 = 400 << 20

@@ -1,18 +1,5 @@
-/* Who made the music, worked out from the music itself.
- *
- * Two problems live here, and they are the same problem twice:
- *
- *  - A library is a list of tracks. The artists behind it have to be derived,
- *    and a track carries its *album* cover, never the artist's picture — which
- *    is why the library's artist rows all showed the wrong image, or the app
- *    icon, until you opened one.
- *  - A search whose computer answers with songs but no artists (an older
- *    Rainette, or one without ytmusicapi) left the Artists tab empty even though
- *    every song in the results names somebody.
- *
- * Artwork is resolved in one batched command for a whole screen, cached in
- * localStorage for good, and only ever asked for once per name.
- */
+/* Who made the music, worked out from the music itself. Two problems live here, and they are the
+ * same problem twice: - A library is a list of tracks. */
 
 import { command } from './bridge.js';
 import { STORAGE, artistName } from './state.js';
@@ -35,9 +22,8 @@ function key(name) {
 }
 
 /* ── The artwork cache ────────────────────────────────────────────────────
- * Keyed by the name we asked about rather than the catalog's id, because the
- * name is all a derived artist has. Held in memory and mirrored to storage, so
- * a second visit to the library paints instantly and asks for nothing. */
+ * Keyed by the name we asked about rather than the catalog's id, because the name is all a derived
+ * artist has. */
 
 let cache = null;
 
@@ -83,10 +69,8 @@ function unresolved(names) {
 	});
 }
 
-/** Resolve artwork for these artists. `onResolved(name, entry)` fires per hit,
- *  so rows can fill in as answers land rather than after all of them do.
- *  Never throws: artwork is decoration, and a computer that cannot supply it
- *  must not take the list down with it. */
+/** Resolve artwork for these artists. `onResolved(name, entry)` fires per hit, so rows can fill in
+ * as answers land rather than after all of them do. */
 export async function resolveArtistImages(names, onResolved) {
 	const wanted = unresolved(names);
 	if (!wanted.length) return;

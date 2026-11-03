@@ -126,17 +126,6 @@ function navMarkup() {
 	}).join('');
 }
 
-/* Home's header is the Mac app's: today's date over a greeting. */
-function homeGreeting(hour = new Date().getHours()) {
-	if (hour >= 5 && hour < 12) return 'Good morning';
-	if (hour >= 12 && hour < 17) return 'Good afternoon';
-	return 'Good evening';
-}
-
-function todayLabel() {
-	return new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-}
-
 let _host = null;
 let _mounted = false;
 let _listenerBound = false;
@@ -302,6 +291,56 @@ function thumbBox(url, fallback = '♪') {
 	return thumb;
 }
 
+/* Artist pictures. A library artist is only a name, so pictures are looked up in
+ * one batch per screen and cached by name. */
+const ARTIST_ART_KEY = 'rainette.artist_art';
+const artistArt = (() => {
+	try { return new Map(Object.entries(JSON.parse(lsGet(ARTIST_ART_KEY, '{}')) || {})); } catch { return new Map(); }
+})();
+const artistArtWanted = new Set();
+let artistArtTimer = 0;
+
+function artistKey(name) { return String(name || '').trim().toLowerCase(); }
+
+/** A round thumb with the artist's picture, filled in later if not known yet. */
+function artistThumb(artist) {
+	const own = /^https:/.test(artist?.thumbnail_url || '') && !artist?.from_track ? artist.thumbnail_url : '';
+	const url = own || artistArt.get(artistKey(artist?.name)) || '';
+	const thumb = thumbBox(url, (String(artist?.name || 'A').trim()[0] || 'A').toUpperCase());
+	thumb.classList.add('rw-artist-thumb');
+	if (!url && artist?.name) {
+		thumb.dataset.artistName = artistKey(artist.name);
+		artistArtWanted.add(String(artist.name).trim());
+		clearTimeout(artistArtTimer);
+		artistArtTimer = setTimeout(requestArtistArt, 60);
+	}
+	return thumb;
+}
+
+function requestArtistArt() {
+	const names = [...artistArtWanted].filter(name => !artistArt.has(artistKey(name))).slice(0, 40);
+	artistArtWanted.clear();
+	if (names.length) sendHelper({ type: 'music_artist_images', id: 'mai_' + Math.random().toString(36).slice(2), names });
+}
+
+function absorbArtistArt(artists) {
+	for (const found of Array.isArray(artists) ? artists : []) {
+		const key = artistKey(found?.query || found?.name);
+		if (key && found?.thumbnail_url) artistArt.set(key, found.thumbnail_url);
+	}
+	lsSet(ARTIST_ART_KEY, JSON.stringify(Object.fromEntries(artistArt)));
+	for (const thumb of document.querySelectorAll('.rw-artist-thumb[data-artist-name]')) {
+		const url = artistArt.get(thumb.dataset.artistName);
+		if (!url) continue;
+		delete thumb.dataset.artistName;
+		const img = document.createElement('img');
+		img.src = url;
+		img.alt = '';
+		img.loading = 'lazy';
+		thumb.replaceChildren(img);
+	}
+}
+
 function iconBtn(iconName, className, onClick, title) {
 	const b = document.createElement('button');
 	b.type = 'button';
@@ -363,12 +402,9 @@ function currentTrackUsesPauseIcon() {
 	return !!currentTrackKey() && (pageState.queue?.playing || currentTrackState() === 'loading');
 }
 
-// Track rows are built once per list render and don't otherwise hear about
-// playback state changing elsewhere (a different tab's play button, the
-// docked bar's next/prev, repeat auto-advance, pause/resume). Called after
-// every music_now_playing broadcast to keep every currently-rendered row's
-// play/pause icon and highlight in sync without re-rendering whichever list
-// is on screen.
+// Track rows are built once per list render and don't otherwise hear about playback state changing
+// elsewhere (a different tab's play button, the docked bar's next/prev, repeat auto-advance,
+// pause/resume).
 function syncNowPlayingIndicators() {
 	const activeKey = currentTrackKey();
 	const pauseIcon = currentTrackUsesPauseIcon();
@@ -403,7 +439,7 @@ function trackCard(track, actions) {
 	const artist = artistName(track);
 	const album = albumInfo(track);
 	if (artist) {
-		sub.appendChild(inlineLink(artist, () => openArtist({ id: artistId(track), name: artist, thumbnail_url: track.thumbnail_url || '' })));
+		sub.appendChild(inlineLink(artist, () => openArtist({ id: artistId(track), name: artist, thumbnail_url: artistArt.get(artistKey(artist)) || '' })));
 	}
 	if (album?.title) {
 		if (sub.childNodes.length) sub.appendChild(document.createTextNode(' · '));
@@ -440,7 +476,7 @@ function artistCard(artist, extras = []) {
 	follow.setAttribute('aria-label', (following ? 'Unfollow ' : 'Follow ') + (artist.name || 'artist'));
 	const actWrap = el('div', 'rw-track-actions');
 	actWrap.append(open, follow, ...extras);
-	const thumb = thumbBox(artist.thumbnail_url, 'A');
+	const thumb = artistThumb(artist);
 	thumb.addEventListener('click', () => openArtist(artist));
 	card.append(thumb, metaWrap, actWrap);
 	return card;
@@ -487,11 +523,10 @@ function playAction(track, queue) {
 	// icon in place when playback state changes elsewhere, without re-rendering
 	// the row it lives in.
 	return iconBtn(pauseIcon ? 'pause' : 'play', 'rw-icon-btn rw-play-action', () => {
-		// Re-check live state rather than closing over `active`: playback can
-		// start after this button was built (e.g. this row rendered before
-		// anything was playing, then became the active track), and the button's
-		// own icon/label already get updated in place by syncNowPlayingIndicators
-		// without this closure ever re-running.
+		// Re-check live state rather than closing over `active`: playback can start after this button was
+		// built (e.g. this row rendered before anything was playing, then became the active track), and
+		// the button's own icon/label already get updated in place by syncNowPlayingIndicators without
+		// this closure ever re-running.
 		if (isCurrentTrack(track) && currentTrackState() !== 'error') { window.RainetteMusic?.toggle?.(); return; }
 		if (queue) window.RainetteMusic?.playQueue(queue, queue.indexOf(track));
 		else window.RainetteMusic?.playTrack(track);
@@ -499,16 +534,9 @@ function playAction(track, queue) {
 }
 
 /* ── Downloading ──────────────────────────────────────────────────────────
- *
- * The computer keeps what it downloads as a real file in a real folder, so the
- * library machinery that already exists owns it from there: `music_bridge`
- * registers the downloads folder as a scan root and rescans it, and the track
- * arrives in the library like any other file on this disk.
- *
- * Offered in the same two places as on the phone -- a track's More menu, and
- * the head of a playlist -- so the two clients answer "where do I download
- * this?" the same way.
- */
+ * The computer keeps what it downloads as a real file in a real folder, so the library machinery
+ * that already exists owns it from there: `music_bridge` registers the downloads folder as a scan
+ * root and rescans it, and the track arrives in the library like any other file on this disk. */
 
 let _downloadPill = null;
 let _downloadHide = 0;
@@ -550,10 +578,8 @@ function trackActions(track, queue, extras = []) {
 	];
 }
 
-// Recents is grouped by track, so there is no single play to delete - forgetting
-// a track's plays is the only thing "remove this" can mean. That is also why the
-// same action is offered on Insights: both read the one play-history table, so a
-// removal has to drop out of both or they visibly disagree.
+// Recents is grouped by track, so there is no single play to delete - forgetting a track's plays is
+// the only thing "remove this" can mean.
 function forgetPlaysAction(track, { label = 'Remove from Recents' } = {}) {
 	return {
 		label,
@@ -601,7 +627,7 @@ async function openTrackMenu(track, queue, extras = []) {
 	// A file already on this disk has nothing to fetch.
 	if (String(track.source || '') !== 'local') items.push(downloadAction(track));
 	items.push({ label: 'Start mix', run: () => startMixFromSeed({ kind: 'track', track }) });
-	if (artist) items.push({ label: 'Open artist', run: () => openArtist({ id: artistId(track), name: artist, thumbnail_url: track.thumbnail_url || '' }) });
+	if (artist) items.push({ label: 'Open artist', run: () => openArtist({ id: artistId(track), name: artist, thumbnail_url: artistArt.get(artistKey(artist)) || '' }) });
 	if (album?.title) items.push({ label: 'Open album', run: () => openAlbum(album) });
 	for (const item of extras) items.push(item);
 	await actionSheet({ title: track.title || 'Track actions', items });
@@ -623,9 +649,10 @@ function updateShellChrome() {
 	const sub = _host?.querySelector('#rwMusicSub');
 	const home = pageState.tab === 'home' && !pageState.view;
 	_host?.querySelector('.rw-page-head')?.classList.toggle('is-home', home);
-	if (eyebrow) eyebrow.textContent = home ? todayLabel() : '';
-	if (title) title.textContent = home ? homeGreeting() : current.title;
-	if (sub) sub.textContent = home ? '' : current.sub;
+	if (eyebrow) eyebrow.textContent = '';
+	if (title) title.textContent = current.title;
+	// Titles stand alone; the page itself says what it is for.
+	if (sub) { sub.textContent = ''; sub.hidden = true; }
 }
 
 function runSearch() {
@@ -753,16 +780,8 @@ function renderSongs() {
 }
 
 /* ── On this computer ─────────────────────────────────────────────────────
- *
- * The local library had a complete backend -- watched folders, a scanner, a
- * status payload -- and no interface at all, so the only way to see a folder of
- * your own music was from the phone. Downloading made that gap visible: a track
- * saved on this computer landed somewhere the computer could not show you.
- *
- * This is that page. It is deliberately the same list component the rest of the
- * app uses, because a downloaded track is an ordinary track and the moment it
- * needs its own kind of row is the moment the design has gone wrong.
- */
+ * The local library had a complete backend -- watched folders, a scanner, a status payload -- and
+ * no interface at all, so the only way to see a folder of your own music was from the phone. */
 
 function requestLocalStatus() {
 	sendHelper({ type: 'music_local_status', id: 'mls_' + Math.random().toString(36).slice(2) });
@@ -997,6 +1016,7 @@ function renderArtistDetail() {
 	const following = isFollowingArtist(artist);
 	head.append(
 		btn('Back', 'rw-btn rw-btn-ghost', () => { pageState.view = null; applyTab(); }),
+		artistThumb(artist),
 		el('div', 'rw-track-title', artist.name || 'Artist'),
 		btn(following ? 'Unfollow' : 'Follow', 'rw-btn rw-btn-ghost', () => toggleArtistFollow(artist)),
 		btn('Start mix', 'rw-btn rw-btn-primary', () => startMixFromSeed({ kind: 'artist', artist })),
@@ -1008,12 +1028,8 @@ function renderArtistDetail() {
 	}
 	if (view.msg) body.appendChild(el('div', 'rw-status-line', view.msg));
 	const list = trackList('rwArtistCatalog');
-	/* ytmusicapi files EPs inside the artist's album section and marks them with
-	 * a release type; `music_bridge` passes that through as `release_type`. The
-	 * phone client already shelves them separately, and an EP listed as an album
-	 * is wrong in the one place a listener actually notices. Without the marker
-	 * a release stays with the albums rather than being guessed at from its
-	 * track count. */
+	/* ytmusicapi files EPs inside the artist's album section and marks them with a release type;
+	 * `music_bridge` passes that through as `release_type`. */
 	const shelves = shelveReleases(view.albums || []);
 	if (shelves.albums.length) {
 		list.appendChild(section('Albums'));
@@ -3698,6 +3714,9 @@ function onHelperMessage(msg) {
 				openArtist({ id: msg.artist_id || '', name: msg.name || '', thumbnail_url: msg.thumbnail_url || '' });
 			}
 			break;
+		case 'music_artist_images_result':
+			if (msg.ok) absorbArtistArt(msg.artists);
+			break;
 		case 'music_artist_catalog_result':
 			if (pageState.view?.kind === 'artist') {
 				if (msg.ok) pageState.view = { kind: 'artist', artist: msg.artist || pageState.view.artist, loading: false, songs: msg.songs || [], videos: msg.videos || [], albums: msg.albums || [], singles: msg.singles || [], msg: msg.msg || '' };
@@ -3759,7 +3778,6 @@ function buildPage(host) {
 					<div class="rw-music-mark" aria-hidden="true"><img src="/assets/rainette-icon-256.png" alt=""></div>
 					<div class="rw-music-brand-text">
 						<div class="rw-music-brand-name">Rainette</div>
-						<div class="rw-music-brand-sub">Quiet listening</div>
 					</div>
 				</div>
 				<button id="rwUpdateBadge" class="rw-update-badge" type="button" hidden>

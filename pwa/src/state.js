@@ -11,6 +11,11 @@ export const STORAGE = {
 	repeat: 'rainette.pwa.repeat',
 	linked: 'rainette.pwa.linked',
 	plays: 'rainette.pwa.plays',
+	/* Every song this phone has played, with how often and when last: what
+	 * Home's top artists, songs and albums are made of. */
+	history: 'rainette.pwa.history',
+	/* Home's artist picks from YouTube Music, kept a few hours. */
+	homePicks: 'rainette.pwa.home_picks',
 	theme: 'rainette.pwa.theme',
 	accent: 'rainette.pwa.accent',
 	prefs: 'rainette.pwa.prefs',
@@ -89,11 +94,7 @@ export const state = {
 
 	eventRevision: 0,
 	eventLoopId: 0,
-	/* How many times the current track has been re-resolved after a media
-	 * error. A count rather than a flag, because one retry was not enough: the
-	 * first failure is often the expired link and the second the race to
-	 * replace it. Reset by a stretch of clean playback, so a track that fails
-	 * three minutes in still gets its retries. */
+	/* How many times the current track has been re-resolved after a media error. */
 	streamRetries: 0,
 	pairPollId: 0,
 };
@@ -118,10 +119,8 @@ export function artworkUrl(track) {
 	return track?.thumbnail_url || track?.artwork_url || './icon.svg';
 }
 
-/* YouTube Music covers carry their size in the address (`=w120-h120-…`, or
- * `=s120` on a channel picture), and search hands out the 120px one. A cover
- * shown large asks for a large one rather than stretching a thumbnail across
- * the screen. */
+/* YouTube Music covers carry their size in the address (`=w120-h120-…`, or `=s120` on a channel
+ * picture), and search hands out the 120px one. */
 export function resizeArtwork(url, px) {
 	if (!/^https:\/\/([a-z0-9]+\.googleusercontent\.com|yt\d\.ggpht\.com)\//.test(String(url || ''))) return url;
 	return url.replace(/=w\d+-h\d+(?=-|$)/, `=w${px}-h${px}`).replace(/=s\d+(?=-|$)/, `=s${px}`);
@@ -155,10 +154,7 @@ export function trackDuration(track) {
 	return 0;
 }
 
-/* How popular a track is, as a single number to order by. The computer sends
- * this under whichever name its source used, and a phone's own play count is
- * folded in so a library with no view counts at all still sorts by something
- * real — what this listener actually plays. */
+/* How popular a track is, as a single number to order by. */
 export function trackPopularity(track) {
 	for (const value of [track?.view_count, track?.views, track?.play_count, track?.plays]) {
 		const count = typeof value === 'string' ? parseCount(value) : Number(value);
@@ -179,9 +175,8 @@ function parseCount(value) {
 }
 
 /* ── Play counts, kept on the phone ───────────────────────────────────────
- * Written on every play so "most popular" means something even for a library
- * the computer sends no counts for. Read often and written rarely, so the map
- * is cached rather than parsed out of storage each time. */
+ * Written on every play so "most popular" means something even for a library the computer sends no
+ * counts for. */
 
 let playCounts = null;
 
@@ -203,9 +198,35 @@ export function localPlayCount(key) {
 export function countPlay(track) {
 	const key = trackKey(track);
 	if (!key) return;
+	// First, while the history it reads still predates this play.
+	recordPlay(track);
 	const counts = readPlayCounts();
 	counts[key] = (Number(counts[key]) || 0) + 1;
 	try { localStorage.setItem(STORAGE.plays, JSON.stringify(counts)); } catch { /* storage quota */ }
+}
+
+// ponytail: kept by recency, so a favourite unplayed for 300 songs drops out.
+const HISTORY_LIMIT = 300;
+
+/** `[{ track, plays, last }]`, most recently played first. */
+export function readHistory() {
+	const kept = readJson(STORAGE.history, null);
+	if (Array.isArray(kept)) return kept.filter(entry => entry?.track);
+	// Phones from before this kept the recent list and bare counts only. The
+	// counts are taken as they stand: the play being recorded now is already
+	// first in the recent list but not yet counted, and must not count twice.
+	const now = Date.now();
+	return readRecent()
+		.map((track, at) => ({ track, plays: localPlayCount(trackKey(track)), last: now - at * 60000 }))
+		.filter(entry => entry.plays > 0);
+}
+
+function recordPlay(track) {
+	const key = trackKey(track);
+	const history = readHistory();
+	const kept = history.find(entry => trackKey(entry.track) === key);
+	const rest = history.filter(entry => entry !== kept);
+	persist(STORAGE.history, [{ track, plays: (Number(kept?.plays) || 0) + 1, last: Date.now() }, ...rest].slice(0, HISTORY_LIMIT));
 }
 
 export function formatTime(seconds) {

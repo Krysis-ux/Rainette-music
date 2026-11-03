@@ -1,25 +1,4 @@
-"""Generate the Ed25519 release-signing keypair for Rainette self-updates.
-
-Run this ONCE on a trusted machine:
-
-    python release/new_signing_key.py
-
-Then:
-  1. Paste the PUBLIC key into version.py (UPDATE_SIGNER_PUBLIC_KEY)
-     and commit it. It is public — committing it is the point.
-  2. Add the PRIVATE key as the GitHub Actions repository secret
-     UPDATE_SIGNING_KEY (Settings > Secrets and variables > Actions).
-  3. Store an offline backup of the private key (password manager, printed
-     copy in a safe — anywhere that is not this repository).
-
-Key custody is the whole security model:
-  * LOSE the private key and you can never ship a self-update again — every
-    user would have to download and reinstall by hand.
-  * LEAK it and an attacker can sign malicious updates; rotating to a new key
-    requires shipping an update signed by the OLD key first, so rotation after
-    a leak is a race you do not want to run.
-Back it up before doing anything else.
-"""
+"""Generate the Ed25519 release-signing keypair for Rainette self-updates."""
 
 from __future__ import annotations
 

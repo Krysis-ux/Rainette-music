@@ -1,15 +1,4 @@
-/* Computers this phone has been paired with, so reconnecting is a tap.
- *
- * A Cloudflare Quick Tunnel hands out a new hostname every time the computer
- * restarts, and until now the only way to hand the phone the new address was to
- * scan a fresh QR code. The credential never needed replacing — pairing is
- * `(device_id, device_token)` with no endpoint bound into it — so this is
- * purely an address-book problem, and it belongs on the phone.
- *
- * Everything here is localStorage and stays there. It is per-browser by
- * construction, so one user's list can never become another's, and none of it
- * is ever sent anywhere.
- */
+/* Computers this phone has been paired with, so reconnecting is a tap. */
 
 import { STORAGE, readJson, persist } from './state.js';
 
@@ -17,10 +6,7 @@ import { STORAGE, readJson, persist } from './state.js';
  * list into a thing that itself needs managing. */
 const MAX_SESSIONS = 8;
 
-/* Tokens live in their own map rather than inside the session rows. The rows
- * get read, filtered, sorted, and would be the natural thing to dump while
- * debugging; keeping credentials out of that shape means doing so cannot leak
- * one. Rows carry only whether a token exists. */
+/* Tokens live in their own map rather than inside the session rows. */
 function readTokens() {
 	return readJson(STORAGE.tokens, {}) || {};
 }
@@ -72,11 +58,7 @@ export function sessionToken(deviceId) {
 	return readTokens()[deviceId] || '';
 }
 
-/** Mark a session as one we could not reach just now.
- *
- *  Deliberately not a delete: a rotating tunnel hostname is the normal case,
- *  not a broken pairing, and throwing the credential away would turn a moved
- *  computer into a re-pair. */
+/** Mark a session as one we could not reach just now. */
 export function markSessionStale(deviceId, stale = true) {
 	const rows = readRows().map(row => (
 		row.device_id === deviceId ? { ...row, stale: Boolean(stale) } : row

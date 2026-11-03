@@ -1,48 +1,11 @@
-/* One pointer-drag contract.
- *
- * Four call sites had four subtly different versions of this and each one had a
- * different bug: sheets.js never cleared a stale pointerId, queue.js never
- * released capture, none of the four listened for lostpointercapture. tracks.js
- * decided its axis correctly and is the one the rest are modelled on.
- *
- * Nothing here touches the DOM beyond listeners and pointer capture — what a
- * drag *means* belongs to the caller, which is the only layer that knows its own
- * commit threshold. */
+/* One pointer-drag contract. */
 
-/* A single-sample derivative is the velocity of the last 16ms, and the last
- * 16ms of a flick is the part where the finger is already slowing down — which
- * is why a fast throw used to read as ≈0 and spring back. A 100ms window is the
- * shortest one that still describes the throw rather than its tail. */
+/* A single-sample derivative is the velocity of the last 16ms, and the last 16ms of a flick is the
+ * part where the finger is already slowing down — which is why a fast throw used to read as ≈0 and
+ * spring back. */
 const VELOCITY_WINDOW_MS = 100;
 
-/**
- * Wire a drag on `element`.
- *
- * - `axis`      — `'x'` | `'y'` | `'free'`. Anything but `free` hands the
- *                 gesture to the scroller when the finger picks the other axis.
- * - `threshold` — px of travel before the axis is decided.
- * - `direction` — `'both'` | `'positive'` | `'negative'`, or a function
- *                 returning one, resolved when the axis is being decided. Which
- *                 sign along the axis may *engage* the drag. The sheet only
- *                 engages downward, or an upward swipe at the top of a list
- *                 drags the panel instead of scrolling — but a sheet already
- *                 displaced mid-close has to engage upward too, which is why
- *                 this can be a decision rather than a constant.
- * - `holdMs`    — >0 arms a long press.
- * - `holdToDrag`— the hold, not the threshold, is what engages the drag; any
- *                 movement before it fires abandons the gesture (a scroll).
- *
- * Callbacks: `onStart({ x, y, event })`, `onMove({ dx, dy, velocity, event })`,
- * `onEnd({ dx, dy, velocity, committed, held })` on a genuine release, and
- * `onCancel(...)` when the pointer is taken away instead — a pointercancel, a
- * capture lost to an iOS edge swipe, or a hold abandoned by movement.
- * `onHoldCancel()` fires when movement disarms a hold that had not yet fired,
- * which is where a "pressing" affordance has to come back off.
- * `committed` means "the drag was ours and it ended in a release"; what to do
- * about it is the caller's call.
- *
- * Returns `{ destroy() }`.
- */
+/** Wire a drag on `element`. - `axis` — `'x'` | `'y'` | `'free'`. */
 export function dragGesture(element, {
 	axis = 'x',
 	threshold = 10,
@@ -76,11 +39,7 @@ export function dragGesture(element, {
 	let holdTimer = 0;
 	const samples = [];
 
-	/* Unconditional, and it runs *before* pointerdown does anything else. This
-	 * is the discipline sheets.js:126 lacked: it returned early without
-	 * clearing pointerId, so a recycled id from a prior gesture matched in
-	 * pointermove and the panel started dragging from a pointer it never
-	 * accepted. */
+	/* Unconditional, and it runs *before* pointerdown does anything else. */
 	const reset = () => {
 		clearTimeout(holdTimer);
 		holdTimer = 0;
@@ -165,10 +124,7 @@ export function dragGesture(element, {
 		const dx = lastX - startX;
 		const dy = lastY - startY;
 
-		// Any real movement means this is a drag or a scroll, not a hold. Note
-		// this slop is deliberately smaller than `threshold`: the press
-		// affordance has to come off before the drag takes over, or a finger
-		// that moved four pixels still looks like it is being held.
+		// Any real movement means this is a drag or a scroll, not a hold.
 		if (holdTimer && (Math.abs(dx) > holdSlop || Math.abs(dy) > holdSlop)) {
 			clearTimeout(holdTimer);
 			holdTimer = 0;
@@ -197,18 +153,7 @@ export function dragGesture(element, {
 		onMove?.({ dx, dy, velocity: velocity(), event });
 	});
 
-	/* Pointer events alone cannot hold a vertical drag on a scrollable panel.
-	 * The browser owns the pan, and the moment it starts scrolling it takes the
-	 * pointer away with a pointercancel — so the drag never engages and the
-	 * sheet can only be closed with its button. `touch-action` is the usual
-	 * answer, but the sheet body has to stay scrollable, so it cannot be
-	 * `none`.
-	 *
-	 * Claiming it on the first touchmove is what works: `preventDefault` is
-	 * honoured while the browser is still deciding, and refused once a scroll is
-	 * under way. Only for gestures `canStart` already accepted (the body at its
-	 * top), only downward, and only on the y axis, so a scroll and a horizontal
-	 * swipe both behave exactly as before. */
+	/* Pointer events alone cannot hold a vertical drag on a scrollable panel. */
 	element.addEventListener('touchmove', event => {
 		if (pointerId === null || axis !== 'y' || !preventScroll) return;
 		if (!event.cancelable || event.touches.length !== 1) return;
@@ -243,39 +188,18 @@ export function dragGesture(element, {
 		abandon();
 	});
 
-	/* An iOS system gesture can take the pointer away and fire neither pointerup
-	 * nor pointercancel, which is what leaves a row stuck mid-swipe. It also
-	 * fires on a normal release, right after pointerup — harmless, because
-	 * pointerId is null by then and this returns immediately.
-	 *
-	 * A capture lost *after* the drag engaged is not the user changing their
-	 * mind. The finger moved, and that movement is exactly as real as it would
-	 * have been had the pointer been released instead. Treating it as a cancel
-	 * throws the travel away and springs the surface back to where it started,
-	 * which on a sheet is the difference between one that can be pulled down
-	 * and one that can be pulled down and never dismissed — every time,
-	 * whatever the throw. So an engaged drag ends here, and the caller judges
-	 * it on distance and velocity exactly as it judges a release.
-	 *
-	 * Before it engaged there is nothing to judge, and abandoning is right. */
+	/* An iOS system gesture can take the pointer away and fire neither pointerup nor pointercancel,
+	 * which is what leaves a row stuck mid-swipe. */
 	listen('lostpointercapture', event => {
 		if (event.pointerId !== pointerId) return;
-		/* A touch starts captured by whatever is under the finger — the cover
-		 * image, a row's title. When the drag engages and claims it for
-		 * `element`, that child loses it and the event bubbles here. That is
-		 * the drag taking hold, not losing it; ending on it cut every touch
-		 * swipe off a few pixels in, so only a fast flick ever committed. */
+		/* A touch starts captured by whatever is under the finger — the cover image, a row's title. */
 		if (event.target !== element && element.hasPointerCapture?.(event.pointerId)) return;
 		if (engaged) { finish(); return; }
 		abandon();
 	});
 
 	return {
-		/** End the gesture in flight, from inside a callback. The queue's
-		 *  reorder needs this: committing a move re-renders the list out from
-		 *  under the very element the pointer is captured on, and without an
-		 *  explicit end the next pointermove keeps writing transforms onto a
-		 *  row that is no longer in the document. */
+		/** End the gesture in flight, from inside a callback. */
 		cancel() {
 			if (pointerId === null) return;
 			abandon();

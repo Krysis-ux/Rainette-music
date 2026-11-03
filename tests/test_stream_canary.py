@@ -1,27 +1,4 @@
-"""Live canary: is what YouTube hands us today still *audio*, and still openable?
-
-Every other test in this suite runs against a stub, which is right -- CI must not
-depend on a third party's mood. But the two failures that have actually stopped
-the music both happened *outside* the code, in what YouTube chose to serve, and
-were therefore invisible to a green suite:
-
-  * July 2026 -- the default player client began returning chunk-served URLs
-    that answer the open-ended ``Range: bytes=0-`` a media element opens with as
-    403. Every track failed at its first byte.
-  * August 2026 -- the ANDROID client we had pinned in response was cut back to
-    format 18 alone, a muxed 360p *video*. Every phone was handed ``video/mp4``
-    to play in an ``<audio>`` element.
-
-Neither is a bug anyone can write a unit test for, because neither is in our
-code. What can be tested is the contract we depend on, against the real thing.
-That is what this file does, and it is why it is opt-in rather than deleted:
-
-    RAINETTE_LIVE_CANARY=1 python -m pytest tests/test_stream_canary.py -v
-
-Run it on a schedule. When it goes red, playback is *already* broken for users
-and the message they will report is "it says the format is not supported" --
-which points at neither cause.
-"""
+"""Live canary: is what YouTube hands us today still *audio*, and still openable?"""
 
 from __future__ import annotations
 
@@ -34,13 +11,7 @@ import music_bridge
 
 LIVE = os.environ.get("RAINETTE_LIVE_CANARY") == "1"
 
-# Failures that mean "we never got an answer", as opposed to "the answer was
-# wrong". The distinction is the whole value of this file: a canary that cannot
-# tell being blocked from being broken cries wolf, and a check that is always
-# red is worse than no check, because people stop reading it.
-#
-# YouTube refuses datacenter IPs with a bot challenge, so this is the normal
-# outcome on a cloud CI runner and says nothing at all about our code.
+# Failures that mean "we never got an answer", as opposed to "the answer was wrong".
 _INCONCLUSIVE = (
     "sign in to confirm",          # bot challenge -- datacenter IP
     "not a bot",

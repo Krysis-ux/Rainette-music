@@ -10,14 +10,7 @@ import server
 
 
 def _force_windows_desktop(test_case):
-    """Pin the Windows desktop branch for the duration of one test.
-
-    These cases describe WinForms behaviour -- off-screen parking, show/restore
-    ordering, TopMost and taskbar marshalling -- which ``main`` now selects per
-    platform. Without this they would quietly stop exercising Windows the moment
-    the suite runs on the macOS port, which is exactly the coverage that keeps
-    the Windows build honest. The macOS branch has its own tests.
-    """
+    """Pin the Windows desktop branch for the duration of one test."""
     for patcher in (
         patch.object(main, "IS_MACOS", False),
         patch.object(main, "IS_WINDOWS", True),
@@ -68,12 +61,7 @@ class _FakeWebview:
 
 class PlayerShutdownLifecycleTests(unittest.TestCase):
     def test_main_window_closing_starts_player_teardown_before_form_is_closed(self):
-        """A parked player is a real visible WinForms window.  Destroying it
-        after the main form has already closed can leave it alive without any
-        user-visible window, keeping the pythonw process running indefinitely.
-        The ``closing`` event is synchronous; ``closed`` launches callbacks on
-        a worker thread only after WinForms has begun disposing the main form.
-        """
+        """A parked player is a real visible WinForms window."""
         webview = _FakeWebview()
         with patch.dict("sys.modules", {"webview": webview}):
             self.assertTrue(main._try_pywebview("http://127.0.0.1:8777/"))
@@ -83,11 +71,8 @@ class PlayerShutdownLifecycleTests(unittest.TestCase):
         self.assertEqual(main_window.events.closed.handlers, [])
 
     def test_taskbar_suppression_waits_for_player_webview_loaded(self):
-        """Changing ShowInTaskbar while WebView2 is still creating its second
-        controller aborts that controller with E_ABORT.  The native mutation
-        must therefore be wired to the player window's loaded event, not run
-        from pywebview's earlier global startup callback.
-        """
+        """Changing ShowInTaskbar while WebView2 is still creating its second controller aborts
+        that controller with E_ABORT."""
         calls = []
 
         class RecordingApi(main.WindowApi):
@@ -164,10 +149,7 @@ class MissingNativeFormPlayer(FakePlayerWindow):
 
 class PlayerTaskbarThreadingTests(unittest.TestCase):
     def test_taskbar_suppression_marshals_to_the_winforms_thread(self):
-        """``on_started`` runs on pywebview's worker thread.  WinForms form
-        properties must therefore be changed through Invoke, just like the
-        rounded-region and TopMost paths, or WebView2 startup can deadlock.
-        """
+        """``on_started`` runs on pywebview's worker thread."""
         _force_windows_desktop(self)
 
         class Form:
@@ -216,11 +198,9 @@ class PlayerTaskbarThreadingTests(unittest.TestCase):
 
 
 class WindowApiGatingTests(unittest.TestCase):
-    """reveal_player() replaced a two-call player_allow_show()+show_player()
-    handshake that was a guaranteed no-op on its only first-play call site
-    (nothing ever called player_allow_show() there) and a race on its other
-    call site (two independent, un-awaited bridge calls). These tests guard
-    the fixed, single-call contract."""
+    """reveal_player() replaced a two-call player_allow_show()+show_player() handshake that was a
+    guaranteed no-op on its only first-play call site (nothing ever called player_allow_show()
+    there) and a race on its other call site (two independent, un-awaited bridge calls)."""
 
     def setUp(self):
         _force_windows_desktop(self)
@@ -343,11 +323,8 @@ class WindowApiGatingTests(unittest.TestCase):
 
 
 class PlayerShapeOrderingTests(unittest.TestCase):
-    """_shape_player() derives the rounded-rect region from the form's *current*
-    Width/Height, so it may only run once the window is back at its Normal-state
-    size. Shaping first baked the minimized bounds into the region and clipped the
-    restored WebView2 content - the "mini player only half loads when I re-open it"
-    bug. player_resize() always had the right order; show_player() did not."""
+    """_shape_player() derives the rounded-rect region from the form's *current* Width/Height, so
+    it may only run once the window is back at its Normal-state size."""
 
     def setUp(self):
         _force_windows_desktop(self)
@@ -419,15 +396,9 @@ class UnrecognisedEdgeChrome:
 
 
 class AutoplayFlagPatchTests(unittest.TestCase):
-    """The player window owns the only <audio> element and is driven over the socket,
-    so its play() has no user activation and Chromium rejects it with NotAllowedError
-    - nothing is audible until the window is revealed. (Verified: a *visible* window
-    is refused identically, so activation is the gate, not visibility.)
-
-    pywebview hardcodes AdditionalBrowserArguments, offers no setting for extra
-    arguments, and WebView2 ignores WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS once that
-    property is set - so the env var alone is dead code. These tests pin the patch
-    that actually delivers the flag, and pin that it fails safe."""
+    """The player window owns the only <audio> element and is driven over the socket, so its play()
+    has no user activation and Chromium rejects it with NotAllowedError - nothing is audible
+    until the window is revealed."""
 
     def setUp(self):
         self.saved = {k: v for k, v in sys.modules.items() if k == "webview" or k.startswith("webview.")}

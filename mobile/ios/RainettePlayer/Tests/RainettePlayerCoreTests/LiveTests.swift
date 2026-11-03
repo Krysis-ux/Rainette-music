@@ -32,6 +32,45 @@ struct AgainstTheSource {
         print("1 MB in \(Date().timeIntervalSince(started))s from client \(stream.url.query?.components(separatedBy: "&").first { $0.hasPrefix("c=") } ?? "?")")
     }
 
+    /// What CarPlay, the lock screen and the car's timeline are given. It was
+    /// two to three times the song, and the player sat silent through the rest.
+    @MainActor @Test func thePlayersLengthIsTheSongs() async throws {
+        for query in ["laufey from the start", "clairo juna", "daft punk one more time"] {
+            let song = try #require(try await MusicSearch.search(query).first)
+            let expected = try #require(song.durationS.map(Double.init))
+            let item = QueueItem(sourceId: song.sourceId, title: song.title, artist: song.artist,
+                                 thumbnailURL: song.thumbnailURL, durationS: expected)
+            let engine = PlayerEngine()
+            engine.setVolume(0)
+            _ = try await engine.play([item], at: 0, generation: 1)
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+            let reported = engine.snapshot().durationS
+            #expect(abs(reported - expected) < 2, "\(song.title): player says \(reported)s for a \(expected)s song")
+            engine.stop()
+        }
+    }
+
+    /// The end of a song is the start of the next, not a silent stretch the
+    /// length of the song again.
+    @MainActor @Test func aSongEndsOnTimeAndTheNextBegins() async throws {
+        let found = try await MusicSearch.search("clairo juna")
+        let queue = found.prefix(2).map {
+            QueueItem(sourceId: $0.sourceId, title: $0.title, artist: $0.artist, thumbnailURL: $0.thumbnailURL, durationS: $0.durationS.map(Double.init))
+        }
+        let engine = PlayerEngine()
+        engine.setVolume(0)
+        _ = try await engine.play(Array(queue), at: 0, generation: 1)
+        let length = engine.snapshot().durationS
+        engine.seek(to: length - 3)
+        var state = engine.snapshot()
+        for _ in 0..<24 where state.index != 1 {
+            try await Task.sleep(nanoseconds: 500_000_000)
+            state = engine.snapshot()
+        }
+        #expect(state.index == 1, "still on the first song at \(state.positionS)s of \(length)s")
+        engine.stop()
+    }
+
     @MainActor @Test func thePlayerPlaysAndMovesOn() async throws {
         let found = try await MusicSearch.search("daft punk one more time")
         let queue = found.prefix(2).map {
@@ -68,3 +107,4 @@ struct AgainstTheSource {
         engine.stop()
     }
 }
+

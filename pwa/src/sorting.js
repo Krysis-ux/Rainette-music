@@ -1,13 +1,5 @@
-/* Sorting, and the little control that drives it.
- *
- * Every list in this client arrived in whatever order the computer happened to
- * send it, with no way to reorder it. The desktop sorts, so the phone reading
- * the same library should too.
- *
- * The chosen mode is remembered per scope, because a sort is a preference about
- * a kind of list rather than about one visit to it: a library sorted by artist
- * should still be sorted by artist tomorrow.
- */
+/* Sorting, and the little control that drives it. Every list in this client arrived in whatever
+ * order the computer happened to send it, with no way to reorder it. */
 
 import { el, icon } from './dom.js';
 import { actionSheet } from './sheets.js';
@@ -39,10 +31,7 @@ function albumOf(track) {
 /* Sorts available for a list of tracks. 'default' keeps the order the computer
  * sent, which for an album is its running order and for search is relevance —
  * both of which are real orders worth being able to get back to. */
-/* Popularity is play counts where the computer supplied them. Where it did not,
- * every track scores zero and the sort is a no-op that leaves the list in the
- * order it arrived — which for a search *is* relevance, so the answer stays
- * sensible rather than becoming arbitrary. */
+/* Popularity is play counts where the computer supplied them. */
 function byPopularity(a, b) {
 	const left = trackPopularity(a);
 	const right = trackPopularity(b);
@@ -127,12 +116,7 @@ function writeSort(scope, id) {
 	try { localStorage.setItem(STORE_PREFIX + scope, id); } catch { /* storage quota */ }
 }
 
-/** A sort button that opens the mode list and reports the choice.
- *
- *  Returns `{ node, apply, current }`. `apply()` fires `onChange` with the
- *  remembered mode, so a caller renders once and does not have to duplicate the
- *  "what was it last time" logic.
- */
+/** A sort button that opens the mode list and reports the choice. */
 export function sortControl({ scope, modes = TRACK_SORTS, onChange, label = 'Sort' }) {
 	let current = readSort(scope, modes);
 
@@ -154,7 +138,6 @@ export function sortControl({ scope, modes = TRACK_SORTS, onChange, label = 'Sor
 			items: modes.map(mode => ({
 				id: mode.id,
 				label: mode.label,
-				hint: mode.hint || '',
 				active: mode.id === current,
 				run: () => {
 					if (mode.id === current) return;

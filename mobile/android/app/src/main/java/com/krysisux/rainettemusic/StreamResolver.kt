@@ -26,14 +26,7 @@ import java.net.URLDecoder
 import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Search and stream resolution, entirely on this phone.
- *
- * NewPipeExtractor talks to YouTube directly through [UrlDownloader]; nothing
- * goes through a Rainette server, a computer, or anybody else's proxy. Every
- * failure leaves here as a [ResolveException] with one of the codes the web
- * layer knows how to word (see `pwa/src/source-provider.js`).
- */
+/** Search and stream resolution, entirely on this phone. */
 object StreamResolver {
 
     data class Resolved(val url: String, val userAgent: String, val mimeType: String, val expiresAtMs: Long)
@@ -78,11 +71,7 @@ object StreamResolver {
 
     fun isValidId(id: String) = ID.matches(id)
 
-    /**
-     * A playable audio URL for [videoId], from cache unless [force] or near
-     * expiry. The quick path first; NewPipe's full extraction when it does not
-     * answer, and always when re-asking after the source refused an address.
-     */
+    /** A playable audio URL for [videoId], from cache unless [force] or near expiry. */
     fun resolve(videoId: String, force: Boolean = false, now: Long = System.currentTimeMillis()): Resolved {
         if (!isValidId(videoId)) throw ResolveException(INVALID, "Not a track this app can play.")
         if (!force) cache[videoId]?.takeIf { it.expiresAtMs - now > EXPIRY_MARGIN_MS }?.let { return it }
@@ -96,12 +85,8 @@ object StreamResolver {
         return fullResolve(videoId, now)
     }
 
-    /*
-     * One request, as YouTube's visionOS client, whose addresses are the ones
-     * the source serves (other clients' are refused for many songs). NewPipe's
-     * full extraction also downloads and runs YouTube's web player, which is
-     * most of the several seconds a song took to start; this is ~0.3 s.
-     */
+    /* One request, as YouTube's visionOS client, whose addresses are the ones the source serves
+     * (other clients' are refused for many songs). */
     private const val VISITOR_URL = "https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false"
     private const val PLAYER_URL = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"
     private const val VISION_UA =
@@ -202,11 +187,7 @@ object StreamResolver {
         return resolved
     }
 
-    /**
-     * Fail every request still in flight. Called when the network is lost: a
-     * socket opened on the old network does not error, it hangs until its read
-     * timeout -- measured at 30 s on an emulator -- and the music with it.
-     */
+    /** Fail every request still in flight. */
     fun abortInFlight() = UrlDownloader.abortAll()
 
     /** Forget a URL the source has refused, so the next open resolves afresh. */
@@ -251,15 +232,21 @@ object StreamResolver {
     private fun largest(images: List<Image>): String =
         images.filter { it.url.startsWith("https://") }.maxByOrNull { it.height }?.url.orEmpty()
 
-    /**
-     * AAC first: both Media3 and AVFoundation decode it everywhere, and it is the
-     * format the desktop serves phones too. Opus is the fallback, highest bitrate wins.
-     */
-    fun pickAudio(candidates: List<Candidate>): Candidate? {
+    /** AAC first (every phone decodes it); Opus as the fallback. Highest bitrate wins, lowest with data saver. */
+    fun pickAudio(candidates: List<Candidate>, saver: Boolean = dataSaver): Candidate? {
         val usable = candidates.filter { it.isUrl && it.url.startsWith("https://") }
-        return usable.filter { it.suffix == "m4a" }.maxByOrNull { it.bitrate }
-            ?: usable.maxByOrNull { it.bitrate }
+        val aac = usable.filter { it.suffix == "m4a" }
+        if (saver) return aac.minByOrNull { it.bitrate } ?: usable.minByOrNull { it.bitrate }
+        return aac.maxByOrNull { it.bitrate } ?: usable.maxByOrNull { it.bitrate }
     }
+
+    /** Data saver picks the smallest stream. Changing it drops the found addresses. */
+    @Volatile
+    var dataSaver = false
+        set(value) {
+            if (field != value) cache.clear()
+            field = value
+        }
 
     /** The `expire` query parameter, in ms, or a conservative default. */
     fun expiresAt(url: String, now: Long): Long {

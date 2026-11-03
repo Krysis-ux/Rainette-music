@@ -138,6 +138,7 @@ struct RecentsView: View {
 struct ArtistGrid: View {
     let artists: [Artist]
     @Environment(AppModel.self) private var app
+    @Environment(LibraryModel.self) private var library
     @Environment(Router.self) private var router
     @AppStorage(Preference.layout) private var layout = "grid"
 
@@ -152,7 +153,7 @@ struct ArtistGrid: View {
             LazyVStack(spacing: 2) {
                 ForEach(artists) { artist in
                     EntityRow(title: artist.name, subtitle: artist.trackCount > 0 ? Format.count(artist.trackCount, "song") : artist.subscribers,
-                              artworkURL: artist.artworkURL, circle: true, symbol: "music.mic",
+                              artworkURL: library.artwork(for: artist), circle: true, symbol: "music.mic",
                               play: { app.play(artist: artist) }, open: { router.open(.artist(artist)) })
                         .contextMenu { ArtistMenu(artist: artist) }
                 }

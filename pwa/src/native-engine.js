@@ -1,17 +1,4 @@
-/* The on-device player in Rainette's Android app.
- *
- * Inside the native app, a queue of streamed songs is played by a media
- * service on the phone (mobile/android/…/PlaybackService.kt), not by the
- * <audio> element: the service keeps the music going with the screen off and
- * the page asleep, and owns the notification, the lock screen and Bluetooth.
- * This module is the page's half of that contract, spoken through Capacitor's
- * injected bridge. In a browser there is no bridge and every export is inert:
- * `nativeAvailable()` is false and nothing else is reached.
- *
- * Every play request carries a generation. The service echoes it on every
- * event, and anything from an older request is dropped here, so a slow answer
- * for the song you skipped past can never repaint, or restart, the one you
- * chose instead. */
+/* The on-device player in Rainette's Android app. */
 
 import { artistName, artworkAt, trackDuration } from './state.js';
 
@@ -49,6 +36,14 @@ export const nativeState = { playing: false, loading: false, ended: false, index
 
 let generation = 0;
 let handlers = { onState: () => {}, onError: () => {} };
+const routeListeners = new Set();
+
+/** Told whenever the phone's audio output changes (headphones in, Bluetooth on). */
+export function onNativeRoute(listener) {
+	routeListeners.add(listener);
+	listen();
+	return () => routeListeners.delete(listener);
+}
 
 export function configureNative(options = {}) {
 	handlers = { ...handlers, ...options };
@@ -72,13 +67,7 @@ function absorbAndTell(snapshot) {
 	return snapshot;
 }
 
-/* Events arrive through the plugin's own `watch` channel, not Capacitor's
- * addListener. Capacitor clears every plugin listener when the WebView reports
- * the page has started (`bridge.reset()`), and on a real phone (Galaxy Note 8,
- * Android 9) that report arrived after these modules had registered theirs, so
- * the page silently stopped hearing the service. The plugin holds the watch
- * call itself, out of the reset's reach; the page id lets a reloaded page
- * replace the old one's channel rather than add to it. */
+/* Events arrive through the plugin's own `watch` channel, not Capacitor's addListener. */
 const PAGE = Math.random().toString(36).slice(2);
 let listening = false;
 
@@ -89,6 +78,10 @@ function listen() {
 		if (error || !data) return;
 		if (data.event === 'error') {
 			if (Number(data.generation) === generation) handlers.onError(failure(data));
+			return;
+		}
+		if (data.event === 'route') {
+			for (const listener of routeListeners) listener(data);
 			return;
 		}
 		absorbAndTell(data);
@@ -129,10 +122,8 @@ function checkProtocol() {
 	return checked;
 }
 
-/**
- * Replace the queue and start (or prepare) `index`. Resolves true once the
- * track has loaded, false if a newer request superseded this one meanwhile.
- */
+/** Replace the queue and start (or prepare) `index`. Resolves true once the track has loaded, false
+ * if a newer request superseded this one meanwhile. */
 export async function nativeLoad(queue, index, { resumeAt = 0, startPaused = false, repeat = 'off' } = {}) {
 	listen();
 	generation += 1;
@@ -181,12 +172,8 @@ export const nativeRepeat = mode => call('setRepeat', { mode });
 export const nativeSetVolume = volume => call('setVolume', { volume: Math.max(0, Math.min(1, Number(volume) || 0)) });
 export const nativeSync = () => { listen(); return call('getState').then(absorbAndTell); };
 
-/**
- * What the service is already playing, for a page that has just opened over it
- * (the app was swiped away and reopened while music played). Adopts the
- * service's generation, since this page never asked for anything, and returns
- * its queue and position, or null when it holds nothing.
- */
+/** What the service is already playing, for a page that has just opened over it (the app was swiped
+ * away and reopened while music played). */
 export async function nativeRestore() {
 	if (!present) return null;
 	listen();
@@ -205,6 +192,18 @@ export async function nativeSearch(query) {
 
 /** The app's own version, and whether it can install a newer one itself. */
 export const nativeInfo = () => call('capabilities');
+
+/** Speed, streaming quality and silence skipping for the phone's player. */
+export const nativeConfigure = options => call('configure', options);
+
+/** Where the phone's sound goes: `{ current, devices }`, Bluetooth included. */
+export const nativeOutputs = () => { listen(); return call('outputs'); };
+
+/** Send the sound to one of `nativeOutputs().devices` (Android). */
+export const nativePickOutput = id => call('pickOutput', { id: String(id || '') });
+
+/** The system's own device picker (iPhone), or Bluetooth settings (Android). */
+export const nativeShowOutputs = () => call('showOutputPicker');
 
 /** Download a release APK and open the system installer (Android). */
 export const nativeInstallUpdate = url => call('installUpdate', { url });

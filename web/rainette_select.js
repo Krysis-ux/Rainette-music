@@ -57,12 +57,8 @@ export function createSelect({ options, value, onChange, ariaLabel, className = 
 		if (!root.contains(e.target) && !list.contains(e.target)) closeSelf();
 	}
 
-	// A handful of call sites (e.g. the smart-playlist dialog) sit inside an
-	// overflow-y:auto container. An element stays clipped by a scrolling
-	// ancestor's box regardless of its own position value as long as it's
-	// still a DOM descendant of it - position:fixed alone doesn't escape that.
-	// So the list is reparented to document.body while open (a standard
-	// "portal" pattern) and positioned with computed viewport coordinates.
+	// A handful of call sites (e.g. the smart-playlist dialog) sit inside an overflow-y:auto
+	// container.
 	function positionList() {
 		const r = button.getBoundingClientRect();
 		const viewport = window.visualViewport;

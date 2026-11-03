@@ -5,6 +5,14 @@
 A self-contained desktop music player for Windows and macOS, with a companion
 web app that puts the same library on your phone.
 
+| Phone | Desktop |
+|---|---|
+| <img src="docs/media/phone.gif" width="260" alt="Rainette on iPhone: Home, Browse, an editors' playlist, Now Playing, Play on, Settings"> | <img src="docs/media/desktop.gif" width="520" alt="Rainette on the desktop: Songs, Recents, Settings and its help"> |
+
+Phone apps for Android (APK) and iPhone (IPA) are on the
+[releases page](https://github.com/Krysis-ux/Rainette-music/releases/latest);
+they play on their own, no computer needed.
+
 ## Install
 
 ### Windows
@@ -131,6 +139,23 @@ what deploys to Vercel.
 - Detached always-on-top mini player with volume and a 5-band equalizer
 - Lyrics, and listening insights with daily, weekly, and monthly rhythm charts
 - Phone access through the Rainette Music PWA, with per-device pairing
+- Editors' playlists by mood and genre on the phone's Search tab
+- Play on any Bluetooth or wired output connected to the phone, or on the computer
+- Audio quality (High or Data saver), playback speed, skip silence (Android)
+- Developer settings: animation speed, compact rows, catalog region, build details
+
+## Repo map
+
+| Folder | What lives there |
+|---|---|
+| root `*.py` | The desktop engine (server, library, tunnel, phone gateway). `main.py` starts it. |
+| `web/` | The desktop interface (Windows and the Classic macOS window). |
+| `macos/` | The native macOS app (SwiftUI). It launches the engine. |
+| `pwa/` | The phone interface, shared by the web app, the APK and the IPA. |
+| `mobile/` | Android (`android/`) and iPhone (`ios/`) shells and their native players. |
+| `tests/` | The Python and browser test suites (`python -m pytest`). |
+| `release/`, `installer/` | Release builds and the Windows installer. |
+| `docs/` | Design, product and research notes, the mobile audit, and README media. |
 
 ## Development
 

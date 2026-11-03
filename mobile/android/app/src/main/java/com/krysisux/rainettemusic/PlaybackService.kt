@@ -32,15 +32,16 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.File
 
-/**
- * The one audio owner on Android.
- *
- * The player, its queue and its notification live here rather than in the
- * WebView, so a locked screen or a backgrounded app keeps playing and keeps
- * advancing: each track's stream is resolved by [ResolvingDataSource] when the
- * player opens it, on the player's own loading thread, with no JavaScript in
- * the loop.
- */
+/** The one audio owner on Android. */
+/** Settings the page changes on the service's player: silence skipping and the output device. */
+object PlaybackOptions {
+    @Volatile var skipSilence = false
+    @Volatile var preferredDevice: android.media.AudioDeviceInfo? = null
+    @Volatile var onChange: (() -> Unit)? = null
+
+    fun changed() = onChange?.invoke()
+}
+
 @UnstableApi
 class PlaybackService : MediaSessionService() {
 
@@ -81,6 +82,12 @@ class PlaybackService : MediaSessionService() {
         // plays, so a skip or the end of a song starts the next one at once.
         player.preloadConfiguration = ExoPlayer.PreloadConfiguration(PRELOAD_US)
         player.addListener(Recovery(player))
+        val apply = {
+            player.skipSilenceEnabled = PlaybackOptions.skipSilence
+            player.setPreferredAudioDevice(PlaybackOptions.preferredDevice)
+        }
+        apply()
+        PlaybackOptions.onChange = { main.post(apply) }
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -134,6 +141,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        PlaybackOptions.onChange = null
         main.removeCallbacksAndMessages(null)
         networkCallback?.let { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(it) }
         session?.run {
@@ -146,11 +154,8 @@ class PlaybackService : MediaSessionService() {
         super.onDestroy()
     }
 
-    /**
-     * A dropped network is a pause in the music, not the end of it: re-prepare
-     * with backoff, a bounded number of times, then report and stop trying. A
-     * permanent failure (gone, region-locked) is reported at once.
-     */
+    /** A dropped network is a pause in the music, not the end of it: re-prepare with backoff, a
+     * bounded number of times, then report and stop trying. */
     private inner class Recovery(private val player: ExoPlayer) : Player.Listener {
         override fun onPlayerError(error: PlaybackException) {
             val code = errorCode(error)

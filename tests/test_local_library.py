@@ -1,11 +1,4 @@
-"""The computer's own MP3s: scanning, identity, and serving the bytes.
-
-The properties under test here are the ones whose failure is silent and
-expensive. A scanner that deletes looks fine until somebody unplugs a drive; an
-identity derived from the path looks fine until somebody reorganises a folder.
-Both destroy playlists, and both would be discovered by a user rather than by a
-crash, so they are pinned here.
-"""
+"""The computer's own MP3s: scanning, identity, and serving the bytes."""
 
 import ntpath
 import os
@@ -64,11 +57,8 @@ class LocalScannerTests(unittest.TestCase):
     # ── What counts as music ────────────────────────────────────────────────
 
     def test_extension_set_matches_the_phone(self):
-        """`AUDIO_PATTERN` at pwa/src/local.js:149, transcribed.
-
-        If the two ends disagree, the same folder is a different library
-        depending on which screen you are looking at.
-        """
+        """`AUDIO_PATTERN` at pwa/src/local.js:149, transcribed. If the two ends disagree, the same
+        folder is a different library depending on which screen you are looking at."""
         for name in ("a.mp3", "a.m4a", "a.aac", "a.flac", "a.wav", "a.ogg",
                      "a.oga", "a.opus", "a.weba", "a.webm", "a.aif", "a.aiff",
                      "a.alac", "A.MP3", "a.FLAC"):
@@ -117,11 +107,7 @@ class LocalScannerTests(unittest.TestCase):
         self.assertEqual(tagged["Untagged Title"]["artist"], "Untagged Artist")
 
     def test_a_computer_without_mutagen_still_builds_a_library(self):
-        """The dependency is optional in the way yt-dlp is in music_bridge.
-
-        The fixture is deliberately a file whose tags *would* be readable, so
-        this asserts the guard clause rather than an unparseable file.
-        """
+        """The dependency is optional in the way yt-dlp is in music_bridge."""
         path = write_track(self.music, "01 - Nils - Says.mp3", body=REAL_MP3_BYTES)
         if local_library.MUTAGEN_AVAILABLE:
             from mutagen.id3 import ID3, TIT2
@@ -183,10 +169,8 @@ class LocalScannerTests(unittest.TestCase):
         self.assertEqual(titles, ["Coda", "Says"])
 
     def test_skip_dir_names_fold_case_the_way_windows_does(self):
-        """``node_modules`` is skipped by exact name on POSIX; on a
-        case-folding filesystem a differently-cased ``Node_Modules`` is the
-        same directory entry and must be skipped too.
-        """
+        """``node_modules`` is skipped by exact name on POSIX; on a case-folding filesystem a
+        differently-cased ``Node_Modules`` is the same directory entry and must be skipped too."""
         write_track(self.music, "01 - Nils - Says.mp3")
         write_track(self.music / "Node_Modules", "vendored.mp3")
 
@@ -202,12 +186,7 @@ class LocalScannerTests(unittest.TestCase):
         self.assertEqual(titles, ["Says"])
 
     def test_symlinks_pointing_outside_the_root_are_never_followed(self):
-        """A folder of symlinks must not become a file-disclosure primitive.
-
-        Grants name a track id rather than a path, so this is the second layer
-        rather than the first — which is precisely the layer that has to hold
-        when the first one turns out to be wrong.
-        """
+        """A folder of symlinks must not become a file-disclosure primitive."""
         secret_dir = self.root / "private"
         secret = write_track(secret_dir, "id_rsa.mp3")
         write_track(self.music, "Nils - Real.mp3")
@@ -227,11 +206,8 @@ class LocalScannerTests(unittest.TestCase):
         self.assertFalse(any(p.startswith(secret_real) for p in paths), paths)
 
     def test_a_symlink_that_stays_inside_the_root_is_still_scanned(self):
-        """Containment, not a blanket ban on symlinks.
-
-        Somebody who organises their library with links inside it has done
-        nothing wrong, and refusing those would be a different bug.
-        """
+        """Containment, not a blanket ban on symlinks. Somebody who organises their library with
+        links inside it has done nothing wrong, and refusing those would be a different bug."""
         real = write_track(self.music / "Album", "Nils - Says.mp3")
         try:
             os.symlink(real, self.music / "Favourites.mp3")
@@ -242,20 +218,7 @@ class LocalScannerTests(unittest.TestCase):
         self.assertEqual(found, ["Favourites.mp3", "Nils - Says.mp3"])
 
     def test_a_directory_symlink_loop_never_recurses_without_end(self):
-        """The Windows-junction blind spot, reproduced here without Windows.
-
-        A real NTFS junction is a reparse point tagged
-        ``IO_REPARSE_TAG_MOUNT_POINT`` rather than ``IO_REPARSE_TAG_SYMLINK``,
-        so ``os.path.islink()`` -- which is exactly what
-        ``os.walk(followlinks=False)`` relies on to decline recursion -- does
-        not recognise one as a link at all. A junction that loops back on a
-        folder already walked would otherwise recurse until the process falls
-        over. Patching ``islink`` to always say "not a link" reproduces that
-        blind spot on this platform, so the containment/visited guard
-        ``iter_audio_files`` now applies to *directories* (not just files) is
-        what actually has to hold here, the same way it would have to on
-        Windows.
-        """
+        """The Windows-junction blind spot, reproduced here without Windows."""
         write_track(self.music, "Nils - Real.mp3")
         loop = self.music / "Loop"
         try:
@@ -285,12 +248,9 @@ class LocalScannerTests(unittest.TestCase):
         self.assertEqual(self.state.list_music_tracks(), [])
 
     def test_a_locked_file_is_skipped_without_aborting_the_scan(self):
-        """A file another process holds open -- a player, an indexer,
-        antivirus -- is extremely common on Windows and raises
-        ``PermissionError`` (a subclass of ``OSError``) the moment anything
-        tries to stat or open it. One such file must cost a skipped row, never
-        the rest of the folder.
-        """
+        """A file another process holds open -- a player, an indexer, antivirus -- is extremely
+        common on Windows and raises ``PermissionError`` (a subclass of ``OSError``) the moment
+        anything tries to stat or open it."""
         write_track(self.music, "Nils - Says.mp3")
         write_track(self.music, "Nils - Locked.mp3")
 
@@ -316,12 +276,9 @@ class LocalScannerTests(unittest.TestCase):
         )
 
     def test_a_locked_files_tags_fall_back_to_its_filename(self):
-        """The same locked-file story, one layer in: mutagen's own file open
-        can raise ``PermissionError`` even when ``os.stat`` on the same path
-        succeeded a moment earlier (the lock is taken and released by another
-        process in between). ``read_tags`` must absorb that too, the same way
-        it already absorbs a corrupt tag block.
-        """
+        """The same locked-file story, one layer in: mutagen's own file open can raise
+        ``PermissionError`` even when ``os.stat`` on the same path succeeded a moment earlier
+        (the lock is taken and released by another process in between)."""
         if not local_library.MUTAGEN_AVAILABLE:
             self.skipTest("mutagen is not installed in this environment")
         write_track(self.music, "Nils - Locked.mp3")
@@ -345,12 +302,8 @@ class LocalScannerTests(unittest.TestCase):
     # ── Identity ────────────────────────────────────────────────────────────
 
     def test_source_id_is_opaque_and_survives_a_retag(self):
-        """Neither the path nor `name|size|mtime` may be the identity.
-
-        A retag rewrites the tags and the modification time. If the id were
-        derived from either, this second scan would create a *second* row and
-        the playlist below would be pointing at a track nobody can see.
-        """
+        """Neither the path nor `name|size|mtime` may be the identity. A retag rewrites the tags
+        and the modification time."""
         path = write_track(self.music, "01 - Nils - Says.mp3")
         self.register_and_scan()
         before = self.state.list_music_tracks()[0]
@@ -407,11 +360,8 @@ class LocalScannerTests(unittest.TestCase):
                          [before["id"]])
 
     def test_move_repair_only_claims_rows_a_scan_gave_up_on(self):
-        """A copy must not steal the original's row.
-
-        Two identical files that are both present are two tracks; only a row
-        already marked missing is a candidate for repair.
-        """
+        """A copy must not steal the original's row. Two identical files that are both present are
+        two tracks; only a row already marked missing is a candidate for repair."""
         write_track(self.music, "Nils - Says.mp3")
         self.register_and_scan()
         original = self.state.list_music_tracks()[0]
@@ -445,12 +395,7 @@ class LocalScannerTests(unittest.TestCase):
         self.assertEqual(len(self.state.list_playlist_tracks(playlist["id"])), 2)
 
     def test_an_unavailable_root_marks_nothing_at_all(self):
-        """The unplugged external drive.
-
-        Marking the whole library missing because a volume is not mounted is,
-        from the point of view of anyone reading a playlist, the same damage as
-        deleting it.
-        """
+        """The unplugged external drive."""
         write_track(self.music, "Nils - Says.mp3")
         self.register_and_scan()
 
@@ -489,11 +434,8 @@ class LocalScannerTests(unittest.TestCase):
     # ── Reporting ───────────────────────────────────────────────────────────
 
     def test_scan_only_walks_registered_roots(self):
-        """A phone may re-run a scan; it may never say where.
-
-        Folder choice happens at the computer. An unregistered path arriving
-        here is not an instruction, it is something to drop.
-        """
+        """A phone may re-run a scan; it may never say where. Folder choice happens at the
+        computer."""
         write_track(self.music, "Nils - Says.mp3")
         elsewhere = self.root / "private"
         write_track(elsewhere, "Secret - Thing.mp3")
@@ -521,12 +463,7 @@ class LocalScannerTests(unittest.TestCase):
         self.assertEqual(root["track_count"], 3)
 
     def test_an_unchanged_file_is_not_re_read_on_a_rescan(self):
-        """Rescanning is the common operation, not scanning.
-
-        A folder is scanned once and rescanned forever, so re-reading every tag
-        block to arrive back at the state we started in is most of the cost of
-        the feature for none of its value.
-        """
+        """Rescanning is the common operation, not scanning."""
         write_track(self.music, "Nils - Says.mp3")
         write_track(self.music, "Nils - Coda.mp3")
         self.register_and_scan()
@@ -581,14 +518,7 @@ class LocalScannerTests(unittest.TestCase):
 
 
 class WindowsPathCaseInsensitivityTests(unittest.TestCase):
-    """Windows (and macOS's usual default) filesystems fold case; POSIX does
-    not. These pin the ``os.path.normcase`` contract that the containment
-    check, the rescan bookkeeping, and move-repair all now depend on, by
-    patching ``normcase`` to fold case the way Windows does rather than
-    relying on this machine's own volume happening to do the same -- so the
-    behaviour is verified here even though nothing in this repo runs on
-    Windows.
-    """
+    """Windows (and macOS's usual default) filesystems fold case; POSIX does not."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -604,12 +534,7 @@ class WindowsPathCaseInsensitivityTests(unittest.TestCase):
         return local_library.scan(self.state, [str(self.music)])
 
     def test_within_matches_this_platforms_own_case_rule(self):
-        """Containment has to agree with the filesystem it is guarding.
-
-        Asserted against the real platform rather than a simulated one, because
-        the two answers are opposite and both are correct: POSIX must keep
-        `Song.mp3` and `song.mp3` apart, and Windows must not.
-        """
+        """Containment has to agree with the filesystem it is guarding."""
         root = os.path.realpath(str(self.music))
         inside = os.path.join(root, "Song.mp3")
         self.assertTrue(local_library._within(root, inside))
@@ -623,11 +548,7 @@ class WindowsPathCaseInsensitivityTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "normcase is already Windows-like here; the real rule is covered above")
     def test_within_folds_case_the_way_windows_does(self):
-        """Simulated only where the real behaviour cannot be observed.
-
-        Patching normcase to str.lower drops its slash folding too, so on a
-        real Windows run this simulation is both unnecessary and wrong.
-        """
+        """Simulated only where the real behaviour cannot be observed."""
         root = os.path.realpath(str(self.music))
         original_normcase = os.path.normcase
         os.path.normcase = str.lower
@@ -638,11 +559,9 @@ class WindowsPathCaseInsensitivityTests(unittest.TestCase):
             os.path.normcase = original_normcase
 
     def test_an_unchanged_file_is_recognised_even_if_its_path_comes_back_recased(self):
-        """The scan-to-scan case round-trip this is defence in depth for: a
-        mapped drive, a reparse point, or simply Windows' own realpath can
-        hand back a path cased differently than the one already stored for
-        the very same file.
-        """
+        """The scan-to-scan case round-trip this is defence in depth for: a mapped drive, a reparse
+        point, or simply Windows' own realpath can hand back a path cased differently than the
+        one already stored for the very same file."""
         path = write_track(self.music, "Nils - Says.mp3")
         self.register_and_scan()
         stored = self.state.list_music_tracks()[0]["file_path"]
@@ -678,13 +597,9 @@ class WindowsPathCaseInsensitivityTests(unittest.TestCase):
         self.assertEqual(self.state.list_music_tracks()[0]["missing_since"], "")
 
     def test_move_repair_matches_a_basename_that_only_changed_case(self):
-        """A folder reorganisation that renames ``song.mp3`` to ``Song.mp3``
-        while its size and mtime survive the move must repair the existing
-        row in place on Windows -- not create a second one and leave the
-        first dangling as missing forever. On POSIX the two basenames really
-        are different files, so ``os.path.normcase`` is patched to fold case
-        the way Windows does, the same as the other tests in this class.
-        """
+        """A folder reorganisation that renames ``song.mp3`` to ``Song.mp3`` while its size and
+        mtime survive the move must repair the existing row in place on Windows -- not create a
+        second one and leave the first dangling as missing forever."""
         state_obj = MusicState(self.root / "case-move.db")
         original_path = str(self.music / "Album" / "song.mp3")
         original = state_obj.upsert_local_track(
@@ -713,21 +628,7 @@ class WindowsPathCaseInsensitivityTests(unittest.TestCase):
 
 
 class WindowsRootSeparatorTests(unittest.TestCase):
-    """A root recorded with the "wrong" trailing separator must still work.
-
-    ``os.sep`` is ``"\\"`` on Windows, so a root that ends in a forward slash
-    (typed by a user, or handed back by a web-based folder picker that never
-    thinks in native separators) or a doubled-up separator (a drive root, once
-    normcase folds a stray ``/`` onto the ``\\`` already there) must still
-    collapse to exactly one trailing separator before it is used as a
-    containment prefix. Getting the order wrong -- stripping the separator
-    before folding case, instead of after -- leaves a duplicate that no stored
-    path can ever start with, which silently breaks the rescan optimisation
-    (``unchanged_local_paths``) and, worse, absence detection
-    (``mark_local_tracks_missing``) for that entire root. Reproduced here with
-    ``os.sep`` and ``os.path.normcase`` patched to Windows' own values, the
-    same technique as ``WindowsPathCaseInsensitivityTests`` above.
-    """
+    """A root recorded with the "wrong" trailing separator must still work."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -779,13 +680,8 @@ class WindowsRootSeparatorTests(unittest.TestCase):
 
 
 class LongPathTests(unittest.TestCase):
-    r"""Windows refuses any file operation on an absolute path once it is
-    roughly 260 characters long, which a music library nested a few
-    artist/album/disc folders deep hits routinely. ``long_path()`` is the
-    ``\\?\``-prefixed escape hatch for that -- exercised here with ``os.name``
-    and ``os.path.isabs`` patched to behave like Windows, since neither
-    changes just because ``os.name`` is reassigned on a POSIX interpreter.
-    """
+    r"""Windows refuses any file operation on an absolute path once it is roughly 260 characters
+    long, which a music library nested a few artist/album/disc folders deep hits routinely."""
 
     def setUp(self):
         self.original_name = os.name
@@ -921,20 +817,12 @@ class LocalBridgeCommandTests(unittest.TestCase):
         self.assertEqual(result["track_id"], track["id"])
         self.assertEqual(result["content_type"], "audio/mpeg")
         self.assertNotIn("expires_hint_s", result)
-        # The desktop has no gateway in front of it to mint a grant, so the url
-        # has to be something it can actually load. It used to be the empty
-        # string, which the desktop player treats as a failed resolve -- so
-        # every local and downloaded track showed an error there while playing
-        # perfectly on the phone.
+        # The desktop has no gateway in front of it to mint a grant, so the url has to be something
+        # it can actually load.
         self.assertEqual(result["url"], f"/local/{track['id']}")
 
     def test_only_the_desktop_app_can_reach_a_local_file_by_id(self):
-        """The desktop route is not a way around the grant a phone must hold.
-
-        `/local/{track_id}` names a track with no capability attached, which is
-        safe on the loopback app the local window talks to and would not be on
-        the companion app. This asserts the two route tables stay that way.
-        """
+        """The desktop route is not a way around the grant a phone must hold."""
         import server
 
         desktop = {str(route.resource.canonical) for route in server.build_app().router.routes()}
@@ -1013,13 +901,8 @@ class LocalCommandSurfaceTests(unittest.TestCase):
                 self.assertIn(command, server.COMPANION_COMMAND_TYPES)
 
     def test_root_mutation_is_gated_on_a_field_the_server_overwrites(self):
-        """The load-bearing link behind `cmd_music_local_roots`.
-
-        That handler refuses `add` and `remove` when `origin_device_id` is
-        present. The refusal is only sound because the gateway overwrites that
-        field for this command — otherwise a phone would simply omit it and name
-        any folder on the computer as a music root.
-        """
+        """The load-bearing link behind `cmd_music_local_roots`. That handler refuses `add` and
+        `remove` when `origin_device_id` is present."""
         self.assertIn("music_local_roots", server._DEVICE_STAMPED_TYPES)
         self.assertIn("music_client_capabilities", server._DEVICE_STAMPED_TYPES)
         self.assertIn("music_library_index", server._DEVICE_STAMPED_TYPES)
@@ -1084,11 +967,7 @@ class LocalAudioRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), ORIGIN)
 
     async def test_range_requests_are_answered_with_206_and_content_range(self):
-        """Seeking is the whole reason this route exists.
-
-        `web.FileResponse` implements Range; the assertions here are that we
-        actually let it, rather than re-deriving a solved problem badly.
-        """
+        """Seeking is the whole reason this route exists."""
         response = await self.client.get(
             "/audio/" + self.grant(),
             headers={"Origin": ORIGIN, "Range": "bytes=100-199"},

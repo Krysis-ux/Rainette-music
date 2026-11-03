@@ -1,11 +1,4 @@
-/* Which device owns the audio, as this phone understands it.
- *
- * Every "playing on ..." string in the app used to be built from the computer's
- * hostname and a local boolean, which meant the phone announced the computer
- * even while playing through its own speaker. The computer is now authoritative
- * about ownership and says so in one event; this module is where that answer
- * lands and the only place the rest of the client should ask.
- */
+/* Which device owns the audio, as this phone understands it. */
 
 import { state } from './state.js';
 
@@ -15,11 +8,7 @@ export function configureTarget(options = {}) {
 	onChange = options.onChange || onChange;
 }
 
-/** Adopt a broadcast target, ignoring anything we have already moved past.
- *
- *  Ordering is not guaranteed: a reconnect drains a backlog, so an older record
- *  can arrive after a newer one. Without the revision gate the phone would
- *  settle on whichever happened to land last. */
+/** Adopt a broadcast target, ignoring anything we have already moved past. */
 export function absorbPlaybackTarget(message) {
 	const revision = Number(message?.revision || 0);
 	if (revision && revision <= Number(state.playbackTarget?.revision || 0)) return;

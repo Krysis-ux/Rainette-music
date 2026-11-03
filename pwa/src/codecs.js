@@ -1,16 +1,4 @@
-/* What this phone can actually decode, told to the computer once per session.
- *
- * iOS Safari plays FLAC in an <audio> element but not Ogg or Opus. When the
- * computer offers a file it cannot decode, the element fails with an error that
- * carries no reason, and the phone reported it as "the audio stream expired" —
- * which is not merely unhelpful, it points at the wrong subsystem entirely and
- * sends you looking at your network.
- *
- * The computer cannot guess this: the same browser engine answers differently
- * across OS versions, and Android and iOS disagree. So the phone measures it
- * and says so, and the library can mark what will not play here before you tap
- * it rather than after.
- */
+/* What this phone can actually decode, told to the computer once per session. */
 
 import { command } from './bridge.js';
 
@@ -48,11 +36,7 @@ export function localCodecSupport() {
 	return support;
 }
 
-/** Tell the computer, so it can mark what this phone cannot play.
- *
- *  Fire-and-forget. An older computer does not know the command and refuses it,
- *  which costs nothing: without the marks the library simply behaves as it did
- *  before, offering everything and failing on the ones it should have greyed. */
+/** Tell the computer, so it can mark what this phone cannot play. */
 export function reportCodecSupport() {
 	return command('music_client_capabilities', { can_play: localCodecSupport() })
 		.catch(() => { /* older desktop, or offline */ });

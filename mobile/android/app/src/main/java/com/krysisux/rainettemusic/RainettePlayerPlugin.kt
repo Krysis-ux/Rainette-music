@@ -5,6 +5,10 @@ import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Color
+import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -44,17 +48,7 @@ object PlaybackEvents {
     }
 }
 
-/**
- * The page's only door into native playback. Every method takes plain data,
- * validates it, and drives [PlaybackService] through a MediaController, the
- * same way the notification and a Bluetooth headset do. Nothing here accepts a
- * URL to play: the page names a track, the service derives where it comes from.
- *
- * Events go through [watch], not Capacitor's addListener: `state` (on every
- * change, and each second while playing) and `error` (a failure the service
- * has given up on). Both carry the `generation` of the play request they
- * belong to, so the page can drop anything stale.
- */
+/** The page's only door into native playback. */
 @UnstableApi
 @CapacitorPlugin(name = "RainettePlayer")
 class RainettePlayerPlugin : Plugin() {
@@ -67,6 +61,23 @@ class RainettePlayerPlugin : Plugin() {
     /** The page's event channel, and which page instance owns it. Main thread only. */
     private val watchers = mutableListOf<PluginCall>()
     private var watchingPage = ""
+    private val audio by lazy { context.getSystemService(AudioManager::class.java) }
+    private val devices = object : AudioDeviceCallback() {
+        /* Fires once with every device at registration; only later ones are news. */
+        private var primed = false
+
+        override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>) {
+            // A newly connected headset takes the music, as the system would.
+            if (primed && added.any { it.isSink && it.type in EXTERNAL }) {
+                PlaybackOptions.preferredDevice = null
+                PlaybackOptions.changed()
+            }
+            primed = true
+            send("route", route())
+        }
+
+        override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) = send("route", route())
+    }
 
     private class Pending(val call: PluginCall, val sourceId: String, val generation: Int)
 
@@ -74,10 +85,12 @@ class RainettePlayerPlugin : Plugin() {
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
         controllerFuture = MediaController.Builder(context, token).buildAsync()
         withController { it.addListener(Events()) }
+        audio.registerAudioDeviceCallback(devices, main)
         PlaybackEvents.onError = { code, final -> main.post { onServiceError(code, final) } }
     }
 
     override fun handleOnDestroy() {
+        audio.unregisterAudioDeviceCallback(devices)
         PlaybackEvents.onError = null
         main.removeCallbacksAndMessages(null)
         MediaController.releaseFuture(controllerFuture)
@@ -87,14 +100,7 @@ class RainettePlayerPlugin : Plugin() {
     /* A page that was asleep missed events; give it the truth on return. */
     override fun handleOnResume() = withController { emitState(it) }
 
-    /**
-     * Subscribe the page to `state` and `error` events. Capacitor's own
-     * listeners are wiped by `bridge.reset()` when the WebView reports the page
-     * started, and on a Galaxy Note 8 that report arrived after the page had
-     * registered them, so the page silently stopped hearing the service. A call
-     * this plugin holds itself is untouched by the reset. One page at a time:
-     * a new page id (a reload) replaces the old page's callbacks.
-     */
+    /** Subscribe the page to `state` and `error` events. */
     @PluginMethod(returnType = PluginMethod.RETURN_CALLBACK)
     fun watch(call: PluginCall) {
         val page = call.getString("page").orEmpty()
@@ -124,12 +130,8 @@ class RainettePlayerPlugin : Plugin() {
             .put("installs_updates", !debuggable))
     }
 
-    /**
-     * Download a release APK and hand it to the system installer, which asks
-     * the person to confirm. A sideloaded app has no store to update it, and
-     * Android never lets one replace itself silently. Only this project's own
-     * GitHub release asset is accepted.
-     */
+    /** Download a release APK and hand it to the system installer, which asks the person to
+     * confirm. */
     @PluginMethod
     fun installUpdate(call: PluginCall) {
         val url = call.getString("url").orEmpty()
@@ -219,11 +221,7 @@ class RainettePlayerPlugin : Plugin() {
         }
     }
 
-    /**
-     * Swap everything around the current track without interrupting it. Refused
-     * when the current track is not where the page thinks it is, so the page
-     * falls back to a fresh [play] instead of the two queues drifting apart.
-     */
+    /** Swap everything around the current track without interrupting it. */
     @PluginMethod
     fun setQueue(call: PluginCall) {
         val items = parseQueue(call) ?: return
@@ -314,11 +312,7 @@ class RainettePlayerPlugin : Plugin() {
         call.resolve(snapshot)
     }
 
-    /**
-     * Paint the window behind the system bars in the page's theme colour. Where
-     * the WebView is inset rather than edge to edge, that window is what shows
-     * under the clock, and a dark one under a light theme hid the icons.
-     */
+    /** Paint the window behind the system bars in the page's theme colour. */
     @PluginMethod
     fun setSystemBarColor(call: PluginCall) {
         val raw = call.getString("color").orEmpty()
@@ -334,11 +328,7 @@ class RainettePlayerPlugin : Plugin() {
         }
     }
 
-    /* A file waiting for the system save screen. On disk, not in memory or in
-     * the call: Capacitor keeps a pending call's data in the activity's saved
-     * state, and a song there is a 14 MB parcel that Android kills the app for
-     * the moment the save screen covers it. On disk it also outlives the
-     * process being reclaimed while the screen is open. */
+    /* A file waiting for the system save screen. */
     private val staged get() = File(context.cacheDir, "staged")
 
     /** Hold a file's bytes (base64) for `saveFile`, replacing any held before. */
@@ -362,12 +352,7 @@ class RainettePlayerPlugin : Plugin() {
         }
     }
 
-    /**
-     * Save the staged file where the person chooses, through the system's own
-     * save screen. A WebView cannot save a page's file itself: a download link
-     * and the web's save picker both do nothing in one. Resolves `{ saved }`,
-     * false when the screen was dismissed.
-     */
+    /** Save the staged file where the person chooses, through the system's own save screen. */
     @PluginMethod
     fun saveFile(call: PluginCall) {
         if (!File(staged, STAGED_NAME).exists()) return call.reject("Nothing to save.", StreamResolver.INVALID)
@@ -401,13 +386,93 @@ class RainettePlayerPlugin : Plugin() {
         }
     }
 
+    /* ── Speed, quality and outputs ─────────────────────────────────────── */
+
+    /** Playback speed, streaming quality and silence skipping, from the page's settings. */
+    @PluginMethod
+    fun configure(call: PluginCall) {
+        val rate = (call.getDouble("rate") ?: 1.0).coerceIn(0.5, 2.0).toFloat()
+        StreamResolver.dataSaver = call.getString("quality") == "saver"
+        PlaybackOptions.skipSilence = call.getBoolean("skip_silence", false) == true
+        PlaybackOptions.changed()
+        withController { c ->
+            c.setPlaybackSpeed(rate)
+            call.resolve(state(c))
+        }
+    }
+
+    /** Where the sound can go: this phone, wired and Bluetooth devices connected to it. */
+    @PluginMethod
+    fun outputs(call: PluginCall) = call.resolve(route())
+
+    /** Send the sound to one of [outputs]. */
+    @PluginMethod
+    fun pickOutput(call: PluginCall) {
+        val device = outputDevices().firstOrNull { it.id.toString() == call.getString("id") }
+            ?: return call.reject("That device isn't connected any more.", StreamResolver.INVALID)
+        PlaybackOptions.preferredDevice = device
+        PlaybackOptions.changed()
+        main.postDelayed({ call.resolve(route()) }, 150)
+    }
+
+    /** The system's media output panel where there is one, else Bluetooth settings. */
+    @PluginMethod
+    fun showOutputPicker(call: PluginCall) {
+        val panel = Intent("com.android.settings.panel.action.MEDIA_OUTPUT")
+            .putExtra("com.android.settings.panel.extra.PACKAGE_NAME", context.packageName)
+        val bluetooth = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+        activity.runOnUiThread {
+            try {
+                activity.startActivity(if (panel.resolveActivity(context.packageManager) != null) panel else bluetooth)
+                call.resolve()
+            } catch (e: Exception) {
+                call.reject("Open Bluetooth in your phone's settings.", StreamResolver.INVALID)
+            }
+        }
+    }
+
+    private fun outputDevices(): List<AudioDeviceInfo> =
+        audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            .filter { it.type in EXTERNAL || it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            .distinctBy { it.type to it.productName.toString() }
+
+    /** The device media would play on now. */
+    private fun currentDevice(all: List<AudioDeviceInfo>): AudioDeviceInfo? {
+        PlaybackOptions.preferredDevice?.let { chosen -> all.firstOrNull { it.id == chosen.id }?.let { return it } }
+        if (Build.VERSION.SDK_INT >= 33) {
+            val media = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build()
+            val routed = try { audio.getAudioDevicesForAttributes(media) } catch (e: Exception) { emptyList() }
+            routed.firstOrNull()?.let { r -> all.firstOrNull { it.type == r.type && it.productName == r.productName }?.let { return it } }
+        }
+        return all.firstOrNull { it.type in BLUETOOTH } ?: all.firstOrNull { it.type in EXTERNAL } ?: all.firstOrNull()
+    }
+
+    private fun route(): JSObject {
+        val all = outputDevices()
+        val current = currentDevice(all)
+        val list = all.map { device ->
+            JSObject().put("id", device.id.toString())
+                .put("name", device.productName?.toString().orEmpty().ifBlank { kindOf(device.type) })
+                .put("kind", kindOf(device.type))
+                .put("active", device.id == current?.id)
+        }
+        val now = list.firstOrNull { it.getBoolean("active") } ?: JSObject().put("id", "").put("name", "This phone").put("kind", "speaker")
+        return JSObject().put("current", now).put("devices", JSArray(list)).put("can_pick", true)
+    }
+
+    private fun kindOf(type: Int) = when (type) {
+        in BLUETOOTH -> "bluetooth"
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_USB_HEADSET -> "headphones"
+        AudioDeviceInfo.TYPE_USB_DEVICE -> "usb"
+        AudioDeviceInfo.TYPE_HDMI -> "hdmi"
+        else -> "speaker"
+    }
+
     /* ── Internals ──────────────────────────────────────────────────────── */
 
     private inner class Events : Player.Listener {
-        /* A skip, from the page or the notification, before the requested song
-         * started: that play is over. Left waiting, it would settle only with
-         * the next song's failure or the timeout, and the page would show it
-         * loading until then. The play's own new queue is not a skip. */
+        /* A skip, from the page or the notification, before the requested song started: that play
+         * is over. */
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val waiting = pending ?: return
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED || mediaItem?.mediaId == waiting.sourceId) return
@@ -528,5 +593,11 @@ class RainettePlayerPlugin : Plugin() {
         private const val MAX_QUEUE = 1000
         private const val TICK_MS = 1000L
         private const val PLAY_TIMEOUT_MS = 60_000L
+        /* BLE types are API 31+, as plain ints so older phones simply never match them. */
+        private val BLUETOOTH = setOf(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, AudioDeviceInfo.TYPE_HEARING_AID, 26, 27, 30)
+        private val EXTERNAL = BLUETOOTH + setOf(
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_USB_DEVICE, AudioDeviceInfo.TYPE_HDMI,
+        )
     }
 }

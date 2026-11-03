@@ -1,14 +1,5 @@
-"""Guards on the test suite itself.
-
-A test that has stopped running does not fail -- it just quietly stops being
-evidence, and the suite still reports green. That is the worst possible failure
-mode for a safety net, so the few ways it can happen are checked here.
-
-This file exists because it happened: a new `TestBackgroundPlayback` class was
-added to a file that already had one, and Python's second definition shadowed
-the first. Two real tests left the run and the total went *up*, so nothing
-looked wrong.
-"""
+"""Guards on the test suite itself. A test that has stopped running does not fail -- it just
+quietly stops being evidence, and the suite still reports green."""
 
 from __future__ import annotations
 

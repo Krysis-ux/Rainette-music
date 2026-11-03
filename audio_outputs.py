@@ -1,26 +1,4 @@
-"""Names of the audio outputs this computer can actually play through.
-
-Rainette's "Play on" picker used to offer exactly two entries — this desktop and
-one paired phone — which is wrong the moment somebody connects headphones: the
-audio *is* going somewhere else, and the picker still says "This desktop".  This
-module supplies the missing half, so a Bluetooth speaker appears under the name
-its owner gave it rather than as an anonymous default.
-
-Enumeration only.  Nothing here changes the system output device:
-
-* macOS exposes no supported way to set the default output without shipping a
-  helper binary, and silently re-routing every other app's audio is not a
-  reasonable thing for a music player to do behind the user's back.
-* The web layer can route Rainette's own audio with ``HTMLMediaElement.setSinkId``
-  where the engine supports it (Chromium/WebView2 does, WKWebView does not), and
-  it matches its own device list against these names.  See
-  ``web/audio_outputs.js``.
-
-So the contract is deliberately narrow: report what exists, say which one the
-system is using, and let the caller decide what it can honour.  Every probe is
-best-effort and returns an empty list rather than raising — a missing speaker
-name must never break playback.
-"""
+"""Names of the audio outputs this computer can actually play through."""
 
 from __future__ import annotations
 
@@ -91,12 +69,7 @@ def _device(name: str, *, kind: str, is_default: bool) -> dict[str, Any]:
 
 
 def _macos_outputs() -> list[dict[str, Any]]:
-    """CoreAudio outputs via ``system_profiler``.
-
-    Chosen over pyobjc's CoreAudio bindings because it needs no extra dependency
-    in the frozen app and returns the same names the Sound menu shows, including
-    the user-assigned name of a paired Bluetooth device.
-    """
+    """CoreAudio outputs via ``system_profiler``."""
     raw = _run(["system_profiler", "SPAudioDataType", "-json"])
     if not raw:
         return []
@@ -134,12 +107,7 @@ _WINDOWS_PROBE = (
 
 
 def _windows_outputs() -> list[dict[str, Any]]:
-    """Audio render endpoints via PowerShell.
-
-    Windows reports no default-device flag through this interface, so every
-    entry comes back with ``is_default`` false and the caller falls back to the
-    browser's own ``default`` sink for that distinction.
-    """
+    """Audio render endpoints via PowerShell."""
     raw = _run([
         "powershell", "-NoProfile", "-NonInteractive",
         "-ExecutionPolicy", "Bypass", "-Command", _WINDOWS_PROBE,
@@ -162,12 +130,7 @@ def _windows_outputs() -> list[dict[str, Any]]:
 
 
 def list_outputs() -> list[dict[str, Any]]:
-    """Every audio output this computer can play through, best-effort.
-
-    Returns an empty list on an unsupported platform or a failed probe.  Callers
-    treat that as "offer the system default only" rather than as an error, which
-    is exactly the behaviour Rainette had before this module existed.
-    """
+    """Every audio output this computer can play through, best-effort."""
     try:
         if sys.platform == "darwin":
             return _macos_outputs()
@@ -186,12 +149,7 @@ def default_output_name() -> str:
 
 
 def open_sound_settings() -> bool:
-    """Open the OS sound panel, where output really can be switched.
-
-    The honest fallback for a device Rainette cannot route to itself.  A picker
-    entry that quietly does nothing is worse than one that hands the user the
-    control that works, so this is what those entries do.
-    """
+    """Open the OS sound panel, where output really can be switched."""
     try:
         if sys.platform == "darwin":
             return subprocess.run(

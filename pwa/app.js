@@ -19,7 +19,7 @@ import { syncPrefs, markPrefChanged, flushPrefs } from './src/prefsync.js';
 import { reportCodecSupport } from './src/codecs.js';
 import { wireMiniBar, openNowPlaying, warmNowPlaying } from './src/nowplaying.js';
 import { openQueueSheet } from './src/queue.js';
-import { configureExtras, setLinked, openOutputPicker, sleepShouldStopAfterTrack, openTrackMenu, openSleepTimer, sleepLabel, openNewLocalPlaylist } from './src/extras.js';
+import { configureExtras, setLinked, openOutputPicker, sleepShouldStopAfterTrack, openTrackMenu, openSleepTimer, sleepLabel, openNewLocalPlaylist, watchPhoneRoute, phoneOutputName } from './src/extras.js';
 import { closeAllSheets, confirmSheet } from './src/sheets.js';
 import { openScanner, scanningIsPossible } from './src/scanner.js';
 import { artistRow, albumRow, openArtist, openFollowedArtists, loadFollowed, hydrateArtistArt, artistLink, trackArtist, configureCatalog } from './src/catalog.js';
@@ -27,7 +27,8 @@ import { artistsFromTracks, searchArtists } from './src/artists.js';
 import { sortControl, sortTracks, sortArtists, ARTIST_SORTS } from './src/sorting.js';
 import { openEqualizer, eqSummary, eqOnTrackLoaded } from './src/eq.js';
 import { pref } from './src/prefs.js';
-import { wireSettings, paintSettingsValues } from './src/settings.js';
+import { wireSettings, paintSettingsValues, applyPlaybackPrefs } from './src/settings.js';
+import { renderBrowse } from './src/browse.js';
 import {
 	listLocalTracks, localTrackCount, localBytes, formatBytes, clearLocalTracks,
 } from './src/local.js';
@@ -35,10 +36,10 @@ import { refreshDownloaded, onDownloadsChanged } from './src/downloads.js';
 import { nativeAvailable } from './src/native-engine.js';
 import { catalogSearch } from './src/ytmusic.js';
 import { checkForUpdate } from './src/update.js';
+import { configureHome, renderHome, refreshFollowedOnHome } from './src/home.js';
 
 const UPDATE_CHECK_DELAY_MS = 4000;
 import { describeError } from './src/source-provider.js';
-import { graphState, graphCostsBackgroundPlayback, volumeMax } from './src/audio.js';
 import { runListDownload } from './src/downloadmenu.js';
 import { localPlaylists, isLocalPlaylist, localPlaylistTracks, openPlaylistEditor, openPlaylistMenu } from './src/playlists.js';
 
@@ -97,19 +98,16 @@ function normalizeEndpoint(value) {
 }
 
 /* A pairing code minted before the computer had a public address carries
- * `http://127.0.0.1:<port>`. On a phone that is the phone itself, and an HTTPS
- * page is not permitted to call it at all, so the request never leaves the
- * device. Catching it here turns a dead end into an instruction. */
+ * `http://127.0.0.1:<port>`. */
 function unusableEndpointReason(endpoint) {
 	if (pageIsLoopback()) return '';
 	if (!isLoopbackHost(endpointHost(endpoint))) return '';
 	return 'This pairing code points at 127.0.0.1, which on a phone means the phone itself. On the computer open Rainette → Settings → Mobile, choose “Generate & use HTTPS tunnel”, then create a new pairing code.';
 }
 
-/* Browsers collapse DNS failure, refused connections, TLS problems, blocked
- * mixed content and rejected CORS into one TypeError whose whole message is
- * "Failed to fetch" (Chromium) or "Load failed" (WebKit). Anything useful about
- * the cause has to be reconstructed from what we already know. */
+/* Browsers collapse DNS failure, refused connections, TLS problems, blocked mixed content and
+ * rejected CORS into one TypeError whose whole message is "Failed to fetch" (Chromium) or "Load
+ * failed" (WebKit). */
 function describeTransportFailure(endpoint) {
 	const unusable = unusableEndpointReason(endpoint);
 	if (unusable) return unusable;
@@ -145,19 +143,12 @@ function setStatus(kind, text) {
 	statusText.textContent = text;
 }
 
-/* iOS gives a Home Screen app its own storage, separate from Safari's. Pairing
- * in the browser and then opening the icon therefore lands on an app that has
- * genuinely never been paired -- not a bug to fix, but the reason to say so
- * plainly instead of showing the same blank form twice. */
+/* iOS gives a Home Screen app its own storage, separate from Safari's. */
 function isStandalone() {
 	return window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
 }
 
-/* The reconnect list on the setup screen.
- *
- * Nothing here asks the computer anything until the user picks a row: probing
- * every stored address on every visit would be a burst of requests at a set of
- * tunnels that are mostly not running. */
+/* The reconnect list on the setup screen. */
 function renderRecentSessions() {
 	const panel = $('#recentSessions');
 	const list = $('#sessionsList');
@@ -166,10 +157,9 @@ function renderRecentSessions() {
 	if (!rows.length) return;
 
 	list.replaceChildren(...rows.map(row => {
-		/* A shell, because forgetting a computer is its own control and a button
-		 * inside a button is invalid markup no engine makes keyboard-reachable —
-		 * the same reason a track row puts its artist link beside the play
-		 * target rather than inside it. */
+		/* A shell, because forgetting a computer is its own control and a button inside a button is
+		 * invalid markup no engine makes keyboard-reachable — the same reason a track row puts its
+		 * artist link beside the play target rather than inside it. */
 		const shell = el('div', 'session-shell');
 
 		const button = el('button', 'session-row');
@@ -265,8 +255,7 @@ function paintSetupForApp() {
 	if (!nativeAvailable()) return;
 	$('#setupView .eyebrow').textContent = 'Optional';
 	$('#setupTitle').textContent = 'Connect to a computer.';
-	$('#setupView .lede').textContent =
-		'Pair with Rainette on your computer to bring its library and playlists here. Music keeps playing on this phone either way.';
+	$('#setupView .lede').textContent = 'Bring your computer’s library and playlists here.';
 	$('#setupBack').hidden = false;
 }
 
@@ -295,13 +284,7 @@ function leaveComputer(message) {
 	if (message) toast(message, { icon: 'phone' });
 }
 
-/* Downloaded tracks need no computer, so the pairing screen offers them.
- *
- * A download is already on this phone: `local.js` plays it from a blob and
- * never asks the network. Requiring a pairing first was a gate with nothing
- * behind it, and it bit hardest exactly when the computer was off or
- * unreachable — the moment the downloads exist for. Counted rather than
- * assumed, so the row never appears promising music that is not there. */
+/* Downloaded tracks need no computer, so the pairing screen offers them. */
 async function renderOfflineLibrary() {
 	const panel = $('#offlineLibrary');
 	const label = $('#offlineCount');
@@ -319,13 +302,8 @@ async function renderOfflineLibrary() {
 	}
 }
 
-/* Open the app with no computer behind it.
- *
- * Deliberately not `showApp`: there is no session to start, no event loop to
- * run and no status to poll. `state.connected` stays false, which is what every
- * other module already checks before reaching for the network, so the rest of
- * the app degrades the way it does when a computer goes away mid-session --
- * a path that already exists rather than a second one invented here. */
+/* Open the app with no computer behind it. Deliberately not `showApp`: there is no session to
+ * start, no event loop to run and no status to poll. */
 function openLocalOnly() {
 	closeAllSheets();
 	setupView.hidden = true;
@@ -411,10 +389,8 @@ function absoluteMediaUrl(value) {
 }
 
 /* ── Pairing ──────────────────────────────────────────────────────────────
- * request  → the computer shows this phone in its approval list
- * poll     → 202 while nobody has answered, 200 once approved
- * ack      → tells the computer the credential is stored, closing the claim
- */
+ * request → the computer shows this phone in its approval list poll → 202 while nobody has
+ * answered, 200 once approved ack → tells the computer the credential is stored, closing the claim */
 
 async function pairPost(endpoint, path, body) {
 	const response = await transport(endpoint + path, {
@@ -430,16 +406,11 @@ async function pairPost(endpoint, path, body) {
 	return { status: response.status, payload };
 }
 
-/* A computer that runs a Quick Tunnel gets a new hostname every time it starts,
- * so an already-paired phone mostly needs a new *address*, not a new identity.
- * The device credential it already holds is what proves the pairing, so if that
- * credential still authenticates at the new address there is nothing for anyone
- * to approve a second time. */
+/* A computer that runs a Quick Tunnel gets a new hostname every time it starts, so an
+ * already-paired phone mostly needs a new *address*, not a new identity. */
 async function adoptEndpoint(endpoint, { force = false } = {}) {
-	// `force` exists for the recent-sessions probe, which re-selects a computer
-	// whose address has not changed but whose *token* has just been swapped in.
-	// Without it that probe short-circuits to false and the session it was
-	// trying to resume looks unreachable.
+	// `force` exists for the recent-sessions probe, which re-selects a computer whose address has not
+	// changed but whose *token* has just been swapped in.
 	if (!state.token) return false;
 	if (!force && endpoint === state.endpoint) return false;
 	const previous = state.endpoint;
@@ -591,8 +562,13 @@ let shownRecent = null;
 // tracks this phone has played itself.
 let desktopRecent = [];
 
+/* Home leads with the shelves; the list is the last few songs, as a list. */
+const RECENT_ROWS = 4;
+
 function renderRecent() {
-	const list = mergeRecent(desktopRecent).slice(0, 12);
+	const all = mergeRecent(desktopRecent);
+	renderHome(all);
+	const list = all.slice(0, RECENT_ROWS);
 	if (shownRecent && sameTracks(list, shownRecent)) return;
 	shownRecent = list;
 	renderTracks($('#recentList'), list, {
@@ -614,17 +590,9 @@ function renderRecent() {
  * copy first keeps the tab populated while the computer answers. */
 let recentInFlight = null;
 
-/* The Mac app's greeting. Repainted whenever Home is refreshed, so a phone left
- * open from the afternoon does not still say "Good afternoon" at night. */
-function homeGreeting(hour = new Date().getHours()) {
-	if (hour >= 5 && hour < 12) return 'Good morning';
-	if (hour >= 12 && hour < 17) return 'Good afternoon';
-	return 'Good evening';
-}
-
 async function refreshRecent() {
-	$('#homeGreeting').textContent = homeGreeting();
 	renderRecent();
+	refreshFollowedOnHome(mergeRecent(desktopRecent));
 	// One request at a time: tab switches and playback both ask for this, and
 	// two answers landing together re-render the list twice for no gain.
 	if (recentInFlight) return recentInFlight;
@@ -643,9 +611,7 @@ async function refreshRecent() {
 }
 
 /* ── Library and playlists ────────────────────────────────────────────────
- * One panel, two modes. Every async render claims a token and drops its result
- * if something else claimed the panel since, so a late answer cannot paint over
- * an open playlist. */
+ * One panel, two modes. */
 
 const library = { mode: 'songs', playlistId: null, playlist: null, token: 0 };
 
@@ -749,10 +715,8 @@ async function refreshLibrary() {
 	}
 }
 
-/* The artists behind the library, built from the tracks themselves rather than
- * fetched: the computer has no "artists in your library" command, and every
- * track already names one. Followed artists are folded in so the list is not
- * missing somebody just because none of their tracks are saved. */
+/* The artists behind the library, built from the tracks themselves rather than fetched: the
+ * computer has no "artists in your library" command, and every track already names one. */
 async function renderLibraryArtists() {
 	const token = claimLibrary();
 	const target = $('#libraryList');
@@ -805,10 +769,7 @@ async function renderLocalLibrary() {
 		onPlay: playFromList(sorted),
 	});
 
-	/* "Get rid of all of this" belongs where all of this is, not only in
-	 * Settings. The same action lives there too, beside the importer, because
-	 * that is where somebody managing storage looks -- but nobody looking at a
-	 * list of files they want gone thinks to leave the list first. */
+	/* "Get rid of all of this" belongs where all of this is, not only in Settings. */
 	const head = el('div', 'local-head');
 	const [count, bytes] = await Promise.all([localTrackCount(), localBytes()]);
 	if (!libraryOwns(token)) return;
@@ -900,6 +861,20 @@ function newPlaylistRow() {
 		},
 	}));
 	return row;
+}
+
+/** Open one playlist in the Library tab, from anywhere. */
+function openPlaylist(playlist) {
+	library.mode = 'playlists';
+	library.playlistId = playlist.id;
+	library.playlistName = playlist.name;
+	library.playlist = playlist;
+	for (const [id, mode] of LIBRARY_MODES) {
+		$(id).setAttribute('aria-selected', String(mode === 'playlists'));
+	}
+	switchTab('library');
+	paintLibrarySort();
+	renderPlaylistTracks(playlist.id, playlist.name);
 }
 
 function playlistRow(playlist) {
@@ -1001,13 +976,8 @@ async function renderPlaylistTracks(playlistId, name = '') {
 }
 
 /* ── Search ───────────────────────────────────────────────────────────────
- * Search asks for the catalog, not just a track list: an artist is not a track
- * with no source, and an album is not one either. Rendering all three as track
- * rows is what made tapping "2Slimey" try to play a person and fail.
- *
- * `music_search` remains the fallback, because a computer running an older
- * Rainette refuses the catalog command outright, and a phone that then shows
- * nothing at all is worse than one that shows songs. */
+ * Search asks for the catalog, not just a track list: an artist is not a track with no source, and
+ * an album is not one either. */
 
 const searchState = { songs: [], artists: [], albums: [], filter: 'all', sorted: [] };
 const searchSortHost = $('#searchSort');
@@ -1073,10 +1043,8 @@ async function search(query, { typing = false } = {}) {
 	if (request !== searchRequests) return;
 
 	searchState.songs = Array.isArray(result.songs) ? result.songs : (result.items || result.tracks || []);
-	// A computer that answers with songs but no artists — an older Rainette, or
-	// one without ytmusicapi — used to leave the Artists tab empty even though
-	// every song in the results names somebody. They are derived from the songs
-	// instead, so tapping through to an artist always works.
+	// A computer that answers with songs but no artists — an older Rainette, or one without ytmusicapi
+	// — used to leave the Artists tab empty even though every song in the results names somebody.
 	searchState.artists = searchArtists(result.artists, searchState.songs);
 	searchState.albums = Array.isArray(result.albums) ? result.albums : [];
 	state.searchResults = searchState.songs;
@@ -1178,9 +1146,7 @@ function showPlaybackError(error) {
 }
 
 /* ── Mini bar ─────────────────────────────────────────────────────────────
- * The one persistent piece of playback UI. It is a button, not a strip of
- * text: tapping it opens the full card, which is what every phone player does
- * and what this client conspicuously did not. */
+ * The one persistent piece of playback UI. */
 
 /* Playback emits several times a second. Every write here is guarded and the
  * whole pass is coalesced onto one frame, because the main thread this loop
@@ -1271,7 +1237,9 @@ function switchTab(name) {
 	if (name === 'home') refreshRecent();
 	// The keyboard only when there is nothing to look at yet: coming back to
 	// the results you left should show them, not cover half of them.
-	if (name === 'search' && !$('#searchInput').value) $('#searchInput').focus();
+	if (name === 'search') paintBrowse();
+	// The keyboard would cover Browse, which the app shows instead.
+	if (name === 'search' && !$('#searchInput').value && !nativeAvailable()) $('#searchInput').focus();
 	if (name === 'settings') renderSettings();
 }
 
@@ -1280,30 +1248,19 @@ function switchTab(name) {
 function renderSettings() {
 	const link = $('#linkToggle');
 	if (!link) return;
-	link.setAttribute('aria-pressed', String(state.linked));
-	link.querySelector('small').textContent = state.linked
-		? `Mirroring ${state.computerName || 'your computer'} — this phone shows and controls what it plays`
-		: 'This phone runs its own session, separate from the computer';
-	$('#linkState').innerHTML = icon(state.linked ? 'check' : 'link', 18);
+	link.setAttribute('aria-checked', String(state.linked));
 
-	// Each row says what it is currently set to, so the panel answers "is the
-	// EQ on?" without having to be opened first.
 	$('#equalizerState').textContent = eqSummary();
-	// The app: with nothing paired, pairing-only rows give way to one way in.
-	// The equaliser shapes the page's own audio, which the native service's
-	// is not, so it is not offered there rather than offered and inert.
+	// The app with nothing paired: pairing rows give way to one way in.
+	// The equaliser shapes the page's own audio, which the native player's is not.
 	const unpairedApp = nativeAvailable() && !state.token;
 	$('#connectComputerButton').hidden = !unpairedApp;
 	for (const id of ['#linkToggle', '#testConnectionButton', '#disconnectButton']) $(id).hidden = unpairedApp;
 	$('#equalizerButton').hidden = nativeAvailable();
-	// What each row promises has to be true of the phone it is on: the app's
-	// own player stops at 100%, and with no computer the follows live here.
-	$('#playbackButton small').textContent = volumeMax() > 1
-		? 'Volume up to 200%, fades, autoplay and where the app opens'
-		: 'Volume, fades, autoplay and where the app opens';
-	$('#followedButton small').textContent = hasComputer() ? 'The same list your computer keeps' : 'Kept on this phone';
+	// Quality is the phone player's; in a browser the computer decides it.
+	$('#qualityButton').hidden = !nativeAvailable();
 	$('#sleepState').textContent = sleepLabel() === 'Sleep' ? 'Off' : sleepLabel();
-	$('#outputState').textContent = isLinked() ? (state.computerName || 'Your computer') : 'This phone';
+	$('#outputState').textContent = isLinked() ? (state.computerName || 'Your computer') : (phoneOutputName() || 'This phone');
 	paintSettingsValues().catch(() => { /* a value that will not load is not worth a failure */ });
 }
 
@@ -1362,6 +1319,15 @@ configureExtras({
 });
 
 subscribe(scheduleMiniBar);
+
+/* Home's top card follows the player: a song ending, a pause on the lock screen. */
+let homePlayer = '';
+subscribe(() => {
+	const now = `${trackKey(currentTrack())}|${isPlaying()}`;
+	if (now === homePlayer) return;
+	homePlayer = now;
+	if (activeTab === 'home') renderRecent();
+});
 
 $('#pairForm').addEventListener('submit', async event => {
 	event.preventDefault();
@@ -1433,8 +1399,17 @@ $('#searchForm').addEventListener('submit', event => {
 	$('#searchInput').blur();
 });
 
+/* Editors' playlists fill Search until something is typed. */
+function paintBrowse() {
+	const host = $('#browseHost');
+	const idle = !$('#searchInput').value.trim();
+	host.hidden = !idle;
+	if (idle) renderBrowse(host);
+}
+
 $('#searchInput').addEventListener('input', () => {
 	clearTimeout(searchTimer);
+	paintBrowse();
 	const query = $('#searchInput').value.trim();
 	if (query.length < SEARCH_MIN_CHARS || query === lastSearched) return;
 	searchTimer = setTimeout(() => searchNow(query, { typing: true }), SEARCH_PAUSE_MS);
@@ -1484,7 +1459,9 @@ wireSettings({
 	refresh: renderSettings,
 	// Adding files or restoring a backup changes what the library holds, so the
 	// panel behind the sheet is rebuilt rather than left showing the old list.
-	onLibraryChanged: () => { if (activeTab === 'library') renderLibraryPanel().catch(() => {}); },
+	onLibraryChanged: () => { if (activeTab === 'library') renderLibraryPanel().catch(() => {});
+applyPlaybackPrefs();
+watchPhoneRoute(() => { if (activeTab === 'settings') renderSettings(); }); },
 	// The computer's own files are already playable here, so the honest answer
 	// to "bring my music over" is to show it rather than to copy it.
 	onShowLibrary: () => switchTab('library'),
@@ -1493,11 +1470,8 @@ wireSettings({
 $('#testConnectionButton').addEventListener('click', () => testConnection({ reveal: false }));
 
 /* ── Add to Home Screen ───────────────────────────────────────────────────
- * Chrome fires `beforeinstallprompt` and lets the page raise the real OS
- * install sheet, so the button installs rather than explaining how to install.
- * Safari has no equivalent and never will, so iOS keeps the written steps —
- * but only the iOS ones, rather than a dialog listing both platforms and
- * leaving the reader to work out which half applies to them. */
+ * Chrome fires `beforeinstallprompt` and lets the page raise the real OS install sheet, so the
+ * button installs rather than explaining how to install. */
 let installPrompt = null;
 
 window.addEventListener('beforeinstallprompt', event => {
@@ -1566,10 +1540,8 @@ $('#disconnectButton').addEventListener('click', () => {
 	localStorage.removeItem(STORAGE.endpoint);
 	localStorage.removeItem(STORAGE.token);
 	localStorage.removeItem(STORAGE.deviceId);
-	// Disconnect is the one action that means "forget this phone knew you", so
-	// the address book and its credentials go with it. Anything less would
-	// leave a one-tap route back into a computer the user just stepped away
-	// from.
+	// Disconnect is the one action that means "forget this phone knew you", so the address book and
+	// its credentials go with it.
 	forgetAllSessions();
 	resetPlayback();
 	leaveComputer('This phone is disconnected. Your computer still has it listed until you revoke it there.');
@@ -1598,11 +1570,7 @@ window.addEventListener('online', () => {
 	if (nativeAvailable() && !state.connected) setStatus('', 'On this phone');
 });
 
-/* Waking the phone up. The `online` case is folded in here rather than left as
- * its own listener, so every way a session can come back runs the same two
- * steps: restart the poll that died while we were away, and — only when we have
- * been away long enough for the answer to have changed — re-ask the computer
- * who it is. */
+/* Waking the phone up. */
 configureConnection({
 	isConnected: () => state.connected,
 	onResume: () => restartEventLoop(),
@@ -1618,50 +1586,21 @@ if ('serviceWorker' in navigator && !nativeAvailable()) {
 
 /* ── Boot ─────────────────────────────────────────────────────────────── */
 
+configureHome({
+	onPlay: (list, index) => playFromList(list)(list[index], index),
+	onOpenPlaylist: openPlaylist,
+	playlists: () => (hasComputer() ? state.playlists : []),
+});
+
 pairDeviceName.placeholder = defaultDeviceName();
-$('#homeGreeting').textContent = homeGreeting();
+// Safari ignores user-scalable=no; its pinch starts with this event.
+document.addEventListener('gesturestart', event => event.preventDefault());
 renderRecent();
 
-/* Which tracks are already on this phone, so the download controls can answer
- * synchronously while a list is being drawn. Keys only — no blobs — so this is
- * cheap enough to sit in the boot path.
- *
- * The repaint afterwards is what makes a download land visibly: a track saved
- * from a menu has to show as saved everywhere it appears, and the Local files
- * page has to grow a row without being reopened. */
+/* Which tracks are already on this phone, so the download controls can answer synchronously while
+ * a list is being drawn. */
 refreshDownloaded().catch(() => {});
 
-/* Name the running build, and say plainly whether it is the one being served.
- *
- * An installed Home Screen app can keep an old service worker and its caches
- * for a long time, and nothing on screen distinguished a fix that did not work
- * from one that had never arrived. Three sheet-gesture fixes were each judged
- * on a phone that was still running the code from before them. */
-(async () => {
-	const line = $('#clientBuild');
-	if (!line) return;
-	try {
-		// The worker names its cache after a digest of the files it holds, so the
-		// cache the browser actually has is the build the app is actually running.
-		const names = await caches.keys();
-		const mine = names.filter(name => name.startsWith('rainette-pwa-'));
-		const running = mine.length ? mine.join(', ') : 'no offline copy yet';
-		const worker = navigator.serviceWorker?.controller ? 'active' : 'not in control';
-		/* Whether an audio graph is live is the single fact that decides if this
-		 * phone keeps playing with the screen off, and nothing on screen said
-		 * so. "built" means WebKit will silence playback the moment the app is
-		 * hidden -- which is a complaint nobody would connect to the equalizer
-		 * switch that caused it. */
-		const graph = graphState() === 'ready' ? 'built' : 'none';
-		const background = graph === 'built' && graphCostsBackgroundPlayback()
-			? 'stops when hidden'
-			: 'keeps playing';
-		line.textContent =
-			`Client build ${running} · service worker ${worker} · audio graph ${graph} · background ${background}`;
-	} catch {
-		line.textContent = 'Client build unknown on this browser.';
-	}
-})();
 onDownloadsChanged(() => {
 	if (activeTab === 'library' && library.mode === 'local') renderLocalLibrary().catch(() => {});
 });

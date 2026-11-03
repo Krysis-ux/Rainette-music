@@ -147,13 +147,7 @@ class FrontendReleaseContractTests(unittest.TestCase):
         self.assertNotIn("device_token", mobile)
 
     def test_phone_client_contract(self):
-        """The phone client must explain a failed connection, not relay a TypeError.
-
-        `fetch` collapses mixed-content blocking, DNS failure, refused
-        connections and rejected CORS into one message — "Failed to fetch" or
-        "Load failed" — so every one of those paths has to go through the
-        client's own diagnosis instead of surfacing the browser's wording.
-        """
+        """The phone client must explain a failed connection, not relay a TypeError."""
         client = (ROOT / "pwa" / "app.js").read_text(encoding="utf-8")
         self.assertIn("describeTransportFailure", client)
         self.assertIn("unusableEndpointReason", client)
@@ -166,17 +160,7 @@ class FrontendReleaseContractTests(unittest.TestCase):
         self.assertNotIn("await fetch(", client.replace("return await fetch(url, options);", ""))
 
     def test_phone_client_cache_is_versioned_with_the_pairing_client(self):
-        """A returning phone must not keep serving the previous app.js.
-
-        The worker answers stale-while-revalidate, so a client change reaches an
-        installed phone one load late unless the cache name changes with it.
-
-        The name now carries a `-<digest>` suffix of the shell's contents, which
-        is what makes the two impossible to disagree about; that the digest is
-        the *right* one is checked in test_output_and_phone_sync.py. Here it is
-        only allowed for, so this contract keeps testing what it is about -- the
-        version moving forward.
-        """
+        """A returning phone must not keep serving the previous app.js."""
         worker = (ROOT / "pwa" / "sw.js").read_text(encoding="utf-8")
         self.assertRegex(worker, r"const CACHE = 'rainette-pwa-v(?:[3-9]|\d{2,})(?:-[0-9a-f]{8})?'")
 
@@ -186,15 +170,7 @@ if __name__ == "__main__":
 
 
 class PlaybackFailureReasonTests(unittest.TestCase):
-    """A failure the computer can explain must not arrive as "playback failed".
-
-    `music_bridge.describe_resolve_failure` names the common causes -- a network
-    blocking YouTube, an unavailable video, a bot check -- and sends the text as
-    `msg`. The relay has always forwarded `error_reason`, and the banner has
-    always been able to render one. Nothing ever put the two together, so every
-    named cause was computed and then discarded, and the user saw the one string
-    that tells them nothing.
-    """
+    """A failure the computer can explain must not arrive as "playback failed"."""
 
     @classmethod
     def setUpClass(cls):

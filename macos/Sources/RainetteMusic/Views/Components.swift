@@ -182,12 +182,13 @@ struct ArtistCard: View {
     let artist: Artist
     var detail: String = ""
     @Environment(AppModel.self) private var app
+    @Environment(LibraryModel.self) private var library
     @Environment(Router.self) private var router
     @State private var hovering = false
 
     var body: some View {
         VStack(spacing: 10) {
-            ArtworkView(url: artist.artworkURL, pixels: 480, circle: true, placeholderSymbol: "music.mic", seed: artist.name)
+            ArtworkView(url: library.artwork(for: artist), pixels: 480, circle: true, placeholderSymbol: "music.mic", seed: artist.name)
                 .overlay(alignment: .bottomTrailing) {
                     if hovering {
                         HoverPlayButton(isCurrent: false, showsPause: false, size: 36) { app.play(artist: artist) }

@@ -1,22 +1,4 @@
-"""Rebinding the companion port after a restart, which the tunnel depends on.
-
-A paired phone pins the companion port: `_companion_port_candidates` returns
-that one port and no alternative, on purpose, because the phone's stored
-endpoint contains it. The phone also long-polls `/events` continuously, so when
-the app quits there is always a just-closed connection on that port sitting in
-TIME_WAIT.
-
-Without SO_REUSEADDR that is enough to make the next launch fail to bind with
-"Address already in use" -- while nothing is listening. `start_paired_companion`
-then raises, `main()` skips `_restore_tunnel()`, and the computer comes up
-unreachable and stays that way for about a minute.
-
-Found in a real user's log:
-
-    OSError: [Errno 48] Address already in use
-    RuntimeError: no companion port is available
-    paired companion listener failed to restart
-"""
+"""Rebinding the companion port after a restart, which the tunnel depends on."""
 
 from __future__ import annotations
 
@@ -32,10 +14,7 @@ class CompanionRebindTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "TIME_WAIT rebinding is a POSIX problem")
     def test_the_port_rebinds_while_a_closed_connection_lingers(self):
         """The exact shape of quit-and-relaunch with a phone paired."""
-        # Port 0 lets the kernel choose, and the socket holds it from that
-        # moment. Probing for a free port and closing it first leaves a gap in
-        # which a neighbouring test can take it -- which is exactly how this
-        # test failed once in a full run and passed every time on its own.
+        # Port 0 lets the kernel choose, and the socket holds it from that moment.
         listener = server._bind_companion_socket("127.0.0.1", 0)
         port = listener.getsockname()[1]
         listener.listen(8)
@@ -62,12 +41,7 @@ class CompanionRebindTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "SO_EXCLUSIVEADDRUSE is the Windows path")
     def test_a_genuine_conflict_still_fails(self):
-        """SO_REUSEADDR must not weaken the pinned-port guarantee.
-
-        The fail-closed policy exists so a busy port is reported rather than
-        silently moved somewhere the phone cannot find. A *live* listener must
-        still be a conflict; only the TIME_WAIT ghost is forgiven.
-        """
+        """SO_REUSEADDR must not weaken the pinned-port guarantee."""
         held = server._bind_companion_socket("127.0.0.1", 0)
         port = held.getsockname()[1]
         held.listen(8)

@@ -1,21 +1,4 @@
-"""The frozen build shipped unable to verify a single certificate.
-
-A PyInstaller bundle carries its own OpenSSL, and OpenSSL looks for CA
-certificates at a path compiled in **on the build machine**. Read out of a real
-macOS install of 0.4.2:
-
-    /Library/Frameworks/Python.framework/Versions/3.12/etc/openssl/cert.pem
-
-That is the CI runner's python.org install. It exists on no user's computer, so
-the app ran with *zero* trust roots: every TLS handshake failed with "unable to
-get local issuer certificate" before a byte left the machine. Nothing played,
-nothing downloaded, no tunnel probe succeeded — and the app blamed the user's
-network, including on their own home Wi-Fi.
-
-Fixing yt-dlp alone would not have been enough. aiohttp (the audio relay),
-urllib (the tunnel probe and updater) and ytmusicapi (search) each build their
-own SSL context. `SSL_CERT_FILE` is the one lever all of them read.
-"""
+"""The frozen build shipped unable to verify a single certificate."""
 
 from __future__ import annotations
 
@@ -45,15 +28,7 @@ def _run_with_no_roots(script: str) -> subprocess.CompletedProcess:
 
 
 def _can_simulate_no_roots() -> bool:
-    """Can this platform be put into the broken state at all?
-
-    On Windows it cannot: Python loads the system certificate store regardless
-    of `SSL_CERT_FILE`, so the probe still sees hundreds of roots. That is not a
-    gap in the test — it is the reason the bug is macOS-only, and why
-    `no-certifi` is right on Windows and wrong everywhere else. The tests that
-    depend on the simulation skip rather than assert something the platform
-    makes impossible.
-    """
+    """Can this platform be put into the broken state at all?"""
     try:
         probe = _run_with_no_roots(
             "import ssl; print(len(ssl.create_default_context().get_ca_certs()))"
@@ -184,26 +159,14 @@ class TrustRootTests(unittest.TestCase):
 
     @_NEEDS_SIMULATION
     def test_the_audio_relay_trusts_the_bundle_even_though_aiohttp_loads_first(self):
-        """Every phone stream died with CERTIFICATE_VERIFY_FAILED in 0.5.0.
-
-        aiohttp builds its default context when it is imported, and server.py
-        imports it before shared. In a process with no roots that context
-        verifies nothing, and the relay used it: search worked, every stream
-        failed. A local HTTPS server signed by a test root stands in for
-        googlevideo, and that root stands in for the bundle the app ships.
-        """
+        """Every phone stream died with CERTIFICATE_VERIFY_FAILED in 0.5.0."""
         with tempfile.TemporaryDirectory() as tmp:
             ca, leaf, key = _write_test_chain(Path(tmp))
             probe = _run_with_no_roots(_RELAY_PROBE.format(ca=str(ca), leaf=str(leaf), key=str(key)))
         self.assertEqual(probe.stdout.strip().splitlines()[-1:], ["200"], probe.stdout[-400:] + probe.stderr[-800:])
 
     def test_the_ssl_context_class_is_not_replaced(self):
-        """Swapping SSLContext globally broke the companion's TLS *server*.
-
-        An earlier truststore injection installed a client-only context in the
-        stdlib, and the gateway then accepted HTTPS connections and dropped
-        them. Setting an environment variable must not repeat that.
-        """
+        """Swapping SSLContext globally broke the companion's TLS *server*."""
         probe = _run_with_no_roots(
             "import ssl; before = ssl.SSLContext; import shared; "
             "print(ssl.SSLContext is before)"

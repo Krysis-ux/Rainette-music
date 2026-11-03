@@ -1,21 +1,4 @@
-"""Pairing and authorization primitives for the Rainette Music PWA companion.
-
-This module deliberately contains no HTTP or UI code.  The desktop listener
-uses it to turn a short-lived QR invitation into a revocable device credential
-and to mint opaque, device-bound audio-relay grants.
-
-Every paired phone receives its own unguessable device token and its own
-``device_id``.  That identity is what keeps two phones paired to the same
-computer from colliding, and it is what makes one phone revocable without
-disturbing the others.
-
-The credential is handed to the browser over the operator's own trusted HTTPS
-tunnel rather than being sealed to a device keypair.  A browser has no
-equivalent of Android's hardware-backed Keystore, so an asymmetric handshake
-would add ceremony without adding a boundary: the tunnel's TLS is the
-confidentiality boundary, and the short claim TTL bounds how long an
-approved-but-unclaimed token stays retrievable.
-"""
+"""Pairing and authorization primitives for the Rainette Music PWA companion."""
 
 from __future__ import annotations
 
@@ -79,26 +62,16 @@ class _RelayGrant:
     device_id: str
     upstream_url: str
     expires_at: float
-    # What the URL was resolved *from*. A googlevideo URL is bound to the IP and
-    # time that produced it, so it can die long before the grant does; keeping
-    # the source lets the relay resolve a fresh one instead of handing the phone
-    # a failure it can do nothing about.
+    # What the URL was resolved *from*.
     source_id: str = ""
-    # What this grant names. "youtube" means `upstream_url` is a URL to relay;
-    # "local" means `track_id` is a row in music_tracks whose bytes are on this
-    # computer's own disk. One field rather than a second route, so the phone
-    # needs no change and there is one Range implementation rather than two.
+    # What this grant names. "youtube" means `upstream_url` is a URL to relay; "local" means
+    # `track_id` is a row in music_tracks whose bytes are on this computer's own disk.
     kind: str = "youtube"
     track_id: str = ""
 
 
 class CompanionRegistry:
-    """In-memory authorization registry used by the companion listener.
-
-    Tokens are generated once and only their SHA-256 digests are retained.
-    Persistence is intentionally injected by the server layer later; keeping
-    the security state isolated makes expiry and revocation testable.
-    """
+    """In-memory authorization registry used by the companion listener."""
 
     def __init__(
         self,
@@ -222,11 +195,7 @@ class CompanionRegistry:
                 pass
 
     def _mutate_devices(self, mutation: Callable[[dict[str, _Device]], object]) -> object:
-        """Persist a candidate snapshot before publishing it in memory.
-
-        The process lock serializes registry instances using the same file and
-        the reload prevents one process from overwriting another's devices.
-        """
+        """Persist a candidate snapshot before publishing it in memory."""
         if self._file_lock is None:
             candidate = self._copy_devices(self._devices)
             result = mutation(candidate)
@@ -241,12 +210,7 @@ class CompanionRegistry:
             return result
 
     def _refresh_and_cleanup(self) -> None:
-        """Refresh shared security state and expire unacknowledged claims.
-
-        Device removal and claim removal are written in one atomic snapshot so
-        a crash or second Rainette process cannot leave an orphan credential.
-        Caller must hold ``self._lock``.
-        """
+        """Refresh shared security state and expire unacknowledged claims."""
         now = self._now()
         if self._file_lock is None:
             devices = self._devices
@@ -412,11 +376,7 @@ class CompanionRegistry:
             return {"device_id": device_id, "device_name": request.device_name, "status": "approved"}
 
     def pairing_result(self, request_id: str, invitation_token: str) -> dict[str, str] | None:
-        """Return a result only to the phone proving possession of its invite.
-
-        Approved results remain available until the authenticated phone
-        acknowledges durable credential storage or the claim TTL expires.
-        """
+        """Return a result only to the phone proving possession of its invite."""
         with self._lock:
             self._refresh_and_cleanup()
             request = self._requests.get(str(request_id))
@@ -437,11 +397,7 @@ class CompanionRegistry:
             return {"status": request.status}
 
     def acknowledge_pairing(self, request_id: str, device_id: str) -> bool:
-        """Remove an approved claim after its persisted device authenticates.
-
-        Persisted claims are authoritative here so a phone can finish the
-        acknowledgement handshake after the desktop process restarts.
-        """
+        """Remove an approved claim after its persisted device authenticates."""
         with self._lock:
             self._refresh_and_cleanup()
             supplied_request_id = str(request_id)
@@ -522,13 +478,7 @@ class CompanionRegistry:
         kind: str = "youtube",
         track_id: str = "",
     ) -> dict[str, object]:
-        """Mint a capability naming one thing this device may hear.
-
-        ``kind="local"`` names a ``track_id`` instead of an ``upstream_url``:
-        the bytes are on this computer, so there is nothing to relay and nothing
-        to keep fresh. Everything else about the grant is identical, which is
-        the point — one capability, one route, one Range implementation.
-        """
+        """Mint a capability naming one thing this device may hear."""
         with self._lock:
             device = self._devices.get(device_id)
             if device is None or device.revoked:
@@ -553,31 +503,15 @@ class CompanionRegistry:
             return {"token": token, "expires_at": expires_at}
 
     def _prune_relay_grants_locked(self) -> None:
-        """Drop grants nobody can redeem any more.
-
-        Expiry was only ever checked lazily on redemption, so a long session
-        accumulated one dead entry per track played and never gave any of them
-        back.
-        """
+        """Drop grants nobody can redeem any more."""
         now = self._now()
         dead = [key for key, grant in self._relay_grants.items() if grant.expires_at <= now]
         for key in dead:
             self._relay_grants.pop(key, None)
 
     def resolve_relay(self, grant_token: str) -> _RelayGrant | None:
-        """Redeem an audio grant.
-
-        A browser cannot attach an ``Authorization`` header to ``<audio src>``,
-        so the grant token itself has to be the capability.  It is 32 random
-        bytes, it expires quickly, and it stops resolving the moment its owning
-        device is revoked — revocation therefore cuts audio too, not just the
-        API.  Grants are per-device, so one phone's grant leaking never widens
-        into access to another phone's session or to the command surface.
-
-        Returns the whole grant rather than just the URL: the relay needs the
-        source it was resolved from so it can fetch a fresh URL when the cached
-        one has been invalidated by a network change.
-        """
+        """Redeem an audio grant. A browser cannot attach an ``Authorization`` header to ``<audio
+        src>``, so the grant token itself has to be the capability."""
         with self._lock:
             self._refresh_and_cleanup()
             self._prune_relay_grants_locked()
@@ -590,11 +524,8 @@ class CompanionRegistry:
             return grant
 
     def refresh_relay_grant(self, grant_token: str, upstream_url: str) -> None:
-        """Point an existing grant at a freshly resolved upstream URL.
-
-        The capability the phone holds stays the same, so a re-resolve mid-track
-        is invisible to it.
-        """
+        """Point an existing grant at a freshly resolved upstream URL. The capability the phone
+        holds stays the same, so a re-resolve mid-track is invisible to it."""
         with self._lock:
             grant = self._relay_grants.get(_digest(str(grant_token or "")))
             if grant is not None and str(upstream_url).strip():

@@ -1,16 +1,4 @@
-"""Drive the debug app on an emulator or device and record what really happened.
-
-Usage: python emulator_check.py <out-dir>
-Needs: adb on PATH, one device attached with the debug build installed, and
-aiohttp. The WebView is driven over Chrome's DevTools protocol (debug builds
-only; Runtime.evaluate on the page target). The media session's own report
-from `dumpsys media_session` is the ground truth for playback, not anything
-the page claims.
-
-Prints PASS/FAIL per check and exits with the number of failures. A result on
-an emulator is an emulator result: it says nothing about Bluetooth, real audio
-hardware, OEM battery managers, or a real network.
-"""
+"""Drive the debug app on an emulator or device and record what really happened."""
 import asyncio
 import json
 import re
@@ -224,10 +212,7 @@ def run() -> int:
     }})()""")
     check(ack["id"] == ack["want"] and not ack["loading"], "a play request resolves only once its track has loaded", str(ack))
 
-    # Skipping before the requested song starts ends that request at once. It
-    # used to wait out the 60 s timeout, with the page showing it loading.
-    # The skip waits until the service has the new queue and is still loading
-    # its song; a skip that arrives first would test nothing.
+    # Skipping before the requested song starts ends that request at once.
     skipped = js(f"""(async () => {{
         const p = {PLAYER}; const {{ state }} = await import('./src/state.js');
         const native = method => Capacitor.nativePromise('RainettePlayer', method, {{}});

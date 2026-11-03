@@ -1,38 +1,4 @@
-"""Zero-setup HTTPS tunnel for the Rainette companion gateway.
-
-A phone can only reach this computer through an address that is both HTTPS and
-routable from outside the house.  Requiring every user to research Cloudflare
-Tunnel, install a CLI, and paste a hostname into Settings was the single
-biggest reason pairing failed.  Without a tunnel the pairing QR carried
-``http://127.0.0.1:<port>``; on a phone that address means *the phone itself*,
-and an HTTPS page is not allowed to call it at all.  The browser rejects the
-request before it leaves the device and reports only "Failed to fetch"
-(Chromium) or "Load failed" (WebKit), which says nothing about the real cause.
-
-This module removes the research step.  It fetches Cloudflare's ``cloudflared``
-binary on demand, runs a Quick Tunnel in front of the loopback companion port,
-waits until the public hostname actually answers *this* gateway, and supervises
-it for as long as Rainette is running.
-
-Trust model: the binary is downloaded over TLS from Cloudflare's own GitHub
-release channel and from nowhere else — the host allowlist below is enforced on
-every hop of the redirect chain, so a hijacked redirect cannot substitute a
-different origin.  The download is size-capped and the result must identify
-itself through ``cloudflared --version`` before it is ever used as a tunnel.
-
-Quick Tunnels are anonymous and get a fresh ``*.trycloudflare.com`` hostname on
-every start.  That is the trade for needing no Cloudflare account; the desktop
-persists whichever hostname is currently live, and a phone that already holds a
-device credential only has to re-scan the QR to learn the new address (its
-credential still authenticates, so no re-approval is required).
-
-*What lives where.*  This module owns the download policy above, the
-reachability probe, and the supervisor — the parts that are the same no matter
-how the computer became reachable.  How it becomes reachable is a
-:mod:`transport` provider, and the Quick Tunnel is one of them.  It is still
-the default and still behaves exactly as described above; the other providers
-are extra options, never a replacement.
-"""
+"""Zero-setup HTTPS tunnel for the Rainette companion gateway."""
 
 from __future__ import annotations
 
@@ -57,9 +23,6 @@ from urllib.parse import urlparse
 import transport
 
 # Cloudflare publishes cloudflared here for every platform Rainette runs on.
-# "latest/download" always resolves to the newest release, which matters because
-# Quick Tunnel support is a server-side feature that older clients lose access
-# to over time.
 _RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/download"
 
 # Every hop of the download must stay inside Cloudflare's GitHub release
@@ -100,11 +63,8 @@ _SUPERVISOR_POLL_S = 2.0
 _RESTART_BACKOFF_S = 5.0
 _LOG_TAIL_LINES = 40
 
-# A helper that is alive but no longer carrying traffic is invisible to
-# `poll()` — it stays `None` forever while the phone silently times out. So the
-# address itself is re-checked on a slow cadence, and only a run of failures
-# counts, because one failed probe is far more likely to be the desktop's own
-# network hiccupping than the tunnel being gone.
+# A helper that is alive but no longer carrying traffic is invisible to `poll()` — it stays `None`
+# forever while the phone silently times out.
 _HEALTH_PROBE_INTERVAL_S = 120.0
 _HEALTH_PROBE_FAILURES = 3
 
@@ -125,11 +85,7 @@ class TunnelStatus:
     provider_label: str = "Limited tunnel"
     stable_hostname: bool = False
     public: bool = True
-    # Unfinished setup is not a failure. These carry the next human step —
-    # install this, sign in there, approve this once — so the settings page can
-    # render a checklist with a button instead of an error nobody can act on.
-    # ``setup_can_fix`` is what turns that checklist into a wizard: it says the
-    # step is one Rainette can carry out, so the button acts instead of linking.
+    # Unfinished setup is not a failure.
     setup_action: str = ""  # "" | "install" | "signup" | "login" | "consent" | "configure" | "provision"
     setup_message: str = ""
     setup_url: str = ""
@@ -161,12 +117,7 @@ class TunnelStatus:
 
 @dataclass(frozen=True)
 class HelperStatus:
-    """State of the cloudflared binary, tracked separately from the tunnel.
-
-    Downloading is its own visible step rather than something the tunnel button
-    does silently: it is the only part of this feature that reaches the network
-    on the user's behalf, and it only ever has to happen once.
-    """
+    """State of the cloudflared binary, tracked separately from the tunnel."""
 
     phase: str = "missing"
     path: str = ""
@@ -300,11 +251,7 @@ def _identifies_as_cloudflared(path: Path) -> bool:
 
 
 def locate_cloudflared(app_data_dir: Path) -> Path | None:
-    """Find a usable cloudflared: a system install first, then our own copy.
-
-    Preferring the system copy means a user who already runs a managed named
-    tunnel keeps their own binary and its update cadence.
-    """
+    """Find a usable cloudflared: a system install first, then our own copy."""
     found = shutil.which("cloudflared")
     if found:
         candidate = Path(found)
@@ -353,13 +300,7 @@ def ensure_cloudflared(app_data_dir: Path, progress: Callable[[str], None] | Non
 
 
 def _probe_reachable(url: str) -> bool:
-    """True once the public hostname reaches *this* companion gateway.
-
-    ``/status`` requires a device credential, so an unauthenticated 401 from our
-    own handler is the cleanest possible proof that the whole path works.
-    Cloudflare's own 502/530 error pages arrive while the route is still warming
-    up and are correctly treated as not-yet-reachable.
-    """
+    """True once the public hostname reaches *this* companion gateway."""
     request = urllib.request.Request(
         url.rstrip("/") + "/status",
         headers={"User-Agent": "Rainette-Music-Tunnel-Probe"},
@@ -374,16 +315,7 @@ def _probe_reachable(url: str) -> bool:
 
 
 def _tls_is_intercepted(host: str = "www.youtube.com") -> bool:
-    """True when something on this network re-signs TLS for *host*.
-
-    A school or office firewall that inspects traffic presents its own
-    certificate. `music_bridge.describe_resolve_failure` already names this for
-    yt-dlp; the tunnel needs it for the same reason, because the same network
-    blocks the tunnel and the user is told neither.
-
-    Deliberately compared against a control host: a machine that simply has no
-    working TLS at all would otherwise be reported as filtered.
-    """
+    """True when something on this network re-signs TLS for *host*."""
     def issuer(name: str) -> str:
         # `getpeercert()` returns an empty dict when verification is off, and it
         # has to be off here -- the whole point is to look at a certificate this
@@ -415,14 +347,7 @@ def _tls_is_intercepted(host: str = "www.youtube.com") -> bool:
 
 
 def describe_unreachable(url: str) -> str:
-    """Say why an address that was minted never answered.
-
-    "check that this computer can reach the internet" was the only thing this
-    ever said, and on the network that actually causes it the computer's
-    internet is fine -- it is the tunnel specifically that is blocked. Naming
-    the firewall is the difference between a person changing networks and a
-    person restarting the app for three minutes at a time.
-    """
+    """Say why an address that was minted never answered."""
     if _tls_is_intercepted():
         return (
             "this network is blocking the tunnel — its firewall is inspecting "
@@ -437,16 +362,7 @@ def describe_unreachable(url: str) -> str:
 
 
 class TunnelManager:
-    """Owns whichever transport is selected and the thread that supervises it.
-
-    Every public method returns immediately.  Downloading and starting happen on
-    a worker thread so a pywebview API call from the settings page never blocks
-    the UI, and callers poll :meth:`status` instead.
-
-    The manager knows nothing about Cloudflare or Tailscale specifically.  It
-    knows how to bring *a* transport up, prove the address answers this gateway,
-    and keep it that way — the provider supplies the rest.
-    """
+    """Owns whichever transport is selected and the thread that supervises it."""
 
     def __init__(
         self,
@@ -534,13 +450,7 @@ class TunnelManager:
             return dict(self._provider_config)
 
     def set_provider(self, provider_id: str, config: dict | None = None) -> dict:
-        """Choose a transport and persist the choice.
-
-        Anything currently running is torn down through its *own* provider
-        first — swapping the selection out from under a live transport would
-        leave a daemon still publishing this computer with nothing left that
-        knows how to turn it off.
-        """
+        """Choose a transport and persist the choice."""
         if self.status().get("running") or self.status().get("busy"):
             self.stop()
         selection = transport.write_selection(self._app_data_dir, provider_id, config)
@@ -582,14 +492,7 @@ class TunnelManager:
         return {**self.status(), "preflight_ok": result.ok}
 
     def setup_step(self, step: str, settings: dict | None = None) -> dict:
-        """Carry out the one setup step the provider said Rainette could take.
-
-        The manager stays ignorant of what any particular step means.  It knows
-        only that ``preflight`` advertised ``can_fix`` for an action, and that
-        the provider exposes a method of that name; anything else is refused
-        here rather than reaching a provider that never offered it.  That keeps
-        the settings page from being able to invoke arbitrary provider methods.
-        """
+        """Carry out the one setup step the provider said Rainette could take."""
         provider = self.provider()
         step = str(step or "")
         options = dict(settings or {})
@@ -639,18 +542,7 @@ class TunnelManager:
             return self._status.as_dict()
 
     def _journal(self, message: str) -> None:
-        """Write one line to the app log, from the thread that knows the answer.
-
-        The tunnel is one of this app's two invariants and it had no voice at
-        all: the log said "reopening the managed HTTPS tunnel" and then went
-        silent forever, whether the tunnel came up, failed, or was quietly
-        ignored. Every report of "it just loads and never connects" has been
-        undiagnosable for exactly that reason.
-
-        Written straight to the file rather than through a logger injected from
-        main.py, because tunnel.py cannot import main.py without a cycle, and a
-        missing log is how this became invisible in the first place.
-        """
+        """Write one line to the app log, from the thread that knows the answer."""
         try:
             path = self._app_data_dir / "rainette-music.log"
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -677,14 +569,7 @@ class TunnelManager:
     # ── the cloudflared helper ────────────────────────────────────────────
 
     def helper_status(self) -> dict:
-        """Report whether cloudflared is available.
-
-        A settled answer is kept as-is: re-probing a finished download would
-        overwrite it, and a probe is only useful while we still believe the
-        helper is absent — for instance when the user installed one themselves
-        with this panel already open.  :meth:`start` re-locates the binary
-        anyway, so a stale "ready" can never turn into a confusing launch.
-        """
+        """Report whether cloudflared is available."""
         if not self.provider().capabilities.auto_installable:
             # Nothing to download, and the tunnel button must not be gated on a
             # step that does not exist for this transport.
@@ -697,12 +582,8 @@ class TunnelManager:
         with self._lock:
             settled = self._helper if self._helper.phase in {"downloading", "ready"} else None
             if settled is not None and settled.phase == "downloading":
-                # "downloading" is a claim about a thread, so it is only true
-                # while that thread is alive. Treating it as settled forever is
-                # how a spinner outlives the thing it was spinning for: the UI
-                # reads `busy` from this, polls fast, and waits for a download
-                # that stopped happening -- with no timeout and no way back
-                # short of restarting the app.
+                # "downloading" is a claim about a thread, so it is only true while that thread is
+                # alive.
                 worker = self._helper_worker
                 if worker is None or not worker.is_alive():
                     self._journal("helper download thread is gone; re-checking the binary")
@@ -762,15 +643,7 @@ class TunnelManager:
     # ── lifecycle ─────────────────────────────────────────────────────────
 
     def start(self, port: int) -> dict:
-        """Begin bringing a tunnel up in front of ``port``; returns immediately.
-
-        A transport that can install itself has to already be installed:
-        downloading is a separate, named step so the one action that reaches the
-        network stays something the user chose rather than a side effect of
-        pressing "generate".  A transport that *cannot* install itself reports
-        the missing pieces as setup instead, because "install Tailscale and sign
-        in" is a checklist, not an error.
-        """
+        """Begin bringing a tunnel up in front of ``port``; returns immediately."""
         selected = int(port)
         if selected <= 0 or selected > 65535:
             raise ValueError("companion port must be between 1 and 65535")
@@ -783,10 +656,8 @@ class TunnelManager:
             return self._require_setup(None, ready)
         with self._lock:
             if self._status.phase == "starting":
-                # Not an error, but not nothing either: the caller asked and was
-                # given back somebody else's in-flight attempt. If that attempt
-                # never lands this is what a stuck spinner is made of, so it is
-                # no longer silent.
+                # Not an error, but not nothing either: the caller asked and was given back somebody
+                # else's in-flight attempt.
                 self._journal(f"start({selected}) ignored: an attempt is already in flight")
                 return self._status.as_dict()
             if self._status.phase == "running" and self._status.port == selected and self._alive():
@@ -795,10 +666,7 @@ class TunnelManager:
             self._generation += 1
             generation = self._generation
             self._stop_requested.clear()
-            # Whatever was up is now superseded -- a different port, or a helper
-            # that died. Hand it over for termination instead of overwriting the
-            # only reference to it, which is how a tunnel switch used to leave
-            # the previous cloudflared running for the rest of the session.
+            # Whatever was up is now superseded -- a different port, or a helper that died.
             replaced, self._process = self._process, None
             self._handle = None
             self._status = TunnelStatus(
@@ -818,10 +686,8 @@ class TunnelManager:
             )
             self._worker.start()
             started = self._status.as_dict()
-        # Journalled outside the lock, and by hand because `start` assigns a
-        # whole new status rather than going through `_set_status`. Without
-        # this the log shows an attempt's end but never its beginning -- and an
-        # attempt that only ever begins is precisely the stuck-spinner case.
+        # Journalled outside the lock, and by hand because `start` assigns a whole new status rather
+        # than going through `_set_status`.
         self._journal(f"start({selected}) via {provider.id} (generation {generation})")
         # Outside the lock: terminating waits on a process, and status must stay
         # readable while it does.
@@ -890,16 +756,12 @@ class TunnelManager:
         try:
             url, handle = self._launch(port, generation)
             if not self._is_current(generation):
-                # Something newer took over while this one was coming up. The
-                # address is useless now, and the helper behind it goes with it
-                # -- `handle` and not `self._handle`, which by now belongs to
-                # whoever superseded us.
+                # Something newer took over while this one was coming up.
                 self._terminate(handle.process, timeout_s=5.0)
                 return
-            # `on_url` runs *before* the status flips to "running": a caller
-            # that polls `status()` (or server.py's own on_url-driven config
-            # write) must never be able to observe "running" while the side
-            # effect that made the address usable has not happened yet.
+            # `on_url` runs *before* the status flips to "running": a caller that polls `status()`
+            # (or server.py's own on_url-driven config write) must never be able to observe
+            # "running" while the side effect that made the address usable has not happened yet.
             if self._on_url is not None:
                 self._on_url(url)
             self._set_status(
@@ -973,12 +835,6 @@ class TunnelManager:
             self._process = handle.process
 
         # Whatever happens next, this launch owns the helper it just started.
-        # `_fail` and `_require_setup` clean up `self._process`, but they bail
-        # out first when the generation has moved on -- and a superseded launch
-        # is exactly when `self._process` is somebody else's. Cleaning up the
-        # handle's *own* process is the only version of this that is always
-        # right, and its absence left a cloudflared per abandoned attempt
-        # running under launchd after the app had quit.
         try:
             url = provider.discover_url(handle, time.monotonic() + _URL_DISCOVERY_TIMEOUT_S)
             if not url:
@@ -1048,27 +904,14 @@ class TunnelManager:
             name="rainette-tunnel-supervisor",
             daemon=True,
         )
-        # Started *before* it is published: `stop()` reads `self._supervisor`
-        # under the lock and, if it is set, immediately joins it.  Publishing
-        # the not-yet-started Thread first leaves a window where a `stop()`
-        # racing this method grabs that reference and calls `.join()` on a
-        # thread that was never `.start()`-ed, which raises
-        # "cannot join thread before it is started" instead of tearing down
-        # cleanly.
+        # Started *before* it is published: `stop()` reads `self._supervisor` under the lock and, if
+        # it is set, immediately joins it.
         supervisor.start()
         with self._lock:
             self._supervisor = supervisor
 
     def _is_down(self) -> bool:
-        """Decide whether the transport still works, by two different means.
-
-        A helper process that has exited is the obvious case and the only one
-        the old supervisor could see.  The other — a helper that is still alive
-        but no longer carrying traffic — looked identical to "healthy" and the
-        phone was left to time out.  And a transport whose config lives in a
-        daemon has no process at all, so probing is the *only* thing that can
-        tell us anything about it.
-        """
+        """Decide whether the transport still works, by two different means."""
         with self._lock:
             handle = self._handle
             process = self._process
@@ -1089,16 +932,7 @@ class TunnelManager:
         return self._probe_failures >= _HEALTH_PROBE_FAILURES
 
     def _supervise(self, port: int, generation: int) -> None:
-        """Keep the transport up for as long as Rainette is.
-
-        A Quick Tunnel gets a new hostname on every start, so a restart there
-        also republishes the address through ``on_url``; a phone that was
-        mid-session reconnects by re-scanning, and one that is idle picks it up
-        the next time it pairs.  A transport with a stable hostname comes back
-        on the *same* address, and republishing that would rewrite the config
-        and flash "new address" at the user for nothing — so the republish is
-        conditional on the address having actually changed.
-        """
+        """Keep the transport up for as long as Rainette is."""
         self._probe_failures = 0
         self._next_probe_at = time.monotonic() + _HEALTH_PROBE_INTERVAL_S
         while self._is_current(generation):

@@ -1,7 +1,5 @@
-/* The now-playing card the mini bar expands into. Same contents in the same
- * order as the desktop, so the two devices are not two layouts. The scrubber and
- * the volume control are both `createSlider` — a 4px rail inside a 48px row,
- * which is the one thing a native range input cannot express. */
+/* The now-playing card the mini bar expands into. Same contents in the same order as the desktop,
+ * so the two devices are not two layouts. */
 
 import { $, el, icon, iconButton, tap, toast } from './dom.js';
 import { createSlider } from './slider.js';
@@ -10,7 +8,10 @@ import { spring } from './motion.js';
 import { state, artworkUrl, artworkFor, artistName, formatTime, REPEAT_LABEL } from './state.js';
 import { openSheet } from './sheets.js';
 import { openQueueSheet } from './queue.js';
-import { openAddToPlaylist, openLyrics, openSleepTimer, openOutputPicker, openTrackMenu, sleepLabel } from './extras.js';
+import {
+	openAddToPlaylist, openLyrics, openSleepTimer, openOutputPicker, openTrackMenu, sleepLabel,
+	phoneOutputName, phoneOutputKind, watchPhoneRoute,
+} from './extras.js';
 import { openArtist, openAlbum, trackArtist, trackAlbum } from './catalog.js';
 import {
 	setVolume, volume as currentVolume, boostAvailable, resumeContext, volumeMax, volumeIsAdjustable,
@@ -120,16 +121,7 @@ export function openNowPlaying() {
 			const total = el('span', '', '0:00');
 			times.append(elapsed, total);
 
-			// The render-vs-drag guard lives inside the component now. A live
-			// gesture always beats the timeupdate stream, and after a commit the
-			// thumb holds its own value until the audio clock catches up with
-			// where it was sent — seekTo() writes audio.currentTime, which fires
-			// timeupdate synchronously, and that first tick still carries the
-			// pre-seek position.
-			//
-			// Both of those used to be open-coded here, and the guard was released
-			// by a `change` binding that several engines fire once per value step
-			// during a drag — dropping it mid-gesture, with the finger still down.
+			// The render-vs-drag guard lives inside the component now.
 			const seek = createSlider({
 				min: 0,
 				max: 0,
@@ -165,10 +157,8 @@ export function openNowPlaying() {
 			transport.append(shuffleBtn, prevBtn, playBtn, nextBtn, repeatBtn);
 
 			// ── Volume ──────────────────────────────────────────────────────
-			// Runs to 200%, because a phone at full volume through a car aux or a
-			// quiet bluetooth speaker is often still too quiet. Past 100% the gain
-			// node is doing the work, so the readout says so — and if the graph is
-			// unavailable the slider stops honestly at 100 rather than pretending.
+			// Runs to 200%, because a phone at full volume through a car aux or a quiet bluetooth speaker is
+			// often still too quiet.
 			const volumeRow = el('div', 'now-volume');
 			const volumeIcon = el('span', 'now-volume-icon');
 			const volumeValue = el('span', 'now-volume-value');
@@ -189,24 +179,15 @@ export function openNowPlaying() {
 				keyStep: 5,
 				boostAbove: 100,
 				format: percent => `${percent}%`,
-				// Safari starts every context suspended, and a suspended context is
-				// silence with no error anywhere. A pointerdown on this control is a
-				// valid gesture to resume it — and a native range's internal drag is
-				// not reliably a gesture context, which is one more reason the
-				// component owns the pointer.
+				// Safari starts every context suspended, and a suspended context is silence with no error
+				// anywhere.
 				onGrab: resumeContext,
 				onInput: percent => { paintVolume(percent); setVolume(percent / 100).catch(() => {}); },
-				// The snap-back is on commit only. Reading boostAvailable() on every
-				// frame of a drag raced the graph still being built and yanked the
-				// thumb back mid-gesture; once, on release, it is an answer rather
-				// than a coin toss.
+				// The snap-back is on commit only.
 				onCommit: async percent => {
 					const applied = await setVolume(percent / 100);
-					// `boostAvailable()` describes the *local* graph, which
-					// linked mode never builds because the computer is making
-					// the sound. Without this check, asking for more than 100%
-					// while playing on the computer snapped the thumb back and
-					// blamed the track, for a limit that does not apply.
+					// `boostAvailable()` describes the *local* graph, which linked mode never builds because the
+					// computer is making the sound.
 					if (percent <= 100 || isLinked() || boostAvailable()) return;
 					// A phone whose graph refused to build cannot exceed unity;
 					// snapping the thumb back is the only honest way to say so.
@@ -218,12 +199,9 @@ export function openNowPlaying() {
 				},
 			});
 			paintVolume(volume.value);
-			/* Where a slider cannot do anything, there is no slider and no
-			 * explanation of why — a paragraph about audio graphs in the middle
-			 * of a now-playing card is worse than the empty space it fills, and
-			 * the hardware buttons are discoverable without being told. This is
-			 * now rare: it needs an engine that both ignores element volume and
-			 * cannot hold a playback session. */
+			/* Where a slider cannot do anything, there is no slider and no explanation of why — a paragraph
+			 * about audio graphs in the middle of a now-playing card is worse than the empty space it
+			 * fills, and the hardware buttons are discoverable without being told. */
 			if (volumeIsAdjustable()) {
 				volumeRow.append(volumeIcon, volume.root, volumeValue);
 			} else {
@@ -291,10 +269,12 @@ export function openNowPlaying() {
 
 				sleepAction.querySelector('.now-action-label').textContent = sleepLabel();
 
+				const device = isLinked() ? '' : phoneOutputName();
 				const outputName = isLinked()
 					? `Playing on ${state.computerName || 'your computer'}`
-					: (nativeAvailable() ? 'Playing on this phone' : 'Playing from your computer');
-				outputBtn.innerHTML = `${icon(isLinked() ? 'laptop' : 'phone', 15)}<span></span>`;
+					: device ? `Playing on ${device}` : (nativeAvailable() ? 'Playing on this phone' : 'Playing from your computer');
+				const glyph = isLinked() ? 'laptop' : device ? ({ bluetooth: 'bluetooth', headphones: 'headphones' }[phoneOutputKind()] || 'speaker') : 'phone';
+				outputBtn.innerHTML = `${icon(glyph, 15)}<span></span>`;
 				outputBtn.querySelector('span').textContent = outputName;
 				outputBtn.setAttribute('aria-label', `Play on, currently ${outputName}`);
 
@@ -310,10 +290,12 @@ export function openNowPlaying() {
 
 			render();
 			const stop = subscribe(render);
+			const stopRoute = watchPhoneRoute(render);
 			new MutationObserver((_records, observer) => {
 				if (handle.root.isConnected) return;
 				observer.disconnect();
 				stop();
+				stopRoute();
 				openHandle = null;
 				document.body.classList.remove('now-playing-open');
 			}).observe(document.body, { childList: true });
@@ -332,23 +314,8 @@ function labelledAction(glyph, label, onClick, accessibleName = label) {
 	return button;
 }
 
-/* The card's colour, from the cover: one averaged colour for the wash, and the
- * cover itself shrunk and blurred for the backdrop.
- *
- * The backdrop used to be the full-size cover under a 56px CSS blur, half as
- * large again as the card. That is one very expensive paint, and on a
- * mid-range Android phone it held up the card's first frame, so the mini bar
- * vanished well before the card arrived. A 40px canvas blurred once per song
- * and stretched by the GPU looks the same and costs nothing.
- *
- * Artwork is cross-origin and the canvas would taint, so this only runs when
- * the image opts in via CORS (both YouTube image hosts do); when it does not,
- * the card keeps the default ground and nothing looks broken.
- *
- * It is read from the small thumbnail the rows already loaded, decoded off the
- * main thread first: drawing the 1080px cover into a canvas decoded it on the
- * main thread, 28ms in the middle of the card's slide-up on a Pixel 3a, for a
- * picture that ends up 40px wide. */
+/* The card's colour, from the cover: one averaged colour for the wash, and the cover itself shrunk
+ * and blurred for the backdrop. */
 const WASH_PX = 40;
 const WASH_SOURCE_CSS_PX = 48;
 
@@ -403,13 +370,7 @@ const SKIP_FLICK_MIN_PX = 36;
 const OPEN_COMMIT_PX = 28;
 const OPEN_FLICK_PX_MS = 0.3;
 
-/**
- * Swipe left for the next song, right for the previous one. `moving` (one
- * element or several) follows the finger; a committed throw carries it off
- * that side and the new song slides in from the other, which is how every
- * phone player says "skipped". `onVertical` (the mini bar only) takes a
- * gesture that starts mostly up or down instead.
- */
+/** Swipe left for the next song, right for the previous one. */
 function wireSkipSwipe(surface, moving, { onVertical = null } = {}) {
 	let motion = null;
 	let mode = null;

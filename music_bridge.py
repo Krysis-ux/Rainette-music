@@ -1,11 +1,4 @@
-"""Music player command handlers.
-
-Playlist/track CRUD are thin sync wrappers over the SQLite state. Search and stream-URL
-resolution hit yt-dlp, which blocks on network I/O, so those run on a daemon
-thread and broadcast their result via the thread-safe ``shared.notify_browsers``.
-No audio bytes ever flow through the server — the browser's <audio> element
-consumes the resolved URL directly.
-"""
+"""Music player command handlers. Playlist/track CRUD are thin sync wrappers over the SQLite state."""
 
 from __future__ import annotations
 
@@ -27,23 +20,10 @@ import audio_outputs
 import local_library
 import shared
 
-# ``no-certifi`` asks yt-dlp's request layer to use the operating-system trust
-# store rather than certifi, without replacing ``ssl.SSLContext`` process-wide
-# (the old global truststore injection installed a client-only context in the
-# stdlib module, which made the companion's TLS *server* accept and then drop
-# every connection).
-#
-# **Windows only, deliberately.** There it picks up enterprise roots, which is
-# the whole point. On macOS it is actively harmful: Python's ``ssl`` cannot read
-# the Keychain, and a frozen build's OpenSSL has no CA path that exists on the
-# user's machine — measured on a real install, ``get_default_verify_paths()``
-# points at the *build* machine's Homebrew directory. So "use the system store"
-# means "use no roots at all", every TLS verify fails with "unable to get local
-# issuer certificate", and the app blamed the user's network for it — telling
-# people on their own home Wi-Fi that a firewall was intercepting YouTube.
-#
-# The bundle already ships ``certifi/cacert.pem``; this stops us refusing to use
-# it on the one platform that has nothing else.
+# ``no-certifi`` asks yt-dlp's request layer to use the operating-system trust store rather than
+# certifi, without replacing ``ssl.SSLContext`` process-wide (the old global truststore injection
+# installed a client-only context in the stdlib module, which made the companion's TLS *server*
+# accept and then drop every connection).
 _SYSTEM_TRUST_COMPAT = {"no-certifi"} if os.name == "nt" else set()
 SYSTEM_TRUST_ENABLED = os.name == "nt"
 
@@ -144,13 +124,7 @@ def _stream_opts_for(player_client: str | None) -> dict[str, Any]:
 
 
 def _is_audio_only(info: dict[str, Any]) -> bool:
-    """True when the selected format carries no video track.
-
-    A muxed format plays, so nothing downstream *errors* -- it just ships video
-    bytes to an <audio> element and reports `video/mp4` to a phone that measured
-    its decoders against `audio/mp4`. That is why this is checked rather than
-    assumed: the failure is silent everywhere else.
-    """
+    """True when the selected format carries no video track."""
     return str(info.get("vcodec") or "none") == "none"
 
 
@@ -159,12 +133,8 @@ def _run_bg(target, *args):
 
 
 def _parse_upstream_expiry(url: str) -> float | None:
-    """Read googlevideo's own ``expire`` stamp off a stream URL.
-
-    The CDN tells us exactly when it will stop serving a URL, which beats any
-    TTL we invent. Anything already past, or implausibly far out, is treated as
-    unparseable rather than trusted.
-    """
+    """Read googlevideo's own ``expire`` stamp off a stream URL. The CDN tells us exactly when it
+    will stop serving a URL, which beats any TTL we invent."""
     try:
         raw = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("expire", [""])[0]
         value = float(raw)
@@ -385,12 +355,7 @@ def _ytm_album(item: dict[str, Any], artist_hint: str = "") -> dict[str, Any] | 
 # ── Stream URL resolution (only when the user actually presses play) ──────────
 
 def _local_track_for(track_id: str, source_id: str) -> dict[str, Any] | None:
-    """The local row a stream request names, if it names one.
-
-    Tried by primary key first because that is what a phone sends back for a
-    track it already has; the opaque ``source_id`` is the fallback for a request
-    built from a search result rather than from the library.
-    """
+    """The local row a stream request names, if it names one."""
     try:
         return shared.STATE.get_local_track(track_id=track_id, source_id=source_id)
     except Exception:
@@ -420,15 +385,8 @@ def cmd_music_stream_url(msg):
             "type": "music_stream_url_result", "id": req_id, "ok": True,
             "track_id": str(local_row.get("id") or ""),
             "source_id": str(local_row.get("source_id") or ""),
-            # No `expires_hint_s`: there is nothing to expire, and inventing a
-            # number here is what used to collapse the relay grant behind it.
-            #
-            # The url is the desktop's own route to the file. A phone never sees
-            # it: the companion gateway keys off `local` and overwrites this with
-            # a grant it mints itself, whatever is here. It used to be the empty
-            # string, which was correct for the phone and left the desktop with
-            # nothing to play -- every local and downloaded track failed there
-            # while working perfectly over the relay.
+            # No `expires_hint_s`: there is nothing to expire, and inventing a number here is what
+            # used to collapse the relay grant behind it.
             "local": True, "cached": False,
             "url": ("/local/" + str(local_row.get("id") or "")) if local_row.get("id") else "",
             "content_type": str(local_row.get("content_type") or ""),
@@ -475,11 +433,7 @@ def cmd_music_stream_url(msg):
     _run_bg(_stream_worker, req_id, source_id, track_id, not prefetch)
 
 
-# Set whenever a resolve had to settle for a format carrying video. Exposed
-# through `last_muxed_fallback()` so "every phone is being served video" is
-# something the app can be *asked* about -- by the live canary test, or by
-# anyone debugging a playback report -- instead of something only a user can
-# describe, badly, after the fact.
+# Set whenever a resolve had to settle for a format carrying video.
 _last_muxed_fallback: dict[str, Any] | None = None
 _muxed_fallback_lock = threading.Lock()
 
@@ -503,12 +457,7 @@ def last_muxed_fallback() -> dict[str, Any] | None:
 
 
 def _url_and_headers(info: dict[str, Any]) -> tuple[str, dict[str, str]]:
-    """The playable URL out of a yt-dlp result, with the headers it was signed for.
-
-    Some extractors nest the URL under requested formats. The headers travel
-    with the format, not with the video, so they are taken from whichever entry
-    actually supplied the URL.
-    """
+    """The playable URL out of a yt-dlp result, with the headers it was signed for."""
     stream_url = info.get("url") or ""
     headers = dict(info.get("http_headers") or {})
     if stream_url:
@@ -520,12 +469,7 @@ def _url_and_headers(info: dict[str, Any]) -> tuple[str, dict[str, str]]:
 
 
 def _extract_stream(source_id: str) -> dict[str, Any]:
-    """Run yt-dlp for one source and normalise what comes back.
-
-    Split out of the worker so the audio relay can reach the same resolution
-    path when a cached URL has gone stale mid-track, instead of a second
-    implementation drifting away from this one.
-    """
+    """Run yt-dlp for one source and normalise what comes back."""
     url = source_id if source_id.startswith("http") else f"https://www.youtube.com/watch?v={source_id}"
 
     # Try each candidate client and keep the first audio-only answer. A muxed
@@ -575,14 +519,7 @@ def _extract_stream(source_id: str) -> dict[str, Any]:
 
 
 def resolve_stream_url_sync(source_id: str, *, force_refresh: bool = False) -> str:
-    """Blocking, cache-aware, single-flight stream resolution.
-
-    Called from the audio relay when an upstream URL has been invalidated
-    (googlevideo binds them to the resolving IP, so a VPN toggle kills them).
-    Single-flight matters here specifically: a stale URL fails on *every*
-    in-flight Range request at once, and without the lock that is one yt-dlp
-    process per request rather than one per track.
-    """
+    """Blocking, cache-aware, single-flight stream resolution."""
     source_id = str(source_id or "").strip()
     if not source_id:
         raise ValueError("source_id required")
@@ -604,28 +541,13 @@ def resolve_stream_url_sync(source_id: str, *, force_refresh: bool = False) -> s
 
 
 def stream_request_headers(source_id: str) -> dict[str, str]:
-    """The headers a resolved stream URL must be re-requested with.
-
-    googlevideo signs a URL for the client that asked for it and answers a
-    request wearing anybody else's ``User-Agent`` with 403.  The relay therefore
-    cannot forward the phone's headers upstream; it has to repeat yt-dlp's.
-    Returns an empty mapping for a source that was never resolved here, which
-    leaves the caller free to fall back to whatever it did before.
-    """
+    """The headers a resolved stream URL must be re-requested with."""
     cached = _stream_cache_get(str(source_id or "").strip())
     return dict((cached or {}).get("http_headers") or {})
 
 
 def _has_trust_roots() -> bool:
-    """Can this process verify *any* certificate?
-
-    A frozen macOS build was shipping with none: its OpenSSL default paths
-    pointed at the build machine's Homebrew directory, which does not exist on
-    a user's Mac. Zero roots makes every TLS handshake fail with "unable to get
-    local issuer certificate" -- indistinguishable, from the error text alone,
-    from a firewall re-signing traffic. This is what tells them apart, and it
-    needs no network to answer.
-    """
+    """Can this process verify *any* certificate?"""
     try:
         return bool(ssl.create_default_context().get_ca_certs())
     except Exception:
@@ -633,19 +555,11 @@ def _has_trust_roots() -> bool:
 
 
 def describe_resolve_failure(exc: BaseException) -> str:
-    """Turn a yt-dlp failure into something a person can act on.
-
-    The raw text is Python TLS internals ending in "report this issue", which
-    sends the user to file a bug about their own network. A Wi-Fi running TLS
-    inspection kills every track the same way, and only the message can say so.
-    """
+    """Turn a yt-dlp failure into something a person can act on."""
     text = str(exc)
     lowered = text.lower()
     if "certificate_verify_failed" in lowered or "certificate verify failed" in lowered:
-        # Two very different causes, one error string. Blaming the network for
-        # both told people sitting on their own home Wi-Fi that a firewall was
-        # intercepting YouTube -- which sent them to reset a router that was
-        # working perfectly, while the actual fault was in this build.
+        # Two very different causes, one error string.
         if not _has_trust_roots():
             return ("Rainette cannot verify secure connections on this computer: "
                     "this copy has no certificate authorities loaded, so every "
@@ -928,13 +842,7 @@ def cmd_music_recent(msg):
 
 
 def cmd_music_recent_delete(msg):
-    """Forget plays, then reply with the refreshed list so the tab re-renders.
-
-    ``scope`` is 'track' (needs track_id), 'artist' (needs artist_key, used by
-    the Insights top-artist rows), or 'all'. Recents is grouped by track, so a
-    single entry has no per-play id - removing one means forgetting that track's
-    plays, which is also why the same command backs Insights' remove actions.
-    """
+    """Forget plays, then reply with the refreshed list so the tab re-renders."""
     req_id = msg.get("id")
     try:
         scope = str(msg.get("scope") or "track")
@@ -960,11 +868,7 @@ def cmd_music_recent_delete(msg):
 
 
 def cmd_music_clear_data(msg):
-    """Erase the selected categories of local user data (Settings -> Danger zone).
-
-    Irreversible by design: the picker in the UI is the confirmation step. The
-    reply carries refreshed lists so every open surface resets without a reload.
-    """
+    """Erase the selected categories of local user data (Settings -> Danger zone)."""
     req_id = msg.get("id")
     try:
         categories = msg.get("categories")
@@ -1069,12 +973,7 @@ REPEAT_MODES = ("off", "all", "one")
 
 
 def _repeat_fields(msg) -> dict:
-    """Normalise the repeat/loop pair of a playback message.
-
-    Mirrors web/repeat_mode.js. Returns an empty dict when the producer said
-    nothing about repeat, so the fan-out cannot silently reset a receiver that
-    does have a setting.
-    """
+    """Normalise the repeat/loop pair of a playback message. Mirrors web/repeat_mode.js."""
     mode = msg.get("repeat")
     if mode not in REPEAT_MODES:
         if not isinstance(msg.get("loop"), bool):
@@ -1103,10 +1002,7 @@ def cmd_music_now_playing_set(msg):
         **_repeat_fields(msg),
         "current_time": msg.get("current_time") or 0,
         "duration": msg.get("duration") or 0,
-        # Older desktop engines do not send an output id. They are the only
-        # legacy producer, so treating an omitted value as desktop keeps the
-        # companion's transport controls routed to the device that owns audio.
-        # Phone-originated state always supplies ``phone`` explicitly.
+        # Older desktop engines do not send an output id.
         "output_device_id": str(msg.get("output_device_id") or "desktop"),
         # Why playback stopped. Dropping it left every failure reading as a
         # bare "playback failed".
@@ -1123,10 +1019,9 @@ def cmd_music_now_playing_set(msg):
 
 
 def cmd_music_progress(msg):
-    """Relay a lightweight playback-position tick from whichever window owns the
-    <audio> to every other window, so the main-window docked bar / Now Playing
-    view can show a moving progress bar without the engine re-sending the whole
-    queue each tick. Pure fan-out."""
+    """Relay a lightweight playback-position tick from whichever window owns the <audio> to every
+    other window, so the main-window docked bar / Now Playing view can show a moving progress
+    bar without the engine re-sending the whole queue each tick."""
     shared.notify_browsers({
         "type": "music_progress",
         "current_time": msg.get("current_time") or 0,
@@ -1209,13 +1104,7 @@ def cmd_music_remote_control(msg):
 
 
 def cmd_music_output_transfer(msg):
-    """Request a single-output handoff without stopping the current device.
-
-    The receiving device confirms it has loaded the shared queue before it
-    emits its next now-playing state.  Until that confirmation the source is
-    intentionally left untouched, which makes a failed phone/desktop transfer
-    non-destructive.
-    """
+    """Request a single-output handoff without stopping the current device."""
     shared.notify_browsers({
         "type": "music_output_transfer",
         "id": msg.get("id"),
@@ -1233,13 +1122,7 @@ def cmd_music_output_transfer(msg):
 
 
 def cmd_music_output_transfer_result(msg):
-    """Relay a target device's load acknowledgement to the waiting source.
-
-    Transfer requests deliberately wait for this message before pausing the
-    old output.  Keeping the acknowledgement in the normal bridge fan-out
-    means both an authenticated phone and the loopback desktop can act as the
-    target without introducing a second response channel.
-    """
+    """Relay a target device's load acknowledgement to the waiting source."""
     payload = {
         "type": "music_output_transfer_result",
         "id": msg.get("id"),
@@ -1256,11 +1139,8 @@ def cmd_music_output_transfer_result(msg):
         payload["msg"] = str(msg.get("msg"))[:500]
     shared.notify_browsers(payload)
 
-    # A handoff is the one moment both sides agree on who owns the audio, and
-    # it is the only place in the codebase that sees a successful transfer from
-    # either direction. Ownership moves here and nowhere earlier: a transfer
-    # that failed must leave the source playing, which is the contract
-    # cmd_music_output_transfer states in prose and nothing used to enforce.
+    # A handoff is the one moment both sides agree on who owns the audio, and it is the only place
+    # in the codebase that sees a successful transfer from either direction.
     if payload["ok"] and payload["target_device_id"]:
         target = payload["target_device_id"]
         _publish_playback_target(
@@ -1272,13 +1152,7 @@ def cmd_music_output_transfer_result(msg):
 
 def _publish_playback_target(*, owner_kind, owner_device_id, reason,
                              sink_id=None, sink_name=None, owner_name=None):
-    """Record who owns playback, then tell every device.
-
-    Deliberately fans out to all of them rather than to the session that caused
-    it: a phone showing "playing on the computer" needs to stop saying that the
-    moment another device takes over, and it cannot learn that from its own
-    session's events.
-    """
+    """Record who owns playback, then tell every device."""
     patch = {"owner_kind": owner_kind, "owner_device_id": str(owner_device_id or "desktop"),
              "reason": reason}
     if sink_id is not None:
@@ -1323,12 +1197,8 @@ def cmd_music_playback_target_get(msg):
 
 
 def cmd_music_playback_target_set(msg):
-    """Claim playback for the caller.
-
-    The owner is derived, never read from the body: a phone can only ever claim
-    ownership for itself, and the desktop only for itself. Without that a
-    device could hand playback to a third party it has no business moving.
-    """
+    """Claim playback for the caller. The owner is derived, never read from the body: a phone can
+    only ever claim ownership for itself, and the desktop only for itself."""
     origin = str(msg.get("origin_device_id") or "")
     kind = str(msg.get("owner_kind") or "").strip()
     if kind not in ("desktop", "phone"):
@@ -1361,12 +1231,7 @@ def cmd_music_device_settings_get(msg):
 
 
 def cmd_music_device_settings_put(msg):
-    """Merge a phone's settings, per key rather than per blob.
-
-    Prefs travel as one object, so a whole-blob revision would force discarding
-    one side whenever two devices touched different keys. Per-key stamps make
-    the merge commutative and both edits survive.
-    """
+    """Merge a phone's settings, per key rather than per blob."""
     device_id = str(msg.get("origin_device_id") or "")
     entries = msg.get("entries") if isinstance(msg.get("entries"), list) else []
     merged = []
@@ -1382,13 +1247,7 @@ def cmd_music_device_settings_put(msg):
 
 
 def cmd_music_output_sink_result(msg):
-    """Relay the player window's answer to a set_sink request.
-
-    Whether audio could be re-routed is only knowable inside the window that
-    owns the <audio> element, and the window that asked is a different one, so
-    the answer needs its own fan-out message rather than riding on the
-    relayed request (whose echo would arrive first and mean nothing).
-    """
+    """Relay the player window's answer to a set_sink request."""
     shared.notify_browsers({
         "type": "music_output_sink_result",
         "id": msg.get("id"),
@@ -1398,13 +1257,7 @@ def cmd_music_output_sink_result(msg):
 
 
 def cmd_music_output_devices(msg):
-    """List the audio outputs this computer can play through.
-
-    Shelling out to the OS takes long enough to stutter a picker's opening
-    animation, so the probe runs on a daemon thread and the answer arrives as a
-    normal id-correlated result. Callers render the system default immediately
-    and fill the rest in when this lands.
-    """
+    """List the audio outputs this computer can play through."""
     req_id = msg.get("id")
 
     def worker():
@@ -1468,10 +1321,8 @@ def _catalog_search_worker(req_id, query):
     try:
         if YTMUSIC_AVAILABLE:
             yt = _ytmusic()
-            # The four catalog searches are independent network calls - running
-            # them in parallel cuts perceived search latency to the slowest one
-            # instead of the sum. Failures still propagate via .result() so the
-            # error path is identical to the old sequential version.
+            # The four catalog searches are independent network calls - running them in parallel
+            # cuts perceived search latency to the slowest one instead of the sum.
             with ThreadPoolExecutor(max_workers=4, thread_name_prefix="rainette-search") as pool:
                 songs_f = pool.submit(yt.search, query, filter="songs", limit=25)
                 videos_f = pool.submit(yt.search, query, filter="videos", limit=8)
@@ -1520,13 +1371,7 @@ def _catalog_search_worker(req_id, query):
 
 
 def cmd_music_artist_images(msg):
-    """Resolve artist artwork for a batch of names in one round trip.
-
-    A phone building an artist list out of its own library has names and nothing
-    else — the tracks carry cover art, which is the album's, not the artist's.
-    Asking per artist would be one search per row; asking here is one command for
-    the whole screen, and the client caches what comes back.
-    """
+    """Resolve artist artwork for a batch of names in one round trip."""
     req_id = msg.get("id")
     raw = msg.get("names")
     names = []
@@ -1570,6 +1415,10 @@ def _artist_images_worker(req_id, names):
 
         with ThreadPoolExecutor(max_workers=6, thread_name_prefix="rainette-artist-art") as pool:
             found = [a for a in pool.map(lookup, names) if a]
+        try:
+            shared.STATE.remember_artist_art(found)
+        except Exception:
+            pass  # a picture not kept is looked up again next time
         shared.notify_browsers({
             "type": "music_artist_images_result", "id": req_id, "ok": True, "artists": found,
         })
@@ -1850,11 +1699,9 @@ def cmd_music_library_index(msg):
         limit = max(1, min(int(msg.get("limit", 500) or 500), 1000))
     except Exception:
         limit = 500
-    # The requesting device decides which local tracks get marked unplayable;
-    # the result carries whose capabilities it used, so a phone receiving
-    # another device's fan-out can see the marks are not about it.
-    # Passed only when there is one, so a request with no device behind it calls
-    # the same signature it always did.
+    # The requesting device decides which local tracks get marked unplayable; the result carries
+    # whose capabilities it used, so a phone receiving another device's fan-out can see the marks
+    # are not about it.
     device_id = str(msg.get("origin_device_id") or "").strip()
     extra = {"device_id": device_id} if device_id else {}
     try:
@@ -1938,15 +1785,7 @@ def _local_status_payload() -> dict[str, Any]:
 
 
 def cmd_music_local_roots(msg):
-    """List, add, or forget a watched folder.
-
-    ``add`` and ``remove`` are refused when the message carries an
-    ``origin_device_id``, which the gateway stamps on every command arriving
-    from a phone (``server.py`` overwrites any value the phone supplied, so its
-    absence cannot be forged). Choosing a folder is a decision made at the
-    computer through a native picker; a phone that could name a path could name
-    ``/`` and turn the library into a directory listing of somebody's home.
-    """
+    """List, add, or forget a watched folder."""
     req_id = msg.get("id")
     action = str(msg.get("action") or "list").strip().lower()
     from_phone = bool(str(msg.get("origin_device_id") or "").strip())
@@ -1997,13 +1836,7 @@ _download_lock = threading.Lock()
 
 
 def downloads_dir() -> Path:
-    """Where downloaded tracks land, created on demand.
-
-    Under the user's own Music folder when there is one, because that is where
-    a person looks for music and where other players already index. Falls back
-    to the app data directory when there is not -- a download that lands
-    somewhere odd is better than one that fails.
-    """
+    """Where downloaded tracks land, created on demand."""
     music = Path.home() / "Music"
     if music.is_dir():
         base: Path = music
@@ -2019,12 +1852,7 @@ def downloads_dir() -> Path:
 
 
 def _safe_stem(artist: str, title: str) -> str:
-    """A file name every platform this runs on will accept.
-
-    Windows is the strictest and is what the character class is drawn from; the
-    length cap is there because a very long name is refused outright on some
-    filesystems even when every character in it is legal.
-    """
+    """A file name every platform this runs on will accept."""
     stem = f"{artist} - {title}" if artist else (title or "track")
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", stem)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
@@ -2032,12 +1860,8 @@ def _safe_stem(artist: str, title: str) -> str:
 
 
 def _write_tags(path: Path, track: dict[str, Any], artwork: bytes | None) -> None:
-    """Write catalog metadata into the downloaded file.
-
-    Never raises: a file that plays with poor tags beats a download reported as
-    failed because a tag block would not take. Mirrors ``local_library.read_tags``
-    in being categorically forgiving.
-    """
+    """Write catalog metadata into the downloaded file. Never raises: a file that plays with poor
+    tags beats a download reported as failed because a tag block would not take."""
     if not local_library.MUTAGEN_AVAILABLE:
         return
     try:
@@ -2073,12 +1897,7 @@ def _fetch_artwork(url: str) -> bytes | None:
 
 
 def _download_one(track: dict[str, Any], folder: Path, on_bytes) -> Path:
-    """Fetch one track into ``folder`` and return where it landed.
-
-    Written to a ``.part`` file and renamed only once the body is complete, so
-    an interrupted download never leaves something the next scan would index as
-    a track. Raises on failure; the caller counts it and moves on.
-    """
+    """Fetch one track into ``folder`` and return where it landed."""
     source_id = str(track.get("source_id") or track.get("id") or "")
     if not source_id:
         raise ValueError("that track has no source")
@@ -2123,14 +1942,7 @@ def _download_one(track: dict[str, Any], folder: Path, on_bytes) -> Path:
 
 
 def cmd_music_download_track(msg):
-    """Download one track, or a list of them, into the downloads folder.
-
-    Refused outright when the message carries an ``origin_device_id``. That
-    stamp is the gateway's mark of a command from a phone, and a phone has no
-    business filling this computer's disk -- it has its own download path and
-    its own storage. Same discipline as ``cmd_music_local_roots``, for the same
-    reason: writing to this machine is a decision made at this machine.
-    """
+    """Download one track, or a list of them, into the downloads folder."""
     req_id = msg.get("id")
     if str(msg.get("origin_device_id") or "").strip():
         shared.notify_browsers({"type": "music_download_result", "id": req_id, "ok": False,
@@ -2218,20 +2030,12 @@ def cmd_music_local_status(msg):
                                 "msg": str(exc), "roots": [], "tracks": 0, "missing": 0, "bytes": 0})
 
 
-# One scan at a time. Two concurrent walks of the same folder do the same work
-# twice and interleave their progress into nonsense; the reconcile step is
-# self-correcting either way, so this is about not wasting a disk, not about
-# correctness.
+# One scan at a time.
 _local_scan_lock = threading.Lock()
 
 
 def cmd_music_local_scan(msg):
-    """Walk the watched folders on a background thread.
-
-    Only already-registered roots are ever walked — ``local_library.scan``
-    drops anything else — so a phone may re-run a scan without being able to
-    say where.
-    """
+    """Walk the watched folders on a background thread."""
     req_id = msg.get("id")
     raw = msg.get("roots")
     roots = [str(path or "").strip() for path in raw if str(path or "").strip()] \
@@ -2260,13 +2064,8 @@ def _local_scan_worker(req_id, roots):
 
 
 def cmd_music_client_capabilities(msg):
-    """Record what one phone's ``canPlayType`` said it can decode.
-
-    iOS Safari plays FLAC in an ``<audio>`` element but not Ogg or Opus. Without
-    this the library offers an Opus track the phone silently fails to load, and
-    the failure surfaces as "the audio stream expired" — which is not merely
-    unhelpful, it points at the wrong subsystem entirely.
-    """
+    """Record what one phone's ``canPlayType`` said it can decode. iOS Safari plays FLAC in an
+    ``<audio>`` element but not Ogg or Opus."""
     req_id = msg.get("id")
     device_id = str(msg.get("origin_device_id") or msg.get("device_id") or "").strip()
     raw = msg.get("can_play") if isinstance(msg.get("can_play"), dict) else {}

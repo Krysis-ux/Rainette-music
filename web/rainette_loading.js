@@ -1,8 +1,5 @@
-/** Rainette's shared Kagebana activity indicator.
- *
- * The seven petals open in place instead of spinning the entire app icon. That
- * keeps the motion quiet, recognisable, and useful beside real async work.
- */
+/** Rainette's shared Kagebana activity indicator. The seven petals open in place instead of
+ * spinning the entire app icon. */
 
 function escapeHtml(value) {
 	return String(value || '').replace(/[&<>"']/g, character => ({

@@ -1,15 +1,4 @@
-/* Keeping the session alive across the things a phone actually does to it.
- *
- * A phone sleeps. It loses Wi-Fi in a lift. It gets swiped away and restored
- * from the back-forward cache. None of that was handled: there was no
- * visibilitychange, pageshow or freeze handler anywhere in this client, and the
- * only reconnect was a flat 1800ms retry with no backoff and no cap. So a phone
- * that slept for ten minutes woke with a dead long-poll, and the fix from the
- * user's side was to close the app and open it again.
- *
- * This module owns that lifecycle. It does not own the loop itself — sync.js
- * does — it owns the question of when the loop should be nudged.
- */
+/* Keeping the session alive across the things a phone actually does to it. */
 
 /* Backoff between reconnect attempts. Half-range jitter, not full: two phones
  * waking from the same lift at the same moment must not retry in lockstep and

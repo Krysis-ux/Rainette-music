@@ -1,9 +1,4 @@
-"""End-to-end proof that two phones paired to one computer stay independent.
-
-These exercise the real HTTP surface a phone talks to — pair, approve, claim,
-command, poll — rather than calling the registry directly, so a regression in
-the routing or middleware layer is caught here too.
-"""
+"""End-to-end proof that two phones paired to one computer stay independent."""
 
 import unittest
 

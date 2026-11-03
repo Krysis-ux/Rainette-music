@@ -133,10 +133,7 @@ class QuietStaticHandler(SimpleHTTPRequestHandler):
 
 class QuietThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
-    # The page opens ~40 ES modules at once. socketserver's default backlog of
-    # 5 overflows, macOS resets a connection, and a module that never arrives
-    # leaves the app unbooted with no page error -- a timeout in whichever test
-    # drew it. That was this suite's intermittent failure, not the app.
+    # The page opens ~40 ES modules at once.
     request_queue_size = 128
 
 
@@ -537,11 +534,7 @@ def test_core_release_browser_flow():
             labels = page.locator(".rw-insights-bar-label").all_inner_texts()
             assert labels == ["0", "3"], labels
 
-            # Every value label has to clear the top of its own bar. The label used
-            # to be pinned to the full-height column at a fixed `top: -4px`, so it
-            # never tracked the bar - and the tallest bar (height:100%) grew
-            # straight into its own label, printing the number on top of the accent
-            # fill. Assert the geometry, not just the text.
+            # Every value label has to clear the top of its own bar.
             page.wait_for_timeout(600)  # let the bar grow animation settle
             peak_col = page.locator(".rw-insights-col").nth(1)
             assert peak_col.locator(".rw-insights-bar-label").inner_text() == "3"
@@ -590,15 +583,9 @@ def test_core_release_browser_flow():
 
 
 def test_track_row_reflects_now_playing_state_and_toggles_in_place():
-    """Track rows never reflected playback state at all: the play button
-    always showed the play icon and there was no "now playing" indicator,
-    regardless of whether that exact track was the one currently playing.
-
-    Also guards a stale-closure bug in the fix: the click handler must
-    re-check live now-playing state at click time, not a snapshot captured
-    when the row was first built - otherwise clicking the active row's own
-    button restarts the queue instead of toggling play/pause.
-    """
+    """Track rows never reflected playback state at all: the play button always showed the play
+    icon and there was no "now playing" indicator, regardless of whether that exact track was
+    the one currently playing."""
     handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
     server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -647,10 +634,9 @@ def test_track_row_reflects_now_playing_state_and_toggles_in_place():
             row(0).locator(".rw-play-action").click()
             page.wait_for_timeout(100)
             sent = page.evaluate("() => window.__rainetteSentMessages || []")
-            # The verb states an intent rather than a flip: `toggle` against a
-            # stale `playing` flag makes the pause-looking button resume, which
-            # is a real bug on a window whose broadcasts can lag a press.
-            # `toggle` is still accepted from older callers.
+            # The verb states an intent rather than a flip: `toggle` against a stale `playing` flag
+            # makes the pause-looking button resume, which is a real bug on a window whose
+            # broadcasts can lag a press.
             toggles = [m for m in sent if isinstance(m, dict)
                       and m.get("type") == "music_remote_control"
                       and m.get("action") in ("toggle", "pause", "play")]
@@ -993,10 +979,7 @@ def test_miniplayer_toggle_during_resolution_keeps_successful_load_paused():
 
 
 def test_both_playback_windows_resynchronize_after_websocket_reconnect():
-    """A remote command broadcast while either WebView is disconnected is
-    otherwise lost forever. Each side must request the authoritative state on
-    every socket open, not only once during its initial module boot.
-    """
+    """A remote command broadcast while either WebView is disconnected is otherwise lost forever."""
     handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
     server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1050,11 +1033,8 @@ def test_both_playback_windows_resynchronize_after_websocket_reconnect():
 
 
 def test_state_handshake_restores_paused_transport_without_blocking_active_recovery():
-    """Reconnect recovery must carry transport intent, not masquerade as a
-    fresh user-initiated play. A paused queue stays paused after a cold player
-    restore, while a queue that was still loading is allowed to finish and
-    begin playback.
-    """
+    """Reconnect recovery must carry transport intent, not masquerade as a fresh user-initiated
+    play."""
     handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
     server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1208,11 +1188,9 @@ def test_state_handshake_restores_paused_transport_without_blocking_active_recov
 
 
 def test_miniplayer_loop_button_renders_a_glyph_in_every_repeat_state():
-    """Regression: the detached player's ICON map lacked a `loopOne` entry, so
-    cycling repeat to 'one' assigned `undefined` to the button's innerHTML and
-    rendered the literal word "undefined" inside the loop control. Every repeat
-    state must render an <svg> glyph and never that text.
-    """
+    """Regression: the detached player's ICON map lacked a `loopOne` entry, so cycling repeat to
+    'one' assigned `undefined` to the button's innerHTML and rendered the literal word
+    "undefined" inside the loop control."""
     handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
     server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1249,18 +1227,7 @@ def test_miniplayer_loop_button_renders_a_glyph_in_every_repeat_state():
 
 
 def test_update_badge_stays_hidden_and_binds_despite_late_pywebview_injection():
-    """Two regressions in the update badge, both confirmed and fixed:
-
-    1. `.rw-update-badge { display: inline-flex }` had equal CSS specificity to
-       the browser's `[hidden] { display: none }` rule, so author CSS won the
-       cascade tie and the badge showed "Update available" permanently
-       regardless of the hidden attribute or any check result.
-    2. bindUpdater() gated attaching the click listener on `window.pywebview`
-       being truthy at mount time. pywebview injects window.pywebview
-       asynchronously, so if it arrived even slightly after mount(), the click
-       listener was never attached at all - "clicking Update does nothing"
-       with no error, because nothing was listening.
-    """
+    """Two regressions in the update badge, both confirmed and fixed: 1."""
     handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
     server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1385,13 +1352,7 @@ def test_settings_manual_update_check_reports_current_without_showing_badge():
 
 
 def test_source_run_points_at_the_repository_instead_of_installing():
-    """A build that cannot install updates must route the user to the repo.
-
-    check_for_updates() returns this payload verbatim for a source run (and,
-    with different copy, for a build missing its release key), so the reason
-    has to survive into the card and leave no install button behind - the
-    release link is the only way forward.
-    """
+    """A build that cannot install updates must route the user to the repo."""
     handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
     server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1447,13 +1408,7 @@ def test_source_run_points_at_the_repository_instead_of_installing():
 
 
 def test_update_install_shows_progress_then_failure_reaches_the_user():
-    """The install flow's two halves, driven through the real page code:
-
-    1. apply_update() returns "installing" optimistically; the UI must poll
-       update_progress() and render a real percentage while downloading.
-    2. A late verification failure is only observable via that poll, so it must
-       still surface as user-visible error copy - not leave the badge spinning.
-    """
+    """The install flow's two halves, driven through the real page code: 1."""
     handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
     server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1515,15 +1470,7 @@ def test_update_install_shows_progress_then_failure_reaches_the_user():
 
 
 def test_pausing_then_skipping_does_not_pause_the_next_track():
-    """A pause owed to the track you left must not land on the track you started.
-
-    `audio` is a module-level variable that a track change replaces. The fade's
-    completion callback and the pause backstop are both deferred, so if either
-    reads that variable when it fires rather than the element it was scheduled
-    for, it pauses whatever is playing *then*. Pause, skip within the fade
-    window, and the new track stops a few hundred milliseconds in — silently,
-    with the volume restored, so nothing about it looks like a fault.
-    """
+    """A pause owed to the track you left must not land on the track you started."""
     handler = functools.partial(QuietStaticHandler, directory=str(WEB_DIR))
     server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1573,10 +1520,7 @@ def test_pausing_then_skipping_does_not_pause_the_next_track():
             # Well past FADE_MS + the backstop delay, so any stale timer has fired.
             page.wait_for_timeout(1200)
 
-            # The element the skip created is the last one built. Asserting on
-            # that specific instance is the whole point: a stale timer pauses
-            # whatever `audio` happens to name when it fires, so reading "the
-            # current element" is exactly the mistake under test.
+            # The element the skip created is the last one built.
             latest = page.evaluate(
                 "() => { const all = window.__rainetteFakeAudioInstances || [];"
                 "  const a = all[all.length - 1];"

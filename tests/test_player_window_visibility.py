@@ -1,31 +1,4 @@
-"""Real WebView2 integration test for the "play doesn't start until the mini
-player is opened" bug.
-
-Root cause (confirmed by direct measurement, not guesswork): a player window
-that is ever truly .hide()'d or .minimize()'d reports document.hidden === true
-via the Page Visibility API. WebView2/Chromium then throttles MEDIA RESOURCE
-LOADING for that document indefinitely - audio.play() gets called and returns
-a promise, but the promise never settles (neither resolves nor rejects) because
-the underlying media never finishes loading (readyState stays HAVE_NOTHING).
-This is a different mechanism from the user-gesture autoplay policy fixed by
-_patch_webview2_autoplay(); both fixes are required.
-
-The remedy (see main.py: PLAYER_PARK_POS, show_player, _park_player) is to
-never truly hide/minimize the player window - keep it "shown" (document.hidden
-stays false) but positioned far off-screen when not in use.
-
-This test spins up the real server and real two-window pywebview/WebView2 app
-(mirroring _try_pywebview exactly), injects a track into the real main-window
-Recent view, and clicks that row's actual Play button while the player stays
-parked off-screen. A passive WebSocket observer requires the resulting relay,
-playing state, and advancing progress. Only yt-dlp's network call is stubbed
-with a local WAV so the test doesn't depend on real YouTube access; everything
-else is the production code path (including miniplayer.js's own
-_loadCurrent()/_applyAndPlay()).
-
-Skipped on non-Windows or when pywebview/WebView2 aren't available, since this
-exercises the real native window stack.
-"""
+"""Real WebView2 integration test for the "play doesn't start until the mini player is opened" bug."""
 import asyncio
 import base64
 import io
@@ -79,11 +52,7 @@ PROBE_TRACK = {
 
 async def _observe_playback(port: int, token: str, timeout_s: float,
                             ready: threading.Event) -> list[dict]:
-    """Passively observe the row click's relay and resulting playback.
-
-    The probe must not send ``music_remote_play`` itself: doing so would bypass
-    the exact UI path this regression is meant to protect.
-    """
+    """Passively observe the row click's relay and resulting playback."""
     url = f"ws://127.0.0.1:{port}/ws?token={token}"
     events: list[dict] = []
     async with aiohttp.ClientSession() as session:
@@ -141,10 +110,8 @@ def _click_probe_row(main_window):
 
 
 def _run_hidden_playback_probe(reveal_before_play: bool) -> dict:
-    """Boots the real two-window app (mirroring main._try_pywebview) and clicks a
-    real main-window track row while the player is parked off-screen. If
-    reveal_before_play is True, the window is moved on-screen first, as a
-    positive control proving the harness itself can detect genuine playback."""
+    """Boots the real two-window app (mirroring main._try_pywebview) and clicks a real main-window
+    track row while the player is parked off-screen."""
     port = server.start()
     token = server.APP_TOKEN
     url = f"http://127.0.0.1:{port}/"

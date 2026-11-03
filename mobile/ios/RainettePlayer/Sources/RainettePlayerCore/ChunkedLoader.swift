@@ -2,21 +2,6 @@ import AVFoundation
 import Foundation
 
 /// Serves one song to AVPlayer, in bounded ranges.
-///
-/// AVPlayer asks for "the rest of the file" in one open-ended request, and the
-/// source throttles exactly that: measured at 36 KB/s for a whole track, against
-/// ~4 MB/s in 1 MB ranges (mobile/AUDIT.md §6). So the player is handed a
-/// private address (`rainette-yt://youtube/<id>`) it cannot fetch itself, and
-/// this answers its requests a megabyte at a time, the way the Android app's
-/// ChunkedDataSource does.
-///
-/// Pieces are whole, aligned megabytes, kept in `SongCache`: a song heard
-/// before is served from disk without asking the source for anything.
-///
-/// It also owns the source's failures: an address that expires (403/410) is
-/// resolved afresh at most twice, and a lost connection is retried with backoff
-/// (2, 4, 8, 16, 30 s) before the song is given up on. Meanwhile AVPlayer just
-/// waits, which reads as buffering, the honest state.
 public final class ChunkedLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendable {
     public static let scheme = "rainette-yt"
     static let chunkBytes: Int64 = 1 << 20
@@ -31,6 +16,9 @@ public final class ChunkedLoader: NSObject, AVAssetResourceLoaderDelegate, @unch
     /// Loader queue only.
     private var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var length: Int64?
+    /// The song's true length in seconds, once its first piece is in. Loader
+    /// queue only; read it through `songLength()`.
+    private var seconds: Double?
     /// Why the song could not be served, for the player to report; AVPlayer
     /// itself only ever says "the operation could not be completed". Loader
     /// queue only; read it through `reason()`.
@@ -64,6 +52,11 @@ public final class ChunkedLoader: NSObject, AVAssetResourceLoaderDelegate, @unch
 
     public func reason() -> PlayerError? {
         queue.sync { failure }
+    }
+
+    /// How long the song really is, which AVPlayer misreads (see `SongLength`).
+    public func songLength() -> Double? {
+        queue.sync { seconds }
     }
 
     /// Stop every request in flight; the item is being thrown away.
@@ -139,6 +132,14 @@ public final class ChunkedLoader: NSObject, AVAssetResourceLoaderDelegate, @unch
     }
 
     private func piece(_ index: Int64) async throws -> (Data, Int64) {
+        let (bytes, total) = try await keptOrDownloaded(index)
+        if index == 0, let found = SongLength.seconds(in: bytes) {
+            queue.sync { seconds = seconds ?? found }
+        }
+        return (bytes, total)
+    }
+
+    private func keptOrDownloaded(_ index: Int64) async throws -> (Data, Int64) {
         if let kept = cache.piece(id, index) { return kept }
         let from = index * Self.chunkBytes
         let (bytes, total) = try await download(from: from, through: from + Self.chunkBytes - 1)

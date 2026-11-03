@@ -45,14 +45,8 @@ public struct PlayerSnapshot: Sendable, Equatable {
     }
 }
 
-/// The on-device player: a queue of songs played by AVPlayer, which keeps going
-/// with the screen off and the page asleep, the way the Android app's media
-/// service does. The page drives it through `RainettePlayerPlugin`; the lock
-/// screen and headphones drive it through `NowPlaying`. Both go through these
-/// same methods, so they always agree.
-///
-/// Every play request carries the page's `generation`, echoed on every state,
-/// so a slow answer for a song the page has moved past is dropped there.
+/// The on-device player: a queue of songs played by AVPlayer, which keeps going with the screen off
+/// and the page asleep, the way the Android app's media service does.
 @MainActor
 public final class PlayerEngine {
     public static let maxQueue = 1000
@@ -75,6 +69,8 @@ public final class PlayerEngine {
     private var item: AVPlayerItem?
     private var loader: ChunkedLoader?
     private var startAt: Double?
+    /// The song's true length, from its file, once it has loaded.
+    private var songSeconds: Double?
     private var itemWatch: [NSKeyValueObservation] = []
     private var playerWatch: [NSKeyValueObservation] = []
     private var pending: Pending?
@@ -162,9 +158,25 @@ public final class PlayerEngine {
                 ended = false
                 player.seek(to: .zero)
             }
-            player.play()
+            startPlayback()
         }
         return changed()
+    }
+
+    /// Playback speed, 0.5 to 2. The pitch stays where it is.
+    public private(set) var rate: Float = 1
+
+    @discardableResult
+    public func setRate(_ value: Float) -> PlayerSnapshot {
+        rate = min(2, max(0.5, value))
+        if #available(iOS 16, macOS 13, *) { player.defaultRate = rate }
+        if player.rate > 0 { player.rate = rate }
+        return changed()
+    }
+
+    private func startPlayback() {
+        player.play()
+        if rate != 1 { player.rate = rate }
     }
 
     @discardableResult
@@ -240,7 +252,7 @@ public final class PlayerEngine {
         state.playing = current != nil && wantsToPlay && !ended && item?.status != .failed
         state.loading = current != nil && !ended && item?.status != .failed && (!ready || (wantsToPlay && waiting))
         state.positionS = current == nil ? 0 : seconds()
-        state.durationS = itemLength.isFinite && itemLength > 0 ? itemLength : (current?.durationS ?? 0)
+        state.durationS = songSeconds ?? (itemLength.isFinite && itemLength > 0 ? itemLength : (current?.durationS ?? 0))
         return state
     }
 
@@ -256,12 +268,14 @@ public final class PlayerEngine {
         dropItem()
         index = at
         ended = false
+        songSeconds = nil
         startAt = position > 0 ? position : nil
         let song = queue[at]
         let loader = ChunkedLoader(id: song.sourceId, resolver: resolver)
         let asset = AVURLAsset(url: ChunkedLoader.url(for: song.sourceId))
         asset.resourceLoader.setDelegate(loader, queue: loader.queue)
         let item = AVPlayerItem(asset: asset)
+        item.audioTimePitchAlgorithm = .spectral
         self.loader = loader
         self.item = item
         itemWatch = [item.observe(\.status) { [weak self] observed, _ in
@@ -270,7 +284,7 @@ public final class PlayerEngine {
         player.replaceCurrentItem(with: item)
         if wantsToPlay {
             activateSession()
-            player.play()
+            startPlayback()
         } else {
             player.pause()
         }
@@ -290,6 +304,12 @@ public final class PlayerEngine {
         guard observed === item else { return }
         switch observed.status {
         case .readyToPlay:
+            // AVPlayer thinks the song is about twice as long and would play
+            // silence to get there; it ends at the file's own length instead.
+            if let length = loader?.songLength() {
+                songSeconds = length
+                observed.forwardPlaybackEndTime = CMTime(seconds: length, preferredTimescale: 44_100)
+            }
             if let start = startAt {
                 startAt = nil
                 player.seek(to: CMTime(seconds: start, preferredTimescale: 1000), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
@@ -322,7 +342,7 @@ public final class PlayerEngine {
         guard let finished, finished === item else { return }
         if repeatMode == .one {
             player.seek(to: .zero)
-            player.play()
+            startPlayback()
         } else if index + 1 < queue.count {
             load(index + 1)
         } else if repeatMode == .all {
@@ -371,7 +391,7 @@ public final class PlayerEngine {
     private func changed() -> PlayerSnapshot {
         let state = snapshot()
         onState(state)
-        nowPlaying.update(queue.indices.contains(index) ? queue[index] : nil, state)
+        nowPlaying.update(queue.indices.contains(index) ? queue[index] : nil, state, rate: Double(rate))
         scheduleTick(state.playing && !state.loading)
         return state
     }

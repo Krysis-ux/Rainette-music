@@ -1,49 +1,4 @@
-"""macOS (Cocoa / WKWebView) desktop integration for Rainette Music.
-
-Everything Rainette needs from AppKit lives here so ``main.py`` can describe its
-windows once and let each platform supply the native behaviour.  The Windows
-equivalents are the WinForms/ctypes calls inline in ``main.py``; this module is
-their Cocoa counterpart and is imported only on ``sys.platform == "darwin"``.
-
-Three Windows workarounds do **not** carry over, and knowing why is the whole
-point of this file.  Each conclusion below was measured on this platform rather
-than assumed, because guessing at them is what made the first port silent.
-
-1. **Autoplay needs no patch.**  On Windows the player window's gesture-less
-   ``audio.play()`` is unblocked by handing WebView2
-   ``--autoplay-policy=no-user-gesture-required``.  WKWebView has no command
-   line, and its equivalent switch —
-   ``WKWebViewConfiguration.mediaTypesRequiringUserActionForPlayback`` — already
-   defaults to ``WKAudiovisualMediaTypeNone`` on macOS (it is
-   ``WKAudiovisualMediaTypeAll`` only on iOS).  A gesture-less ``play()`` of
-   *audible* media in a pywebview window was measured to start and keep running,
-   so there is nothing to patch.  See :func:`autoplay_needs_no_patch`.
-
-2. **The off-screen park is actively harmful.**  Windows parks the player at
-   ``(-32000, -32000)`` so it stays "shown" and Chromium does not throttle media
-   loading for a ``document.hidden`` page.  On macOS that coordinate *crashes
-   window creation*: Cocoa reports no containing screen, and pywebview's
-   ``windowDidMove_`` dereferences ``window.screen()`` unconditionally
-   (``webview/platforms/cocoa.py``), raising ``AttributeError`` before the window
-   ever appears.
-
-3. **Hiding the player is NOT safe** -- but for a different reason than on
-   Windows.  Audio does keep decoding in an ordered-out window, which makes
-   ``hide()`` look fine if you only watch ``currentTime``.  What actually breaks
-   is everything driven by the clock: an ordered-out window sets
-   ``document.hidden``, and WebKit then suspends ``requestAnimationFrame``
-   completely and throttles timers to about 1 Hz.  Rainette's pause is a volume
-   ramp whose completion callback calls ``audio.pause()``, so in a hidden window
-   the pause button does nothing while the track plays on.  The player is
-   therefore kept ordered in and faded to fully transparent instead.  See
-   :func:`park_player` for the measurements.
-
-Every helper is best-effort: it reports failure through the caller's logger
-rather than raising, because a cosmetic native tweak must never stop the app
-from opening.  AppKit mutation is marshalled to the main thread — pywebview runs
-lifecycle callbacks on worker threads, and touching AppKit from one crashes the
-process with SIGTRAP.
-"""
+"""macOS (Cocoa / WKWebView) desktop integration for Rainette Music."""
 
 from __future__ import annotations
 
@@ -70,15 +25,7 @@ def is_supported() -> bool:
 
 
 def autoplay_needs_no_patch(log: Logger) -> bool:
-    """Report whether WKWebView will start gesture-less audio unaided.
-
-    The counterpart to ``main._patch_webview2_autoplay``.  Rather than patching
-    anything, this confirms the assumption the player window depends on — that
-    ``mediaTypesRequiringUserActionForPlayback`` is ``WKAudiovisualMediaTypeNone``
-    (0) — and logs loudly if a future macOS or pyobjc build ever changes it.  A
-    False return means audio may be blocked until the user clicks something, and
-    is a signal to revisit this module rather than a reason to fail startup.
-    """
+    """Report whether WKWebView will start gesture-less audio unaided."""
     if not is_supported():
         return False
     try:
@@ -103,16 +50,7 @@ def autoplay_needs_no_patch(log: Logger) -> bool:
 
 
 def _ns_window(window: Any) -> Any | None:
-    """The AppKit ``NSWindow`` behind a pywebview window, once it exists.
-
-    pywebview assigns ``.native`` while constructing the browser view, so this
-    returns None for any call that lands before the window is realised.
-
-    ``native`` is a property, and on some pywebview builds its getter reaches for
-    the Windows backend and raises ModuleNotFoundError('winreg'). getattr's
-    default only absorbs AttributeError, so that escaped and every window
-    operation logged a Windows error on a Mac.
-    """
+    """The AppKit ``NSWindow`` behind a pywebview window, once it exists."""
     try:
         return getattr(window, "native", None)
     except Exception:
@@ -131,12 +69,7 @@ def _warn_once(log: Callable[[str], None], key: str, message: str) -> None:
 
 
 def _on_main_thread(action: Callable[[], None]) -> None:
-    """Run an AppKit call on the main thread.
-
-    pywebview invokes lifecycle callbacks from worker threads, and mutating an
-    NSWindow from one terminates the process with SIGTRAP -- measured, not
-    theoretical.
-    """
+    """Run an AppKit call on the main thread."""
     try:
         import Foundation  # type: ignore
         from PyObjCTools import AppHelper  # type: ignore
@@ -153,13 +86,7 @@ def _on_main_thread(action: Callable[[], None]) -> None:
 
 
 def shape_player(window: Any, collapsed: bool, log: Logger) -> None:
-    """Give the frameless player window rounded corners.
-
-    The Windows build masks the form with a GDI round-rect region; the Cocoa
-    equivalent is a corner radius on the content view's backing layer, with the
-    window made non-opaque so the area outside the radius is genuinely clear
-    rather than painted black.
-    """
+    """Give the frameless player window rounded corners."""
     native = _ns_window(window)
     if native is None:
         return
@@ -187,12 +114,7 @@ def shape_player(window: Any, collapsed: bool, log: Logger) -> None:
 
 
 def hide_player_from_window_list(window: Any, log: Logger) -> None:
-    """Keep the player out of the Window menu and window cycling.
-
-    The macOS counterpart of suppressing the Windows taskbar button: the player
-    is an accessory surface, not a document the user should be able to summon
-    from the app's window list.
-    """
+    """Keep the player out of the Window menu and window cycling."""
     native = _ns_window(window)
     if native is None:
         return
@@ -233,32 +155,7 @@ def apply_player_on_top(window: Any, enabled: bool, log: Logger) -> None:
 
 
 def park_player(window: Any, log: Logger) -> None:
-    """Make the player invisible while keeping its page fully alive.
-
-    **Do not replace this with ``hide()``.** An ordered-out window sets
-    ``document.hidden``, and WebKit then suspends ``requestAnimationFrame``
-    entirely and throttles timers to roughly 1 Hz.  Measured on this platform:
-
-        state      document.hidden   rAF ticks/3s   setInterval ticks/3s
-        visible    false             180            29
-        hidden     true                0             3
-        alpha 0    false             181            29
-
-    That breaks far more than animation.  Rainette implements pause as a ~180 ms
-    volume ramp whose *completion callback* calls ``audio.pause()``; without the
-    EQ graph that ramp is driven by ``requestAnimationFrame``.  In a hidden
-    window the ramp never advances, the callback never fires, and the pause
-    button does nothing at all while the track keeps playing.
-
-    Fading the window to fully transparent keeps it ordered in -- so
-    ``document.hidden`` stays false and every timer keeps running -- while
-    nothing is drawn.  Mouse events are disabled too, so the invisible window
-    cannot swallow clicks meant for whatever is behind it.
-
-    This is the same conclusion the Windows build reached for its own engine's
-    version of the problem; only the mechanism differs (it parks off-screen,
-    which Cocoa will not honour -- see the module docstring).
-    """
+    """Make the player invisible while keeping its page fully alive."""
     native = _ns_window(window)
     if native is None:
         return
@@ -295,12 +192,7 @@ def unpark_player(window: Any, log: Logger) -> None:
 
 
 def activate_app(log: Logger) -> None:
-    """Bring Rainette to the front and give it a real Dock presence.
-
-    A Python process launched from a terminal starts as a background
-    application, so without this the main window can open behind whatever the
-    user was already looking at.
-    """
+    """Bring Rainette to the front and give it a real Dock presence."""
     if not is_supported():
         return
 

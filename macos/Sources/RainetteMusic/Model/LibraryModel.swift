@@ -77,6 +77,48 @@ final class LibraryModel {
         catalogs[artist.id].flatMap { Date().timeIntervalSince($0.at) < Self.cacheLife ? $0.value : nil }
     }
 
+    // MARK: Artist pictures
+
+    /// Pictures for artists that arrive as a name only, by lowercased name.
+    var artistArt: [String: String] = UserDefaults.standard.dictionary(forKey: "artistArt") as? [String: String] ?? [:]
+    @ObservationIgnored private var artWanted: Set<String> = []
+    @ObservationIgnored private var artAsked: Set<String> = []
+    @ObservationIgnored private var artScheduled = false
+
+    /// The artist's own picture, else one looked up by name (asked for once).
+    func artwork(for artist: Artist) -> String {
+        if !artist.artworkURL.isEmpty { return artist.artworkURL }
+        let key = artist.name.lowercased()
+        if let url = artistArt[key] { return url }
+        if !artAsked.contains(key) {
+            artWanted.insert(artist.name)
+            scheduleArtLookup()
+        }
+        return ""
+    }
+
+    /// One batched request per screen, after the views that asked have drawn.
+    private func scheduleArtLookup() {
+        guard !artScheduled else { return }
+        artScheduled = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            artScheduled = false
+            let names = Array(artWanted.prefix(40))
+            artWanted.subtract(names)
+            names.forEach { artAsked.insert($0.lowercased()) }
+            guard let client, !names.isEmpty else { return }
+            let reply = await client.request("music_artist_images", ["names": .array(names.map { .string($0) })], timeout: 40)
+            for found in reply["artists"].array {
+                let key = (found["query"].string ?? found["name"].text).lowercased()
+                let url = found["thumbnail_url"].text
+                if !key.isEmpty, url.hasPrefix("https://") { artistArt[key] = url }
+            }
+            UserDefaults.standard.set(artistArt, forKey: "artistArt")
+            if !artWanted.isEmpty { scheduleArtLookup() }
+        }
+    }
+
     func cachedTracks(for album: Album) -> (Album, [Track])? {
         albumTracks[album.id].flatMap { Date().timeIntervalSince($0.at) < Self.cacheLife ? ($0.album, $0.tracks) : nil }
     }

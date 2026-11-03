@@ -1,9 +1,6 @@
-/* ==========================================================================
-   Rainette product tokens (--rw-*)
-   Matches the native Mac app: Apple's neutral greys, system blue as the
-   accent, translucent glass for anything that floats. Green remains as an
-   accent choice.
-   ========================================================================== */
+/* ========================================================================== Rainette product
+   tokens (--rw-*) Matches the native Mac app: Apple's neutral greys, system blue as the accent,
+   translucent glass for anything that floats. */
 
 :root {
 	--rainette-nav-open: 188px;
@@ -81,15 +78,12 @@
 	--rw-stage-accent:  oklch(80% 0.11 195);
 }
 
-/* Explicit alias for :root's values - never toggled onto <html> itself
-   (the default cascade already covers that), but gives the Settings theme
-   swatches something to apply directly to themselves for an accurate live
-   preview, since a swatch with no class would otherwise inherit whatever
-   theme is *currently* active on <html> instead of previewing Light. */
-/* Bare class selectors, not html.rw-theme-* - these need to work when
-   applied to any element (e.g. the Settings theme-swatch preview spans),
-   not just <html>. Custom properties cascade regardless of tag name, so
-   this is functionally identical everywhere they're toggled on <html>. */
+/* Explicit alias for :root's values - never toggled onto <html> itself (the default cascade
+   already covers that), but gives the Settings theme swatches something to apply directly to
+   themselves for an accurate live preview, since a swatch with no class would otherwise inherit
+   whatever theme is *currently* active on <html> instead of previewing Light. */
+/* Bare class selectors, not html.rw-theme-* - these need to work when applied to any element (e.g.
+   the Settings theme-swatch preview spans), not just <html>. */
 .rw-theme-light {
 	/* Surfaces */
 	--rw-bg:             #ffffff;

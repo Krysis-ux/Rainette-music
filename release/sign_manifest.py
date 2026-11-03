@@ -1,17 +1,4 @@
-"""Sign latest.json with the Ed25519 release key.
-
-Writes a detached signature (base64, over the manifest's raw bytes) to
-<manifest>.sig — the asset the in-app updater verifies against the public key
-committed in version.py.
-
-Deliberately tiny: this is the only code the credential-holding CI job runs,
-preserving the release pipeline's isolation principle (the job with the secret
-never executes arbitrary project code).
-
-Usage:
-    RAINETTE_UPDATE_SIGNING_KEY=<base64 raw Ed25519 private key> \
-        python release/sign_manifest.py <path-to-latest.json>
-"""
+"""Sign latest.json with the Ed25519 release key."""
 
 from __future__ import annotations
 

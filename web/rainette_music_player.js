@@ -17,12 +17,10 @@ const VOLUME_KEY = 'rw.mp.volume';
 const LOCAL_STREAM_TTL_MS = 50 * 60 * 1000;
 const PREFETCH_AHEAD = 3;
 
-// In remote mode this module runs headless: it's the audio+queue engine (when
-// the floating miniplayer popout is off) but never shows its own UI - the
-// main-window docked bar in rainette_music.js is the single transport surface,
-// driven by the music_now_playing / music_progress broadcasts this engine
-// emits. The floating liquid-glass bubble below is only for the plain-browser
-// (non-remote) fallback path.
+// In remote mode this module runs headless: it's the audio+queue engine (when the floating
+// miniplayer popout is off) but never shows its own UI - the main-window docked bar in
+// rainette_music.js is the single transport surface, driven by the music_now_playing /
+// music_progress broadcasts this engine emits.
 const HEADLESS = typeof window !== 'undefined' && !!window.RW_REMOTE;
 
 // Guarded storage access so the module imports cleanly in a DOM-free test env.
@@ -83,10 +81,7 @@ function _queueDuration() {
 	}, 0);
 }
 
-// The one place that tells other tabs + the main page's error banner /
-// Queue tab what's playing. Ported to mirror miniplayer.js's _broadcast()
-// exactly (including the queue/index fields, which this bubble never used to
-// send - the Queue tab silently never worked when this engine was active).
+// The one place that tells other tabs + the main page's error banner / Queue tab what's playing.
 function _broadcast(mode, playing) {
 	const track = state.queue[state.index] || null;
 	const cleanQueue = state.queue.map(_publicTrack).filter(Boolean);
@@ -429,11 +424,8 @@ function _overlayPayload(mode) {
 		loop: loopFlagFor(state.repeat),
 		current_time: current,
 		duration,
-		// NOTE: intentionally does NOT send `expanded`. The native desktop
-		// overlay owns its own collapse/expand state (toggled by its chevron
-		// + persisted to disk). Sending the in-page bubble's expand flag here
-		// used to override the overlay every ~700ms sync, which made the
-		// overlay's collapse button "open for a second then close".
+		// NOTE: intentionally does NOT send `expanded`. The native desktop overlay owns its own
+		// collapse/expand state (toggled by its chevron + persisted to disk).
 	};
 }
 

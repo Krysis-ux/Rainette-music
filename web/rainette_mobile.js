@@ -31,12 +31,6 @@ const TUNNEL_IDLE_POLL_MS = 15000;
 const TUNNEL_SETUP_POLL_MS = 2000;
 
 // Every provider that needs something typed in, and what to call it on screen.
-// A provider missing from here simply has no settings of its own.
-//
-// The Cloudflare fields are deliberately last and described as overrides: the
-// guided steps fill both in, and somebody who has not pressed those buttons yet
-// should read them as "you do not have to touch this", not as a form to
-// complete before anything will work.
 const PROVIDER_FIELDS = {
 	'cloudflare-named': [
 		{ key: 'hostname', label: 'Address (Rainette fills this in for you)', placeholder: 'music.example.com' },
@@ -400,13 +394,7 @@ function renderSetupChecklist(status, generation, host) {
 	else link.removeAttribute('href');
 }
 
-/* Carry out the one step the provider said Rainette could take.
- *
- * Signing in is the case that shapes this: `cloudflared tunnel login` does not
- * return until the person has finished in the browser, so the call is fired and
- * the panel goes back to polling rather than awaiting a result that is minutes
- * away. Every step therefore reports through `tunnel_status` like all the rest.
- */
+/* Carry out the one step the provider said Rainette could take. */
 async function runSetupStep(generation, host) {
 	if (setupStepInFlight || !isCurrentMount(generation, host)) return;
 	const button = host.querySelector('#rwTunnelSetupFix');
@@ -430,11 +418,8 @@ async function runSetupStep(generation, host) {
 	}
 }
 
-/* The step panels are drawn as filled, padded cards, so one whose contents have
- * all been hidden still paints a grey rounded box with nothing in it. Several
- * of them stack up on a provider that needs no download and has no settings —
- * a column of empty boxes under the picker. A container is only a container
- * when something is actually in it. */
+/* The step panels are drawn as filled, padded cards, so one whose contents have all been hidden
+ * still paints a grey rounded box with nothing in it. */
 function hideEmptyStepPanels(host) {
 	for (const panel of host.querySelectorAll('.rw-mobile-tunnel-steps')) {
 		const hasVisibleChild = [...panel.children].some(child => (

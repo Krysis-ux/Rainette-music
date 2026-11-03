@@ -1,13 +1,4 @@
-"""Rainette Music — app entry point.
-
-Starts the local server on a background thread, then opens the UI as a single
-native desktop window (pywebview / WebView2), falling back to an Edge --app
-window or the default browser. The player is the original in-page mini-player
-bubble, which stays hidden until a track is played.
-
-Any startup crash is written to `rainette-music.log` in the user's local
-Rainette Music application-data directory.
-"""
+"""Rainette Music — app entry point."""
 
 from __future__ import annotations
 
@@ -49,10 +40,8 @@ import version
 IS_WINDOWS = os.name == "nt"
 IS_MACOS = sys.platform == "darwin"
 
-# ``ctypes.wintypes`` is only meaningful on Windows, and ``ctypes.windll`` does
-# not exist elsewhere at all. Import it conditionally so the module stays
-# importable everywhere; the Authenticode helpers that use it already refuse to
-# run off Windows before they touch either name.
+# ``ctypes.wintypes`` is only meaningful on Windows, and ``ctypes.windll`` does not exist elsewhere
+# at all.
 if IS_WINDOWS:
     from ctypes import wintypes
 else:  # pragma: no cover - exercised by the macOS/Linux import path
@@ -66,9 +55,6 @@ else:
 WINDOW_TITLE = "Rainette Music"
 PLAYER_WINDOW_TITLE = "Rainette Music Player"
 # Windows groups taskbar buttons and picks the taskbar icon by AppUserModelID.
-# Unset, a source run inherits pythonw.exe's identity and shows the Python icon.
-# This must stay byte-identical to the installer's [Icons] AppUserModelID, or a
-# pinned shortcut and the running window split into two taskbar buttons.
 APP_USER_MODEL_ID = "Rainette.Music"
 WINDOW_SIZE = (1060, 730)
 MIN_SIZE = (780, 560)
@@ -80,21 +66,13 @@ PLAYER_EXPANDED_HEIGHT = 184
 AUTOPLAY_FLAG = "--autoplay-policy=no-user-gesture-required"
 # The exact arguments pywebview 6.2.1 hardcodes onto every WebView2 it creates.
 PYWEBVIEW_BROWSER_ARGS = "--disable-features=ElasticOverscroll"
-# Park the player window off-screen rather than hiding it. A hidden or
-# minimized window reports document.hidden, and WebView2 then throttles media
-# *loading* indefinitely -- play() is called but its promise never settles.
-# Measured, and separate from the autoplay-gesture policy.
+# Park the player window off-screen rather than hiding it.
 PLAYER_PARK_POS = (-32000, -32000)
-# macOS refuses that coordinate: Cocoa reports no containing screen off-display
-# and pywebview dereferences it unconditionally, so the player raises before it
-# is shown. The parking is unnecessary here anyway — WKWebView does not throttle
-# media for a hidden page — so it is created hidden and shown on demand.
+# macOS refuses that coordinate: Cocoa reports no containing screen off-display and pywebview
+# dereferences it unconditionally, so the player raises before it is shown.
 PLAYER_MACOS_INITIAL_POS = (120, 120)
 
-# One writable per-user location, shared with the server. Deriving it here
-# instead of re-deriving from LOCALAPPDATA matters off Windows: that variable is
-# unset, so the old expression put this log beside the source tree -- or inside
-# a read-only .app bundle -- while server.py used the real platform directory.
+# One writable per-user location, shared with the server.
 APP_DATA_DIR = server.APP_DATA_DIR
 LOG_PATH = APP_DATA_DIR / "rainette-music.log"
 # PyInstaller exposes bundled data under _MEIPASS.  Source runs continue to use
@@ -102,10 +80,7 @@ LOG_PATH = APP_DATA_DIR / "rainette-music.log"
 # resource directory instead of relying on Python being installed on PATH.
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 ICON_PATH = RESOURCE_DIR / "web" / "assets" / "rainette-icon.ico"
-# AppKit loads a window/app icon through NSImage, which reads .icns and .png but
-# not Windows .ico. Prefer a real .icns when the build ships one, then the PNG
-# that already exists for the web UI, so a macOS run gets Rainette's icon in the
-# Dock instead of the bare Python rocket.
+# AppKit loads a window/app icon through NSImage, which reads .icns and .png but not Windows .ico.
 MACOS_ICON_CANDIDATES = (
     RESOURCE_DIR / "web" / "assets" / "rainette-icon.icns",
     RESOURCE_DIR / "web" / "assets" / "rainette-icon-256.png",
@@ -143,11 +118,7 @@ MACOS_MANIFEST_SIGNATURE_ASSET = f"{MACOS_MANIFEST_ASSET}.sig"
 
 
 def _platform_update_assets() -> tuple[str, str, str] | None:
-    """The (payload, manifest, signature) asset names this build updates from.
-
-    ``None`` for a platform Rainette publishes no update artifacts for, which is
-    what keeps Linux honestly unsupported rather than silently broken.
-    """
+    """The (payload, manifest, signature) asset names this build updates from."""
     if IS_WINDOWS:
         return WINDOWS_INSTALLER_ASSET, WINDOWS_MANIFEST_ASSET, WINDOWS_MANIFEST_SIGNATURE_ASSET
     if IS_MACOS:
@@ -235,10 +206,7 @@ def _default_player_pos() -> tuple[int, int]:
 
 
 # ── In-app updater ──────────────────────────────────────────────────────────
-#
-# A GitHub release may contain source archives or unrelated attachments. Only
-# these three exact Windows asset names are ever eligible for the native
-# updater, and their numeric GitHub asset IDs are pinned together.
+# A GitHub release may contain source archives or unrelated attachments.
 
 
 @dataclass(frozen=True)
@@ -335,11 +303,9 @@ def _asset_from_payload(payload: object, expected_name: str) -> _UpdateAsset | N
     digest_match = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", digest)
     if not digest_match:
         return None
-    # The content-type check is upload hygiene, not a security boundary (the
-    # digest + manifest signature + hash chain are); it accepts every MIME type
-    # GitHub's upload path actually assigns to these extensions. The live
-    # publisher (action-gh-release) tags .exe as x-msdos-program and .sig as
-    # pgp-signature — verified against a real published release.
+    # The content-type check is upload hygiene, not a security boundary (the digest + manifest
+    # signature + hash chain are); it accepts every MIME type GitHub's upload path actually assigns
+    # to these extensions.
     if expected_name == WINDOWS_INSTALLER_ASSET:
         if size > MAX_INSTALLER_BYTES:
             return None
@@ -427,11 +393,7 @@ def _public_update_result(current: str, candidate: _UpdateCandidate) -> dict:
 
 
 def _check_for_updates(current: str = version.APP_VERSION) -> tuple[dict, _UpdateCandidate | None]:
-    # Never offer an update this build could not install. A source run has no
-    # installer to replace, and a build with no pinned signing key can only
-    # refuse whatever it downloads, so an install button in either case would
-    # lead every user to the same dead end. Checked before the request so these
-    # builds cost no GitHub call and name no candidate.
+    # Never offer an update this build could not install.
     if not getattr(sys, "frozen", False):
         return {"status": "unavailable", "current": current, "msg": SOURCE_RUN_UPDATE_MSG}, None
     if not _update_signing_configured():
@@ -595,11 +557,7 @@ def _validate_release_manifest(candidate: _UpdateCandidate, manifest_bytes: byte
 
 
 def _download_verified_installer(candidate: _UpdateCandidate, dest_dir: Path, progress=None) -> Path:
-    """Download the pinned assets and stream the authenticated installer.
-
-    The manifest signature is verified before a single field of the manifest is
-    read — everything downstream trusts the manifest only because of that check.
-    """
+    """Download the pinned assets and stream the authenticated installer."""
     manifest_bytes = _fetch_asset_bytes(candidate.manifest, MAX_INTEGRITY_ASSET_BYTES, timeout=15)
     signature_bytes = _fetch_asset_bytes(candidate.manifest_signature, MAX_INTEGRITY_ASSET_BYTES, timeout=15)
     _verify_manifest_signature(manifest_bytes, signature_bytes)
@@ -632,11 +590,7 @@ def _configured_update_public_keys() -> tuple[bytes, ...]:
 
 
 def _update_signing_configured() -> bool:
-    """Report whether this build carries a release key it could verify against.
-
-    This decides whether an update is *offered*; the install path still calls
-    _configured_update_public_keys() and fails closed itself.
-    """
+    """Report whether this build carries a release key it could verify against."""
     try:
         _configured_update_public_keys()
     except RuntimeError:
@@ -663,12 +617,7 @@ def _verify_manifest_signature(manifest_bytes: bytes, signature_bytes: bytes) ->
 
 
 def _authenticode_pin_configured() -> bool:
-    """Whether the optional Authenticode layer is enabled for this build.
-
-    Empty means Rainette ships without a code-signing certificate and the
-    Ed25519 manifest signature is the sole (sufficient) root of trust. Any
-    non-empty value — valid or not — turns enforcement on; an invalid value
-    then fails closed inside _configured_update_signer_hashes()."""
+    """Whether the optional Authenticode layer is enabled for this build."""
     configured = version.UPDATE_SIGNER_CERT_SHA256
     return isinstance(configured, str) and bool(configured.strip())
 
@@ -737,22 +686,13 @@ try {
 
 
 def _running_macos_bundle() -> Path:
-    """The .app this process is running out of, or raise saying why it cannot.
-
-    Two situations have to be refused rather than attempted. A build that is not
-    inside a bundle has nothing to swap. And a bundle macOS has *translocated* —
-    which it does to a quarantined app run straight from a disk image — lives on
-    a read-only shadow mount, so replacing it would either fail or write to a
-    path that vanishes on quit, leaving the update silently un-applied.
-    """
+    """The .app this process is running out of, or raise saying why it cannot."""
     executable = Path(sys.executable).resolve()
     bundle = next((parent for parent in executable.parents if parent.suffix == ".app"), None)
     if bundle is None:
         raise RuntimeError("this build is not an application bundle")
-    # `/AppTranslocation/` is the literal marker macOS puts in the path of a
-    # translocated bundle, and the read-only mount underneath it is what the
-    # write check catches. Both are kept: the first gives a message that says
-    # what to do, the second is the guarantee that the swap can actually land.
+    # `/AppTranslocation/` is the literal marker macOS puts in the path of a translocated bundle,
+    # and the read-only mount underneath it is what the write check catches.
     if "/AppTranslocation/" in str(bundle):
         raise RuntimeError(
             "macOS is running Rainette from a temporary read-only copy. "
@@ -767,18 +707,7 @@ def _running_macos_bundle() -> Path:
 
 
 def _launch_macos_update(archive: Path, work_dir: Path) -> None:
-    """Swap the running .app for the verified one and relaunch.
-
-    The archive's bytes are already authenticated by the time this runs: the
-    Ed25519 manifest signature was checked before any field of the manifest was
-    read, and the payload was streamed against the hash that manifest pins. So
-    the work here is purely mechanical.
-
-    A process cannot delete the bundle it is executing from and survive, so the
-    swap is handed to a detached shell that waits for this pid to exit first.
-    ``ditto -xk`` is used rather than ``unzip`` because it is what preserves the
-    symlinks and extended attributes an .app bundle's signature depends on.
-    """
+    """Swap the running .app for the verified one and relaunch."""
     bundle = _running_macos_bundle()
     staged = work_dir / "staged"
     staged.mkdir(parents=True, exist_ok=True)
@@ -954,12 +883,7 @@ class WindowApi:
         self._main_window = main_window
 
     def companion_create_invitation(self):
-        """Expose explicit desktop-controlled pairing to the settings UI.
-
-        The QR encodes a link to the hosted PWA with the endpoint and a
-        short-lived invitation in the URL *fragment*, so those values are
-        processed by the phone's browser and never sent to the static host.
-        """
+        """Expose explicit desktop-controlled pairing to the settings UI."""
         try:
             invitation = server.create_companion_invitation()
             return {
@@ -984,12 +908,7 @@ class WindowApi:
             return {"ok": False, "msg": str(exc)}
 
     def tunnel_providers(self):
-        """List the ways this computer can be made reachable, and which is chosen.
-
-        The catalogue comes from the desktop rather than being duplicated in the
-        settings page, so a build that does not offer a transport cannot show a
-        picker entry that leads nowhere.
-        """
+        """List the ways this computer can be made reachable, and which is chosen."""
         try:
             manager = server.tunnel_manager()
             return {
@@ -1003,12 +922,7 @@ class WindowApi:
             return {"ok": False, "msg": str(exc)}
 
     def tunnel_set_provider(self, provider_id: str, config=None):
-        """Choose which transport to use, and remember the choice.
-
-        Switching stops whatever is currently running first — through its own
-        provider, which for Tailscale is the only thing that stops the daemon
-        publishing this computer.
-        """
+        """Choose which transport to use, and remember the choice."""
         try:
             settings = dict(config) if isinstance(config, dict) else {}
             return {"ok": True, **server.tunnel_manager().set_provider(str(provider_id or ""), settings)}
@@ -1035,12 +949,7 @@ class WindowApi:
             return {"ok": False, "msg": str(exc)}
 
     def tunnel_setup_step(self, step: str, settings=None):
-        """Perform the next setup step on the user's behalf.
-
-        This is what makes the Cloudflare option a few buttons rather than a
-        terminal session: signing in and creating the tunnel are steps the
-        helper already knows how to do, and this is the call that asks it to.
-        """
+        """Perform the next setup step on the user's behalf."""
         try:
             options = dict(settings) if isinstance(settings, dict) else {}
             return {"ok": True, **server.tunnel_setup_step(str(step or ""), options)}
@@ -1049,11 +958,7 @@ class WindowApi:
             return {"ok": False, "msg": str(exc)}
 
     def tunnel_start(self):
-        """Generate the HTTPS tunnel and publish its address.
-
-        Returns as soon as the work is scheduled; the settings page polls
-        ``tunnel_status`` for the address Cloudflare hands out.
-        """
+        """Generate the HTTPS tunnel and publish its address."""
         try:
             return {"ok": True, **server.start_tunnel()}
         except Exception as exc:
@@ -1085,22 +990,12 @@ class WindowApi:
             return {"ok": False, "msg": str(exc)}
 
     def open_sound_settings(self):
-        """Hand the user the OS control that can actually move system audio.
-
-        Deliberately a desktop-only bridge call rather than a companion command:
-        a paired phone has no business opening panels on someone's computer.
-        """
+        """Hand the user the OS control that can actually move system audio."""
         return {"ok": audio_outputs.open_sound_settings()}
 
     def pick_music_folder(self):
-        """Choose a folder to scan for music, through the OS picker.
-
-        Deliberately a desktop-only bridge call. ``music_local_roots`` refuses
-        an ``add`` that arrived from a phone precisely because a device that
-        could name a path could name ``/`` and turn the library into a
-        directory listing of somebody's home. The path has to originate at the
-        computer, and this is where it does.
-        """
+        """Choose a folder to scan for music, through the OS picker. Deliberately a desktop-only
+        bridge call."""
         try:
             # Imported here rather than at module scope, like every other
             # pywebview use in this file: the app still runs in the Edge --app
@@ -1167,25 +1062,13 @@ class WindowApi:
             self._update_progress = {"phase": phase, **fields}
 
     def update_progress(self):
-        """Snapshot of the in-flight install for the UI's progress poll.
-
-        apply_update() returns "installing" as soon as the download worker
-        starts, so a late verification failure is only observable here — the
-        poll drives the error state, not just the percentage.
-        """
+        """Snapshot of the in-flight install for the UI's progress poll."""
         with self._update_progress_lock:
             return dict(self._update_progress)
 
     def apply_update(self, candidate_id: str = ""):
-        """Start downloading, verifying, and launching the new installer, then
-        quit so it can replace the running files. The installer relaunches the
-        app when done. Every pre-flight guard stays synchronous; only the
-        download/verify/launch tail runs on a worker so the UI can poll
-        update_progress() for a real progress bar.
-
-        Self-updating only makes sense for the packaged build: a source checkout
-        has no installer to swap in, so say so instead of doing something surprising.
-        """
+        """Start downloading, verifying, and launching the new installer, then quit so it can
+        replace the running files."""
         if not getattr(sys, "frozen", False):
             return {"status": "unsupported", "msg": SOURCE_RUN_UPDATE_MSG}
         # Windows installs a signed installer, macOS swaps its own bundle. A
@@ -1223,11 +1106,7 @@ class WindowApi:
                 self._update_apply_lock.release()
 
     def _apply_update_worker(self, candidate: _UpdateCandidate) -> None:
-        """Owns _update_apply_lock (acquired by apply_update). On failure it
-        cleans up and releases the lock; on success it keeps the lock held until
-        this process exits — releasing it during the 0.6-second UI handoff
-        window allowed a second bridge call to delete or launch the
-        already-verified installer again."""
+        """Owns _update_apply_lock (acquired by apply_update)."""
         update_dir = None
         install_started = False
         try:
@@ -1314,21 +1193,10 @@ class WindowApi:
         self._player_window.show()
         self._player_window.restore()
         # Shape only once the window is back at its Normal-state size.
-        # _shape_player() derives the rounded-rect mask from form.Width/Height, so
-        # running it while the window is still minimized bakes the minimized bounds
-        # into the region and clips the restored WebView2 content - the "mini player
-        # only half loads when I re-open it" bug. player_resize() already sizes
-        # before shaping for exactly this reason.
         self._shape_player()
 
     def reveal_player(self):
-        """Unlock and show the player window in one call.
-
-        show_player() alone is a no-op until player_allow_show() has run, and
-        the two were previously fired as separate, un-awaited JS->Python bridge
-        calls (each dispatched on its own thread), which raced. Collapsing them
-        into a single idempotent call removes that race entirely.
-        """
+        """Unlock and show the player window in one call."""
         self._player_can_show = True
         self.show_player()
 
@@ -1336,22 +1204,13 @@ class WindowApi:
         self._park_player()
 
     def player_minimize(self):
-        # Minimizing (like hiding) previously put the window into a state where
-        # document.hidden becomes true, which would throttle an already-playing
-        # stream's buffering to a halt the moment the user minimized it. Parking
-        # off-screen keeps it "shown" so playback that's already underway keeps
-        # running in the background.
+        # Minimizing (like hiding) previously put the window into a state where document.hidden
+        # becomes true, which would throttle an already-playing stream's buffering to a halt the
+        # moment the user minimized it.
         self._park_player()
 
     def _park_player(self) -> None:
-        """Move the player window far off-screen instead of hiding/minimizing it.
-
-        See PLAYER_PARK_POS for why: a .hide()'d or .minimize()'d window reports
-        document.hidden === true, which makes WebView2/Chromium throttle media
-        resource loading indefinitely - audio.play() gets called but its promise
-        never settles. Staying "shown" but off-screen avoids that while remaining
-        fully invisible to the user.
-        """
+        """Move the player window far off-screen instead of hiding/minimizing it."""
         if not self._player_window:
             return
         try:
@@ -1417,13 +1276,7 @@ class WindowApi:
             self._player_window.destroy()
 
     def _hide_player_from_taskbar(self) -> None:
-        """Keep the player out of the OS window switcher.
-
-        On Windows the player is created "shown" rather than hidden=True (see
-        PLAYER_PARK_POS), so without this it would get its own taskbar button and
-        Alt+Tab entry even while parked off-screen and invisible to the user.
-        macOS has the same need for its Window menu and window cycling.
-        """
+        """Keep the player out of the OS window switcher."""
         if IS_MACOS and self._player_window:
             macos_support.hide_player_from_window_list(self._player_window, log)
             return
@@ -1470,16 +1323,12 @@ class WindowApi:
                 handle = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, radius, radius)
                 form.Region = Region.FromHrgn(IntPtr.op_Explicit(handle))
                 ctypes.windll.gdi32.DeleteObject(handle)
-                # Toggling fullscreen changes DWM composition for the whole
-                # desktop, and a regioned borderless window is not always
-                # repainted against it. Forcing a repaint re-applies the mask
-                # instead of leaving stale corners.
+                # Toggling fullscreen changes DWM composition for the whole desktop, and a regioned
+                # borderless window is not always repainted against it.
                 try:
-                    # invalidateChildren=True: the WebView2 browser is a child
-                    # control with its own HWND, so invalidating just the form
-                    # repaints the frame but leaves the page painted against the
-                    # previous region. Update() flushes it now rather than at the
-                    # next unrelated paint.
+                    # invalidateChildren=True: the WebView2 browser is a child control with its own
+                    # HWND, so invalidating just the form repaints the frame but leaves the page
+                    # painted against the previous region.
                     form.Invalidate(True)
                     form.Update()
                 except Exception:
@@ -1494,26 +1343,7 @@ class WindowApi:
 
 
 def _patch_webview2_autoplay() -> bool:
-    """Deliver AUTOPLAY_FLAG to WebView2 so the player window can start audio itself.
-
-    The player window owns the only <audio> element and receives play commands over
-    the socket, so its play() never carries user activation and Chromium rejects it
-    with NotAllowedError -- nothing is audible until the window is revealed. (The
-    reveal is incidental: a *visible* window is refused just the same. Activation,
-    not visibility, is the gate.)
-
-    pywebview 6.2.1 hardcodes CoreWebView2CreationProperties.AdditionalBrowserArguments
-    and exposes no setting for extra arguments, and WebView2 ignores
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS once that property is set -- so the env var
-    exported below is dead on arrival. The properties are consumed when the browser's
-    handle is created, which pywebview does inside EdgeChrome.__init__ itself, so
-    there is no post-construction window in which to append the flag.
-
-    Rewrite the string constant pywebview assigns, so its own assignment already
-    carries the flag. Deliberately narrow: if pywebview ever changes that literal the
-    constant is not found, the patch disables itself, and playback merely reverts to
-    today's behaviour rather than breaking startup.
-    """
+    """Deliver AUTOPLAY_FLAG to WebView2 so the player window can start audio itself."""
     try:
         from webview.platforms import edgechromium  # type: ignore
     except Exception as exc:
@@ -1538,34 +1368,14 @@ def _patch_webview2_autoplay() -> bool:
 
 
 def _enable_gestureless_playback() -> bool:
-    """Make sure the player window may start audio without a user gesture.
-
-    The player owns the only <audio> element and is driven over the socket, so
-    its play() never carries user activation. Each engine gates that
-    differently: WebView2 needs AUTOPLAY_FLAG injected (see
-    :func:`_patch_webview2_autoplay`), while WKWebView already permits it and
-    only needs verifying. Returns True when gesture-less playback is expected to
-    work.
-    """
+    """Make sure the player window may start audio without a user gesture."""
     if IS_MACOS:
         return macos_support.autoplay_needs_no_patch(log)
     return _patch_webview2_autoplay()
 
 
 def _player_placement_kwargs() -> dict:
-    """Where and how the player window is first created.
-
-    Windows parks it far off-screen while leaving it "shown", because a hidden
-    or minimized WebView2 window reports document.hidden and Chromium then
-    throttles media loading indefinitely (see PLAYER_PARK_POS).
-
-    macOS must not use that coordinate at all: Cocoa finds no screen for it and
-    pywebview crashes creating the window. It needs the same *effect* though --
-    an ordered-out window there suspends requestAnimationFrame and throttles
-    timers to ~1Hz, which breaks pause (see macos_support.park_player). So the
-    player starts hidden purely to avoid a flash on launch, at an ordinary
-    on-screen position, and is immediately faded to transparent-but-shown.
-    """
+    """Where and how the player window is first created."""
     if IS_MACOS:
         return {
             "x": PLAYER_MACOS_INITIAL_POS[0],
@@ -1611,18 +1421,13 @@ def _try_pywebview(url: str) -> bool:
         # controller is fully initialized; the helper itself then marshals the
         # WinForms property write onto the UI thread.
         player_window.events.loaded += lambda *_: api._hide_player_from_taskbar()
-        # The parked player is still a real WinForms window. Tear it down while
-        # the main form is closing, not from ``closed``: pywebview dispatches
-        # ``closed`` handlers on a worker thread after WinForms has begun
-        # disposing the main form, which can leave the off-screen player alive
-        # with no visible application window and keep pythonw running forever.
+        # The parked player is still a real WinForms window.
         main_window.events.closing += api.close_player
         try:
-            # Best-effort mitigation for the "cutout corners" glitch: re-apply
-            # the player window's rounded-corner region whenever the main
-            # window resizes (fullscreen/maximize toggles surface as a resize
-            # here), since that's when the underlying DWM composition change
-            # is most likely to leave the player's region mask stale.
+            # Best-effort mitigation for the "cutout corners" glitch: re-apply the player window's
+            # rounded-corner region whenever the main window resizes (fullscreen/maximize toggles
+            # surface as a resize here), since that's when the underlying DWM composition change is
+            # most likely to leave the player's region mask stale.
             main_window.events.resized += lambda *_: api._shape_player()
         except Exception as exc:
             log(f"could not hook main window resize event: {exc}")
@@ -1694,14 +1499,7 @@ def _try_edge_app(url: str) -> bool:
 
 
 def _restore_tunnel() -> None:
-    """Reopen the HTTPS tunnel on launch when Rainette was the one running it.
-
-    A Cloudflare Quick Tunnel address does not survive a restart, so a paired
-    phone would otherwise point at a hostname that stopped existing when the
-    computer was last shut down.  Bringing it back up here — and only when the
-    stored address is one Rainette minted — means the operator's own named
-    tunnel or reverse proxy is never touched.
-    """
+    """Reopen the HTTPS tunnel on launch when Rainette was the one running it."""
     if not server.is_managed_tunnel_url(server.read_pwa_config().get("public_url") or ""):
         return
     try:
@@ -1778,10 +1576,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Failed to start the Rainette Music server (see rainette-music.log).", file=sys.stderr)
         return 1
 
-    # Paired phones store a certificate-pinned LAN endpoint.  Restore that
-    # listener on every desktop launch instead of waiting for the user to open
-    # Settings and generate another pairing code.  A companion-specific bind
-    # failure must not prevent the desktop player itself from opening.
+    # Paired phones store a certificate-pinned LAN endpoint.
     try:
         companion_runtime = server.start_paired_companion()
         if companion_runtime:

@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-"""Check the two things that must never break, against the real world.
-
-    python scripts/preflight.py
-
-1. THE MUSIC PLAYS  -- resolve a real track and open it exactly the way a
-   browser's <audio> element does: an unbounded `Range: bytes=0-`. Assert the
-   result is audio-only and served as `audio/*`.
-
-2. THE TUNNEL CONNECTS -- start a real tunnel in front of a stand-in listener,
-   prove the public address reaches it, tear it down, and confirm no helper
-   process was left behind.
-
-Both are end-to-end on purpose. Every outage this app has had was invisible to
-the unit suite: the code was right, and the world underneath it had moved.
-
-Run this from an ordinary residential connection -- YouTube answers datacenter
-IPs with a bot challenge, so a cloud runner cannot do it. Exit status is 0 only
-if both invariants hold; 2 means "could not measure", which is not the same as
-"broken" and is not a failure.
-"""
+"""Check the two things that must never break, against the real world."""
 
 from __future__ import annotations
 

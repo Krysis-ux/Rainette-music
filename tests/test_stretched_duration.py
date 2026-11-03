@@ -1,16 +1,4 @@
-"""Guards against the doubled-playtime bug on macOS and iOS.
-
-AVFoundation reads some YouTube m4a streams as exactly twice their real length
-(261.04s for a file AudioToolbox reads as 130.52s). It renders the frames the
-file actually has and plays silence for the rest, so the clock stays honest
-while the total is wrong and `ended` arrives minutes late. WebKit decodes
-through AVFoundation, so the macOS desktop and the iPhone both saw it; Chromium
-on Windows did not.
-
-Both players therefore have to treat the library's duration_s as authoritative
-and finish on it. These tests pin that, because the failure is silent: the app
-still plays, it just lies about the length and then sits quiet.
-"""
+"""Guards against the doubled-playtime bug on macOS and iOS."""
 
 import unittest
 from pathlib import Path

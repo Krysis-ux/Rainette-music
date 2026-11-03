@@ -44,6 +44,11 @@ struct PickingAudio {
         #expect(picked.map(\.bitrate) == [128_000, 48_000])
     }
 
+    @Test func dataSaverPutsTheSmallestAACFirst() {
+        let picked = StreamResolver.rankAudio([candidate("m4a", 128_000), candidate("m4a", 48_000)], dataSaver: true)
+        #expect(picked.map(\.bitrate) == [48_000, 128_000])
+    }
+
     @Test func nothingPlayableIsEmpty() {
         #expect(StreamResolver.rankAudio([candidate("webm", 160_000)]).isEmpty)
     }
@@ -198,5 +203,50 @@ struct EngineRules {
         cache.store("abcdefghijk", 1, Data([2]), total: 3_000_000)
         #expect(cache.piece("abcdefghijk", 0) == nil, "a piece of the old encoding is never joined to the new one")
         #expect(cache.piece("abcdefghijk", 1)?.1 == 3_000_000)
+    }
+}
+
+/// A song's length from the start of its file, where AVPlayer doubles it.
+struct TheSongsLength {
+    private func box(_ kind: String, _ body: [UInt8]) -> [UInt8] {
+        let size = UInt32(8 + body.count)
+        return [UInt8(size >> 24), UInt8(size >> 16 & 0xff), UInt8(size >> 8 & 0xff), UInt8(size & 0xff)] + Array(kind.utf8) + body
+    }
+
+    private func be(_ value: UInt64, _ width: Int) -> [UInt8] {
+        (0..<width).reversed().map { UInt8(value >> (8 * UInt64($0)) & 0xff) }
+    }
+
+    /// The source's own layout: ftyp, a moov whose mvhd holds the whole
+    /// length, a sidx of fragments, then the fragments.
+    private func file(mvhd: UInt64, fragments: [UInt64], timescale: UInt64 = 44_100) -> Data {
+        // Joined part by part: one long `+` chain is more than CI's compiler
+        // will type-check in time.
+        let headerParts: [[UInt8]] = [be(0, 4), be(0, 4), be(0, 4), be(timescale, 4), be(mvhd, 4), [UInt8](repeating: 0, count: 80)]
+        let header = box("mvhd", headerParts.flatMap { $0 })
+        var indexParts: [[UInt8]] = [be(0, 4), be(1, 4), be(timescale, 4), be(0, 4), be(0, 4), be(0, 2), be(UInt64(fragments.count), 2)]
+        for duration in fragments { indexParts += [be(1000, 4), be(duration, 4), be(0x9000_0000, 4)] }
+        let boxes: [[UInt8]] = [
+            box("ftyp", Array("dash".utf8) + be(0, 4)), box("moov", header),
+            box("sidx", indexParts.flatMap { $0 }), box("moof", be(0, 4)),
+        ]
+        return Data(boxes.flatMap { $0 })
+    }
+
+    @Test func theFragmentIndexIsTheLength() {
+        // "From The Start": 7,478,184 ticks at 44.1 kHz, in the mvhd and summed in the sidx.
+        let length = SongLength.seconds(in: file(mvhd: 7_478_184, fragments: [4_000_000, 3_478_184]))
+        #expect(abs((length ?? 0) - 169.573) < 0.001)
+    }
+
+    @Test func theHeaderStandsInWithNoIndex() {
+        var data = file(mvhd: 7_478_184, fragments: [])
+        data = data.prefix(data.count - 8 - 32)   // no sidx, no fragments
+        #expect(abs((SongLength.seconds(in: data) ?? 0) - 169.573) < 0.001)
+    }
+
+    @Test func anythingElseIsUnknown() {
+        #expect(SongLength.seconds(in: Data()) == nil)
+        #expect(SongLength.seconds(in: Data("not an mp4 file at all".utf8)) == nil)
     }
 }

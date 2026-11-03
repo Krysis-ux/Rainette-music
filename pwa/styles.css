@@ -1,14 +1,5 @@
-/* Rainette Music — phone client.
- *
- * Held one-handed, usually at night, usually while something else is going on.
- * So: a low-luminance ground that does not flare in a dark room, one live
- * accent, and controls sized for a thumb rather than a cursor.
- *
- * The look follows the native Mac app: Apple's neutral greys, system blue as
- * the accent, glass for anything that floats, and artwork doing the colour.
- * Green keeps one job of its own — the connection signal. Green means the
- * computer answered, whatever accent is chosen.
- */
+/* Rainette Music — phone client. Held one-handed, usually at night, usually while something else
+ * is going on. */
 
 /* Inter, for every phone that does not have Apple's SF: it is the closest open
    face to it, so Android reads like the iPhone instead of like Roboto in a
@@ -78,19 +69,12 @@
 	   is a target you miss and read as a dead button. */
 	--touch: 48px;
 
-	/* An artist name sitting inside a 12.5px line cannot reach --touch without
-	   doubling every row's height. WCAG 2.2 SC 2.5.8 exempts targets inside a
-	   block of text for exactly this reason; this is the floor we hold instead,
-	   reached with padding rather than layout. */
+	/* An artist name sitting inside a 12.5px line cannot reach --touch without doubling every row's
+	   height. */
 	--touch-inline: 32px;
 
 	/* ── Motion vocabulary ────────────────────────────────────────────────
-	   --ease, --fast and --med above keep every name and value they had. These
-	   three fill the register those two bracket without landing in, so a
-	   duration stops being decided per site.
-
-	   Response --quick | State --base | Transition --med | Arrival --slow
-	   Exit --med + --ease-in | Commit --base + --ease-spring */
+	   --ease, --fast and --med above keep every name and value they had. */
 
 	/* Below ~100ms motion stops reading as motion and starts reading as
 	   response, which for a press or a thumb growing is the point. */
@@ -187,6 +171,48 @@
 .theme-light.accent-amber  { --accent: oklch(58% 0.13 75);  --on-accent: oklch(99% 0 0); }
 .theme-light.accent-rose   { --accent: oklch(52% 0.16 15);  --on-accent: oklch(99% 0 0); }
 
+.accent-silver:not(.theme-mono) { --accent: oklch(87% 0.01 255); --accent-dim: oklch(64% 0.012 255); --accent-wash: oklch(87% 0.01 255 / 0.14); --on-accent: oklch(17% 0.01 255); }
+.theme-light.accent-silver      { --accent: oklch(46% 0.015 255); --on-accent: oklch(99% 0 0); }
+
+/* ── Premium touches ──────────────────────────────────────────────────────
+   Silver titles, a lit edge on primary buttons, and switches for the
+   developer options (glass, motion speed, compact rows). */
+
+.silver-titles .panel h1,
+.silver-titles .catalog-title {
+	width: fit-content;
+	background: linear-gradient(100deg, #fff 0%, #c9cdd3 26%, #fff 42%, #8f959e 68%, #e9ebee 100%) 0 0 / 240% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	color: transparent;
+	animation: silver-glint calc(2.4s * var(--motion-scale, 1)) var(--ease) 0.15s both;
+}
+
+.silver-titles.theme-light .panel h1,
+.silver-titles.theme-light .catalog-title {
+	background-image: linear-gradient(100deg, #1c1c1e 0%, #55595f 30%, #1c1c1e 46%, #6e737b 72%, #2c2c2e 100%);
+}
+
+@keyframes silver-glint { from { background-position: 100% 0; } }
+
+.primary {
+	background-image: linear-gradient(180deg, rgb(255 255 255 / 0.18), rgb(255 255 255 / 0) 55%);
+	box-shadow: inset 0 0.5px 0 rgb(255 255 255 / 0.4), 0 8px 22px -12px var(--accent);
+}
+
+.no-glass { --glass: var(--bg-lift); --glass-strong: var(--bg-lift); }
+.no-glass *,
+.no-glass *::before,
+.no-glass *::after { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+
+:root {
+	--quick: calc(90ms * var(--motion-scale, 1));
+	--fast: calc(140ms * var(--motion-scale, 1));
+	--base: calc(200ms * var(--motion-scale, 1));
+	--med: calc(260ms * var(--motion-scale, 1));
+	--slow: calc(420ms * var(--motion-scale, 1));
+}
+
 /* The in-app switch, honoured everywhere the media query is. */
 .reduce-motion *,
 .reduce-motion *::before,
@@ -211,16 +237,17 @@ html, body {
 	background: var(--bg);
 }
 
+/* An app does not zoom: no double-tap zoom here, no pinch through the
+   viewport tag, and app.js stops the pinch Safari allows regardless. */
+html { touch-action: manipulation; }
+
 body {
 	font-family: var(--font);
 	color: var(--text);
 	-webkit-font-smoothing: antialiased;
 	text-rendering: optimizeLegibility;
 	background: var(--bg);
-	/* An app, not a document. Android's WebView flashes a cyan box over every
-	   tapped row and selects whatever text a long press lands on; both are the
-	   tell of a web page in a wrapper, and neither happens on an iPhone. Text
-	   meant to be copied (the build line) opts back in. */
+	/* An app, not a document. */
 	-webkit-tap-highlight-color: transparent;
 	-webkit-user-select: none;
 	user-select: none;
@@ -392,6 +419,219 @@ h2 {
 	to   { opacity: 1; transform: none; }
 }
 
+/* ── Home ─────────────────────────────────────────────────────────────── */
+
+/* The song in the player over its own colours, as the Mac app's Continue card. */
+.home-hero {
+	position: relative;
+	isolation: isolate;
+	overflow: hidden;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 12px;
+	margin: 16px 0 4px;
+	padding: 14px 16px 14px 14px;
+	border-radius: 20px;
+	color: #fff;
+	background: #1c1c1e;
+	box-shadow: 0 14px 34px oklch(0% 0 0 / 0.32);
+}
+
+.home-hero-backdrop {
+	position: absolute;
+	inset: -30%;
+	z-index: -2;
+	width: 160%;
+	height: 160%;
+	object-fit: cover;
+	filter: blur(34px) saturate(1.6);
+	opacity: 0.9;
+}
+
+.home-hero::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	background: linear-gradient(100deg, oklch(0% 0 0 / 0.55), oklch(0% 0 0 / 0.25));
+}
+
+.home-hero-open {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: center;
+	gap: 14px;
+	min-width: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	text-align: left;
+}
+
+.home-hero-art {
+	width: 104px;
+	height: 104px;
+	border-radius: 10px;
+	object-fit: cover;
+	background: oklch(100% 0 0 / 0.1);
+	box-shadow: 0 10px 24px oklch(0% 0 0 / 0.4);
+	transition: transform var(--fast) var(--ease);
+}
+
+.home-hero-open:active .home-hero-art { transform: scale(0.97); }
+
+.home-hero-copy { display: grid; gap: 3px; min-width: 0; }
+
+.home-hero-eyebrow {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	opacity: 0.75;
+}
+
+.home-hero-copy b {
+	display: -webkit-box;
+	overflow: hidden;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	font-family: var(--font-display);
+	font-size: 20px;
+	font-weight: 700;
+	line-height: 1.15;
+	letter-spacing: -0.015em;
+}
+
+.home-hero-artist {
+	overflow: hidden;
+	font-size: 14px;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	opacity: 0.8;
+}
+
+.home-hero-play {
+	display: grid;
+	place-items: center;
+	width: 52px;
+	height: 52px;
+	padding: 0;
+	border: 0;
+	border-radius: 50%;
+	color: #000;
+	background: #fff;
+	box-shadow: 0 6px 16px oklch(0% 0 0 / 0.35);
+	transition: transform var(--fast) var(--ease);
+}
+
+.home-hero-play:active { transform: scale(0.92); }
+
+/* Favourites, two to a row, as Spotify opens. */
+.quick-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+	margin: 14px 0 0;
+}
+
+.quick-tile {
+	display: grid;
+	grid-template-columns: 56px minmax(0, 1fr);
+	align-items: center;
+	gap: 10px;
+	height: 56px;
+	overflow: hidden;
+	padding: 0 10px 0 0;
+	border: 0;
+	border-radius: 8px;
+	background: var(--surface);
+	color: var(--text);
+	text-align: left;
+	transition: transform var(--fast) var(--ease), background var(--fast) var(--ease);
+}
+
+.quick-tile:active { transform: scale(0.97); background: var(--surface-high); }
+.quick-tile img { width: 56px; height: 56px; object-fit: cover; background: var(--surface-high); }
+.quick-tile img.round { width: 44px; height: 44px; margin-left: 6px; border-radius: 50%; }
+
+.quick-tile b {
+	display: -webkit-box;
+	overflow: hidden;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	font-size: 13px;
+	font-weight: 650;
+	line-height: 1.25;
+}
+
+/* Shelves run off the edge of the page, so it is plain there is more. */
+.home-shelf .section-head { margin: 30px 0 12px; }
+
+.shelf-row {
+	display: grid;
+	grid-auto-flow: column;
+	grid-auto-columns: 148px;
+	gap: 14px;
+	margin: 0 -18px;
+	padding: 0 18px 6px;
+	overflow-x: auto;
+	overscroll-behavior-x: contain;
+	scroll-snap-type: x mandatory;
+	scroll-padding-inline: 18px;
+	scrollbar-width: none;
+}
+
+.shelf-row::-webkit-scrollbar { display: none; }
+
+.shelf-card {
+	display: grid;
+	align-content: start;
+	gap: 3px;
+	min-width: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--text);
+	text-align: left;
+	scroll-snap-align: start;
+}
+
+.shelf-art {
+	width: 148px;
+	height: 148px;
+	margin-bottom: 6px;
+	border-radius: 10px;
+	object-fit: cover;
+	background: var(--surface);
+	box-shadow: 0 8px 20px oklch(0% 0 0 / 0.25);
+	transition: transform var(--fast) var(--ease);
+}
+
+.shelf-art.round { border-radius: 50%; }
+.shelf-card:active .shelf-art { transform: scale(0.96); }
+.shelf-card.artist { justify-items: center; text-align: center; }
+
+.shelf-mark {
+	display: grid;
+	place-items: center;
+	color: var(--text-muted);
+	font-size: 52px;
+	font-weight: 700;
+}
+
+.shelf-card b,
+.shelf-card span:not(.shelf-mark) {
+	max-width: 100%;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.shelf-card b { font-size: 14px; font-weight: 600; }
+.shelf-card span:not(.shelf-mark) { color: var(--text-muted); font-size: 12.5px; }
+
 /* ── Pairing ──────────────────────────────────────────────────────────── */
 
 .setup { padding-top: 22px; }
@@ -399,10 +639,8 @@ h2 {
 .setup-back { margin-bottom: 8px; }
 
 /* ── Reconnect ────────────────────────────────────────────────────────────
-   Computers this phone already knows, offered above the pairing form because
-   returning to one is the common case and pasting a fresh link is the rare one.
-   Hidden entirely until there is something to show, so a first-run phone still
-   sees the form as the first thing on the screen. */
+   Computers this phone already knows, offered above the pairing form because returning to one is
+   the common case and pasting a fresh link is the rare one. */
 
 .sessions { display: grid; gap: 10px; margin-bottom: 22px; }
 
@@ -787,57 +1025,174 @@ h2 {
 
 /* ── Settings ─────────────────────────────────────────────────────────── */
 
-/* Inset grouped, as iPhone's own Settings draws them: one rounded card per
-   group, hairlines between rows that stop short of the left edge. */
+/* Inset grouped rows: icon tile, one label, current value, chevron. */
 .settings-list {
 	display: grid;
-	margin-top: 4px;
+	margin-top: 18px;
 	overflow: hidden;
-	border-radius: 14px;
+	border: 0.5px solid var(--line);
+	border-radius: 16px;
 	background: var(--bg-lift);
 }
 
-.settings-list button {
+.settings-list:first-of-type { margin-top: 8px; }
+
+.settings-list > button,
+.settings-switch,
+.settings-choice {
 	position: relative;
 	display: flex;
 	align-items: center;
+	gap: 12px;
 	width: 100%;
-	min-height: var(--touch);
-	padding: 13px 16px;
+	min-height: 50px;
+	padding: 10px 14px;
 	border: 0;
 	background: none;
+	color: var(--text);
 	text-align: left;
 	transition: background var(--fast) var(--ease);
 }
 
-/* A divider above every row that has a visible row before it. `button + button`
- * counted hidden rows too, so a card whose first rows are hidden (the app's
- * pairing rows, a hidden Connect row in the browser) drew a line above its top. */
-.settings-list button:not([hidden]) ~ button::before {
+/* Hairlines between visible rows, inset past the icon. */
+.settings-list > :not([hidden]) ~ ::before {
 	position: absolute;
 	top: 0;
 	right: 0;
-	left: 16px;
+	left: 56px;
 	border-top: 0.5px solid var(--line-firm);
 	content: "";
 }
 
-/* A row that gives no feedback on press reads as inert, which is most of why
-   this panel felt dead even where it worked. */
-.settings-list button:active { background: var(--surface); }
+.settings-list.in-sheet > :not([hidden]) ~ ::before { left: 14px; }
 
-.settings-list button span { display: grid; gap: 3px; }
-.settings-list b { font-size: 14.5px; font-weight: 560; }
-.settings-list small { color: var(--text-muted); font-size: 12.5px; }
-.settings-list .danger b { color: var(--danger); }
+.settings-list > button:active,
+.settings-switch:active,
+.settings-choice:active { background: var(--surface); }
 
-.privacy-note {
-	max-width: 48ch;
-	margin: 22px 0 0;
-	color: var(--text-muted);
-	font-size: 12.5px;
-	line-height: 1.65;
+.settings-list b,
+.settings-switch b,
+.settings-choice b { flex: 1; min-width: 0; font-size: 15.5px; font-weight: 500; letter-spacing: -0.01em; }
+
+.settings-list .danger b,
+.settings-list .danger .settings-icon { color: var(--danger); }
+
+/* Brushed-metal tiles for the row glyphs. */
+.settings-icon {
+	display: inline-grid;
+	flex: none;
+	place-items: center;
+	width: 30px;
+	height: 30px;
+	border-radius: 8px;
+	background: linear-gradient(160deg, rgb(255 255 255 / 0.2), rgb(255 255 255 / 0.05) 55%, rgb(255 255 255 / 0.1));
+	box-shadow: inset 0 0.5px 0 rgb(255 255 255 / 0.35), inset 0 -0.5px 0 rgb(0 0 0 / 0.4);
+	color: var(--text);
 }
+
+.theme-light .settings-icon {
+	background: linear-gradient(160deg, #fdfdfe, #e4e6ea 55%, #f1f2f4);
+	box-shadow: inset 0 0.5px 0 #fff, 0 0.5px 1.5px rgb(0 0 0 / 0.18);
+}
+
+.settings-value {
+	flex: none;
+	max-width: 46%;
+	overflow: hidden;
+	color: var(--text-muted);
+	font-size: 15px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.settings-chevron { display: inline-flex; flex: none; margin-right: -4px; color: var(--text-muted); opacity: 0.7; }
+
+/* A real switch, iOS proportions. */
+.switch {
+	position: relative;
+	flex: none;
+	width: 51px;
+	height: 31px;
+	border-radius: 999px;
+	background: var(--surface-high);
+	transition: background var(--base) var(--ease);
+}
+
+.switch::after {
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 27px;
+	height: 27px;
+	border-radius: 50%;
+	background: #fff;
+	box-shadow: 0 2px 6px rgb(0 0 0 / 0.28), 0 0 0 0.5px rgb(0 0 0 / 0.06);
+	content: "";
+	transition: transform var(--base) var(--ease-spring);
+}
+
+[aria-checked="true"] > .switch { background: var(--ok); }
+[aria-checked="true"] > .switch::after { transform: translateX(20px); }
+
+.theme-mono [aria-checked="true"] > .switch { background: var(--accent); }
+
+/* ── Help: the "?" at the foot of a sheet ─────────────────────────────── */
+
+.help { display: grid; justify-items: center; gap: 12px; margin: 26px 0 8px; }
+
+.help-toggle {
+	display: inline-grid;
+	place-items: center;
+	width: var(--touch);
+	height: var(--touch);
+	border: 0;
+	border-radius: 50%;
+	background: none;
+	color: var(--text-muted);
+	transition: color var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+
+.help-toggle:active { transform: scale(0.92); }
+.help-toggle.on { color: var(--accent); }
+
+.help-list {
+	display: grid;
+	gap: 4px 0;
+	width: 100%;
+	margin: 0;
+	padding: 14px 16px;
+	border-radius: 14px;
+	background: var(--bg-lift);
+	animation: help-in var(--base) var(--ease);
+}
+
+.help-list dt { margin-top: 8px; font-size: 13.5px; font-weight: 600; }
+.help-list dt:first-child { margin-top: 0; }
+.help-list dd { margin: 0; color: var(--text-soft); font-size: 13.5px; line-height: 1.5; }
+
+@keyframes help-in { from { opacity: 0; transform: translateY(-4px); } }
+
+/* Developer details and the About mark. */
+.dev-info {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: 8px 14px;
+	margin: 18px 0 12px;
+	padding: 14px 16px;
+	border-radius: 14px;
+	background: var(--bg-lift);
+	font-size: 13px;
+	-webkit-user-select: text;
+	user-select: text;
+}
+
+.dev-info dt { color: var(--text-muted); }
+.dev-info dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+.about-mark { display: grid; justify-items: center; gap: 6px; margin: 18px 0 8px; text-align: center; }
+.about-mark img { margin-bottom: 6px; border-radius: 16px; }
+.about-mark b { font-size: 20px; font-weight: 650; letter-spacing: -0.02em; }
+.about-mark span { color: var(--text-muted); font-size: 14px; }
 
 /* ── Player ───────────────────────────────────────────────────────────── */
 
@@ -930,11 +1285,7 @@ h2 {
 #playerArt, .player-copy { pointer-events: none; }
 .player-copy .link-inline { pointer-events: auto; }
 
-/* The artist link's extra touch area grows downward only. The copy is centred
-   in the bar and the title line is taller than the artist line, so the link
-   then always starts below the bar's midline: a tap in the middle of the bar
-   opens Now Playing, as it should, instead of the artist. Growing upward as
-   well put the midline on the link at most phone widths. */
+/* The artist link's extra touch area grows downward only. */
 .player-copy .link-inline {
 	min-height: 0;
 	padding-top: 0;
@@ -1000,12 +1351,8 @@ h2 {
 .icon:active { background: var(--line); transform: scale(0.86); }
 .icon:hover { color: var(--text); }
 
-/* Icons come from two places and must not fight.
-   The mini bar's glyphs are inline in index.html with no paint attributes, so
-   they are painted here. Everything built by src/dom.js already carries its own
-   fill/stroke attributes, and a blanket `.icon svg` rule would override those —
-   which is what turned the transport arrows into bare triangles. Size comes
-   from the markup in both cases. */
+/* Icons come from two places and must not fight. The mini bar's glyphs are inline in index.html
+   with no paint attributes, so they are painted here. */
 .player-controls .icon svg { fill: currentColor; stroke: none; }
 
 .player-controls .icon.stroked svg {
@@ -1147,9 +1494,7 @@ dialog form { display: grid; }
 dialog .primary { margin-top: 10px; }
 
 /* ── Track rows: playing state and swipe ──────────────────────────────────
-   The shell is the fixed frame; the row inside it is what slides, revealing the
-   action underneath. Two layers instead of one is what lets the action be
-   readable during the gesture rather than only after it. */
+   The shell is the fixed frame; the row inside it is what slides, revealing the action underneath. */
 
 .track-shell {
 	position: relative;
@@ -1171,14 +1516,7 @@ dialog .primary { margin-top: 10px; }
 }
 
 /* ── Inline links ─────────────────────────────────────────────────────────
-   An artist name that opens the artist. The underline carries the affordance,
-   not the colour: colour alone fails 1.4.1, and in the mono theme --accent
-   sits at 88% lightness against --text at 97%, a gap that is invisible at this
-   size. Accent is spent on press, where it reads as feedback instead of
-   competing with the play button.
-
-   The negative margin is what makes the hit area larger than the text without
-   moving anything around it. */
+   An artist name that opens the artist. */
 .link-inline {
 	display: inline-block;
 	min-height: var(--touch-inline);
@@ -1206,13 +1544,8 @@ dialog .primary { margin-top: 10px; }
 	border-radius: 3px;
 }
 
-/* Inside a track row the name stays on one line and truncates like the label it
-   replaced, rather than pushing the row taller.
-
-   justify-self is load-bearing: these are grid children, and a grid child is
-   blockified, so inline-block alone would still stretch the link across the
-   whole row. A full-width link means the most natural place to tap — the middle
-   of the row — opens the artist instead of playing the track. */
+/* Inside a track row the name stays on one line and truncates like the label it replaced, rather
+   than pushing the row taller. */
 .track-artist {
 	justify-self: start;
 	overflow: hidden;
@@ -1221,10 +1554,9 @@ dialog .primary { margin-top: 10px; }
 	white-space: nowrap;
 }
 
-/* The row's play affordance: a real button, stretched over the whole row and
-   sitting under everything else, so the whole row is tappable and focusable
-   without any of the visible content having to be inside a button. Anything
-   that needs its own tap — the artist name — raises itself above it. */
+/* The row's play affordance: a real button, stretched over the whole row and sitting under
+   everything else, so the whole row is tappable and focusable without any of the visible content
+   having to be inside a button. */
 .track-play {
 	position: absolute;
 	inset: 0;
@@ -1574,11 +1906,7 @@ body.sheet-open { overflow: hidden; }
 .sheet.opening .sheet-panel { animation: sheet-up 340ms var(--ease); }
 .sheet.closing .sheet-panel { animation: sheet-down var(--med) var(--ease-in) forwards; }
 
-/* When the close is being driven from JS the keyframe must stay out of it. A
-   CSS animation outranks the inline transform the drag was writing, so a sheet
-   flicked 300px down used to snap *upward* to zero for one frame and then play
-   sheet-down from there. That one-frame teleport was the largest robotic moment
-   in the app, and it was never a tuning problem. */
+/* When the close is being driven from JS the keyframe must stay out of it. */
 .sheet.closing .sheet-panel.dragging { animation: none; }
 
 @keyframes sheet-up   { from { transform: translateY(100%); } to { transform: none; } }
@@ -1737,11 +2065,8 @@ img { -webkit-user-drag: none; }
 
 .now-close { color: var(--text-soft); }
 
-/* The cover takes whatever height the controls leave, so the whole card fits
-   on one screen with nothing to scroll for. A fixed allowance for "everything
-   else" fitted only the fonts it was measured with: taller text elsewhere
-   pushed the action row off the bottom. Now Playing is always full height, so
-   the body's height is known and its second row is what is left over. */
+/* The cover takes whatever height the controls leave, so the whole card fits on one screen with
+   nothing to scroll for. */
 .sheet-now .sheet-body {
 	display: grid;
 	grid-template-rows: auto minmax(140px, 1fr);
@@ -1780,10 +2105,9 @@ img { -webkit-user-drag: none; }
 	to   { opacity: 1; transform: none; }
 }
 
-/* justify-items matters as much as text-align here: the artist and album are
-   buttons, and a stretched button around a 90px name is a target that spans the
-   card while looking like it spans the name. Shrink-to-fit makes the hit area
-   tell the truth. */
+/* justify-items matters as much as text-align here: the artist and album are buttons, and a
+   stretched button around a 90px name is a target that spans the card while looking like it spans
+   the name. */
 .now-meta { display: grid; justify-items: center; gap: 4px; margin-bottom: 14px; text-align: center; }
 
 /* The global h2 is a small uppercase muted label; a track title is the opposite
@@ -1800,10 +2124,8 @@ img { -webkit-user-drag: none; }
 }
 
 /* ── Scrubber ─────────────────────────────────────────────────────────────
-   The seek control is now `.rs[data-variant="seek"]`; see the Slider section
-   near the end of this file. The four vendor-prefix trees that used to live
-   here — and which between them lost this input's ::-webkit-slider-runnable-
-   track and the volume slider's fill entirely — are gone with it. */
+   The seek control is now `.rs[data-variant="seek"]`; see the Slider section near the end of this
+   file. */
 
 .now-times {
 	display: flex;
@@ -1972,9 +2294,10 @@ img { -webkit-user-drag: none; }
 .queue-row {
 	position: relative;
 	display: grid;
-	grid-template-columns: auto minmax(0, 1fr) auto;
+	grid-template-columns: minmax(0, 1fr) auto auto;
 	align-items: center;
-	gap: 8px;
+	gap: 4px;
+	padding-left: 6px;
 	border-radius: var(--r-sm);
 	transform: translateX(var(--swipe, 0));
 	transition: transform var(--med) var(--ease), background var(--fast) var(--ease);
@@ -1994,12 +2317,14 @@ img { -webkit-user-drag: none; }
 .queue-row-grip {
 	display: grid;
 	place-items: center;
-	width: 34px;
-	height: 46px;
+	width: 44px;
+	height: 56px;
 	color: var(--text-muted);
 	touch-action: none;
 	cursor: grab;
 }
+
+.queue-row.dragging .queue-row-grip { color: var(--text); }
 
 .queue-row-tap {
 	position: relative;
@@ -2037,10 +2362,8 @@ img { -webkit-user-drag: none; }
 .queue-row-tap img, .queue-row-copy { pointer-events: none; }
 .queue-row-copy .link-inline { pointer-events: auto; }
 
-/* On a touchscreen the artist line is half of a small target, and taps meant
-   for the song kept opening the artist instead. There the whole row plays and
-   the whole bar opens Now Playing; the artist is one step away in the row's
-   ⋯ menu and under the title in Now Playing, as in other music apps. */
+/* On a touchscreen the artist line is half of a small target, and taps meant for the song kept
+   opening the artist instead. */
 @media (pointer: coarse) {
 	.player-copy .link-inline,
 	.track-copy .link-inline,
@@ -2154,31 +2477,6 @@ img { -webkit-user-drag: none; }
 
 @media (prefers-reduced-motion: reduce) {
 	.lyrics-line.seekable { transition: none; }
-}
-
-/* ── Settings additions ───────────────────────────────────────────────── */
-
-.settings-list button { justify-content: space-between; gap: 14px; }
-.settings-state { display: inline-flex; flex: none; color: var(--text-muted); }
-.settings-list button[aria-pressed="true"] .settings-state { color: var(--accent); }
-
-/* A row that reports its current setting rather than only naming itself, so
-   the panel can be read without opening anything. */
-.settings-value {
-	align-items: center;
-	font-size: 13px;
-	font-weight: 500;
-	color: var(--text-soft);
-	white-space: nowrap;
-}
-
-.settings-group {
-	margin: 26px 0 7px 16px;
-	font-size: 11.5px;
-	font-weight: 600;
-	letter-spacing: 0.09em;
-	text-transform: uppercase;
-	color: var(--text-muted);
 }
 
 /* ── Sort control ─────────────────────────────────────────────────────── */
@@ -2466,9 +2764,8 @@ img { -webkit-user-drag: none; }
 }
 
 /* ── Appearance sheet ─────────────────────────────────────────────────────
-   A theme is a look, so it is chosen by looking at it: each card carries a
-   swatch painted in that theme's own ground and accent rather than a name and
-   a radio button. */
+   A theme is a look, so it is chosen by looking at it: each card carries a swatch painted in that
+   theme's own ground and accent rather than a name and a radio button. */
 
 .theme-grid {
 	display: grid;
@@ -2489,7 +2786,6 @@ img { -webkit-user-drag: none; }
 }
 
 .theme-card b { font-size: 14px; font-weight: 580; }
-.theme-card small { color: var(--text-muted); font-size: 11.5px; line-height: 1.4; }
 .theme-card:active { transform: scale(0.98); }
 
 .theme-card.active {
@@ -2520,8 +2816,8 @@ img { -webkit-user-drag: none; }
 }
 
 .accent-dot {
-	width: var(--touch);
-	height: var(--touch);
+	width: 44px;
+	height: 44px;
 	padding: 0;
 	border: 2px solid transparent;
 	border-radius: 50%;
@@ -2541,56 +2837,17 @@ img { -webkit-user-drag: none; }
 .accent-dot-purple  { --dot: oklch(70% 0.15 300); }
 .accent-dot-amber   { --dot: oklch(80% 0.14 75); }
 .accent-dot-rose    { --dot: oklch(72% 0.15 15); }
+.accent-dot-silver  { --dot: linear-gradient(140deg, #f4f5f7, #a7acb4 50%, #e3e5e9); background: var(--dot) content-box; }
 
-/* ── Switches and choices inside sheets ───────────────────────────────── */
+/* ── Sliders inside sheets ────────────────────────────────────────────── */
 
-.settings-toggle,
-.settings-choice {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 14px;
-	width: 100%;
-	min-height: var(--touch);
-	padding: 14px 2px;
-	border: 0;
-	border-bottom: 1px solid var(--line);
-	background: none;
-	text-align: left;
-}
-
-.settings-toggle span,
-.settings-choice span { display: grid; gap: 3px; }
-.settings-toggle b,
-.settings-choice b { font-size: 14.5px; font-weight: 560; }
-.settings-toggle small,
-.settings-choice small { color: var(--text-muted); font-size: 12.5px; line-height: 1.45; }
-.settings-toggle:active,
-.settings-choice:active { background: var(--bg-lift); }
-.settings-toggle.on .settings-state { color: var(--accent); }
-.settings-choice .settings-value { color: var(--text-soft); font-size: 13.5px; white-space: nowrap; }
-
-.settings-slider-row {
-	display: grid;
-	gap: 8px;
-	padding: 14px 2px;
-	border-bottom: 1px solid var(--line);
-}
-
-.settings-slider-copy { display: grid; gap: 3px; }
-.settings-slider-copy b { font-size: 14.5px; font-weight: 560; }
-.settings-slider-copy small { color: var(--text-muted); font-size: 12.5px; }
+.settings-slider-row { display: grid; gap: 6px; padding: 4px 2px 10px; }
+.settings-slider-copy { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.settings-slider-copy b { font-size: 15.5px; font-weight: 500; }
 
 /* ── Now playing: artist and album as links ───────────────────────────── */
 
-/* Three lines, three jobs: what this is, who made it, what it came from. Each
-   steps down in size, weight and colour together, so the hierarchy survives
-   being glanced at in the dark from arm's length — which is the only way this
-   screen is ever actually read.
-
-   No text-align here. The parent centres, and these are shrink-to-fit; setting
-   `left` was what pinned the artist and album to the card's left edge while the
-   title stayed centred. */
+/* Three lines, three jobs: what this is, who made it, what it came from. */
 .now-artist,
 .now-album {
 	max-width: 100%;
@@ -2604,11 +2861,8 @@ img { -webkit-user-drag: none; }
 .now-artist { color: var(--text-soft); font-size: 15px; font-weight: 520; }
 .now-album { color: var(--text-muted); font-size: 13px; font-weight: 480; }
 
-/* Only what can actually be tapped is drawn as tappable — and the underline,
-   not the colour, is what carries that. An accent-coloured name competes with
-   the play button, the only other accent object on this screen, and in the mono
-   theme --accent sits at 88% lightness against --text at 97%, a gap invisible
-   at this size. Accent is spent on press instead, where it reads as feedback. */
+/* Only what can actually be tapped is drawn as tappable — and the underline, not the colour, is
+   what carries that. */
 .now-artist.is-link,
 .now-album {
 	text-decoration: underline;
@@ -2646,10 +2900,8 @@ img { -webkit-user-drag: none; }
 	text-align: right;
 }
 
-/* Past unity the whole control changes colour, so "louder than the phone
-   normally goes" is visible rather than a number you have to read. The rail and
-   thumb are handled by `.rs[data-variant="volume"].is-boosted` in the Slider
-   section; these two are the readout and the icon beside it. */
+/* Past unity the whole control changes colour, so "louder than the phone normally goes" is visible
+   rather than a number you have to read. */
 .now-volume.is-boosted .now-volume-value,
 .now-volume.is-boosted .now-volume-icon { color: var(--warn); }
 
@@ -2758,29 +3010,14 @@ img { -webkit-user-drag: none; }
 }
 
 /* ── Slider ───────────────────────────────────────────────────────────────
-   One component, four variants: seek, volume, the five EQ bands, settings
-   volume. It replaced four native range inputs and their four divergent
-   vendor-prefix trees, which between them had already produced two independent
-   bugs — a seek thumb with no runnable-track to centre against, and a volume
-   slider whose --level fill property no stylesheet ever read.
-
-   The rail is 4px because that is what reads as a progress line; the row is
-   48px because that is what a thumb can find. Those are different numbers and
-   this component keeps them apart, which is precisely what a native range
-   cannot do: ::-webkit-slider-thumb's box is the visual and the target at
-   once. */
+   One component, four variants: seek, volume, the five EQ bands, settings volume. */
 
 .rs {
 	position: relative;
 	display: block;
 	width: 100%;
 	height: var(--rs-row);
-	/* The whole reason this component exists. The gesture is ours, and the
-	   scroller behind it does not get to arbitrate: without this the compositor
-	   claims the touch as a candidate vertical pan, the control receives
-	   pointerdown and then pointercancel, and the only thing that survives is
-	   the UA's jump-to-position on the initial press — which is exactly what a
-	   slider that can be tapped but never dragged looks like. */
+	/* The whole reason this component exists. */
 	touch-action: none;
 	-webkit-user-select: none;
 	user-select: none;
@@ -2859,10 +3096,8 @@ img { -webkit-user-drag: none; }
 
 .rs-hit:focus-visible { outline: none; }
 
-/* A slider reached by keyboard must show its thumb, so the ring is not
-   :focus-visible-only on the thumb itself. The class is set by the component;
-   :has() would also do it and is supported on both targets, but the class is
-   already there to drive the grow state. */
+/* A slider reached by keyboard must show its thumb, so the ring is not :focus-visible-only on the
+   thumb itself. */
 .rs.is-focus .rs-thumb {
 	box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--accent);
 }
@@ -2913,11 +3148,7 @@ img { -webkit-user-drag: none; }
 }
 
 /* ── Slider, reduced motion ───────────────────────────────────────────────
-   The two universal rules elsewhere in this file already flatten every duration
-   to ~1ms. This block exists because `left` is the one property that must not
-   merely be fast: the thumb has to land where the finger is, and 1ms of
-   interpolation on a value that changes every frame is still a value that is
-   never quite right. */
+   The two universal rules elsewhere in this file already flatten every duration to ~1ms. */
 .reduce-motion .rs-thumb,
 .reduce-motion .rs-fill { transition: none !important; }
 
@@ -2927,10 +3158,8 @@ img { -webkit-user-drag: none; }
 }
 
 /* ── Import ───────────────────────────────────────────────────────────────
-   A hundred files landing is the one moment this app is visibly doing work on
-   the user's behalf, and a single status line spends that moment saying almost
-   nothing. Each file gets a row, and each row says which of the four things it
-   is currently doing. */
+   A hundred files landing is the one moment this app is visibly doing work on the user's behalf,
+   and a single status line spends that moment saying almost nothing. */
 
 /* Stacked and full width. The pick and the folder pick are a primary and its
    alternative, and a folder label does not fit the half-width a two-up row
@@ -2947,18 +3176,13 @@ img { -webkit-user-drag: none; }
 	background: var(--surface);
 }
 
-/* The header stays reachable while a hundred rows scroll under it, because the
-   cancel button is the one control that matters during a long import and a
-   control you have to scroll back up to find is a control you do not have.
-   The batch's own padding is cancelled and re-applied so the pinned block spans
-   the card's full width — otherwise rows would be visible sliding through the
-   gutter on either side of it. */
+/* The header stays reachable while a hundred rows scroll under it, because the cancel button is
+   the one control that matters during a long import and a control you have to scroll back up to
+   find is a control you do not have. */
 .import-batch-pin {
 	position: sticky;
-	/* -4px, not 0: .sheet-body carries 4px of top padding, and pinning at 0
-	   leaves that 4px as a live gap with rows visibly sliding through it above
-	   the header. Overshooting by exactly the padding closes the seam, and the
-	   4px lost off the top of this block is its own padding. */
+	/* -4px, not 0: .sheet-body carries 4px of top padding, and pinning at 0 leaves that 4px as a live
+	   gap with rows visibly sliding through it above the header. */
 	top: -4px;
 	z-index: 2;
 	display: grid;
@@ -3067,9 +3291,8 @@ img { -webkit-user-drag: none; }
 .ghost:disabled:hover { background: transparent; color: var(--text-soft); }
 
 /* ── Import, reduced motion ───────────────────────────────────────────────
-   The two universal rules elsewhere flatten every duration to 1ms, which for a
-   700ms rotation means a spinner that flickers rather than one that stops. An
-   indefinite animation has to be turned off, not sped up. */
+   The two universal rules elsewhere flatten every duration to 1ms, which for a 700ms rotation
+   means a spinner that flickers rather than one that stops. */
 .reduce-motion .import-card-state .spin { animation: none !important; }
 .reduce-motion .import-card.is-stored .import-card-art { animation: none !important; }
 
@@ -3080,17 +3303,6 @@ img { -webkit-user-drag: none; }
 
 /* The one sheet it must never float over: the expanded player itself. */
 body.now-playing-open .player { display: none; }
-
-/* The running build. Quiet by design -- it is a diagnostic, not information
-   anybody needs while using the app -- but selectable, because the whole point
-   is being able to read it back to somebody. */
-.build-line {
-	margin-top: 6px;
-	font-variant-numeric: tabular-nums;
-	opacity: 0.72;
-	-webkit-user-select: text;
-	user-select: text;
-}
 
 /* A saved computer and the control that forgets it. The row keeps the whole
    width it had; the forget button is laid beside it rather than inside it,
@@ -3152,10 +3364,8 @@ body.now-playing-open .player { display: none; }
 .local-head-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ── Swipes on what is playing ────────────────────────────────────────────
-   The mini bar and the cover follow the finger sideways to change the song,
-   and the bar lifts as it is pulled up into the card. During a drag the
-   finger is the only animation; the CSS transitions come back for the
-   release. */
+   The mini bar and the cover follow the finger sideways to change the song, and the bar lifts as
+   it is pulled up into the card. */
 .player-open {
 	overflow: clip;
 	overflow-clip-margin: 10px;
@@ -3170,3 +3380,56 @@ body.now-playing-open .player { display: none; }
    nobody sees, and on an older phone it is paint that delays the opening. */
 .sheet-now .sheet-scrim { -webkit-backdrop-filter: none; backdrop-filter: none; }
 .home-start { justify-self: start; width: auto; margin: 2px 2px 0; padding: 0 20px; }
+
+/* Developer: compact rows. */
+.compact .track { grid-template-columns: 40px minmax(0, 1fr) auto; gap: 11px; padding-block: 6px; }
+.compact .track img { width: 40px; height: 40px; border-radius: 6px; }
+
+/* A "?" that opens a short explanation in place. */
+.help-inline { margin-top: 18px; color: var(--text-soft); font-size: 13.5px; line-height: 1.55; }
+.help-inline summary {
+	display: inline-grid; place-items: center; width: 30px; height: 30px;
+	border: 1px solid var(--line-firm); border-radius: 50%;
+	color: var(--text-muted); font-weight: 600; list-style: none; cursor: pointer;
+}
+.help-inline summary::-webkit-details-marker { display: none; }
+.help-inline[open] summary { color: var(--accent); border-color: var(--accent); }
+.help-inline p { margin: 10px 0 0; }
+.help-inline b { color: var(--text); font-weight: 600; }
+
+/* ── Browse ───────────────────────────────────────────────────────────── */
+
+.browse-section + .browse-section { margin-top: 26px; }
+.browse-title { margin: 18px 0 10px; color: var(--text); font-size: 20px; font-weight: 700; letter-spacing: -0.02em; text-transform: none; }
+
+.browse-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+
+.browse-tile {
+	position: relative;
+	display: flex;
+	align-items: flex-end;
+	min-height: 64px;
+	padding: 12px 14px;
+	overflow: hidden;
+	border: 0;
+	border-radius: 12px;
+	background:
+		linear-gradient(135deg, color-mix(in oklab, var(--tile) 78%, #000) 0%, color-mix(in oklab, var(--tile) 42%, #000) 100%);
+	box-shadow: inset 0 0.5px 0 rgb(255 255 255 / 0.25);
+	color: #fff;
+	font-size: 15px;
+	font-weight: 650;
+	letter-spacing: -0.01em;
+	text-align: left;
+	transition: transform var(--fast) var(--ease);
+}
+
+.browse-tile::after {
+	position: absolute;
+	inset: 0;
+	background: linear-gradient(115deg, rgb(255 255 255 / 0.16), transparent 45%);
+	content: "";
+	pointer-events: none;
+}
+
+.browse-tile:active { transform: scale(0.97); }

@@ -33,7 +33,8 @@ struct Track: Identifiable, Hashable {
     var isPlayable: Bool { !sourceID.isEmpty }
 
     var artistRef: Artist? {
-        artist.isEmpty ? nil : Artist(["id": .string(artistID), "name": .string(artist), "thumbnail_url": .string(artworkURL)])
+        // No picture: a track's cover is the album's, not the artist's.
+        artist.isEmpty ? nil : Artist(["id": .string(artistID), "name": .string(artist)])
     }
 
     var albumRef: Album? {

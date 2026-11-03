@@ -68,7 +68,7 @@ struct ArtistDetailView: View {
         let shown = catalog?.artist ?? artist
         ScrollView {
             VStack(alignment: .leading, spacing: 34) {
-                DetailHeader(artworkURL: shown.artworkURL.isEmpty ? artist.artworkURL : shown.artworkURL, circle: true, symbol: "music.mic",
+                DetailHeader(artworkURL: shown.artworkURL.isEmpty ? library.artwork(for: artist) : shown.artworkURL, circle: true, symbol: "music.mic",
                              eyebrow: "Artist", title: shown.name, detail: Self.audience(shown.subscribers)) {
                     Button { app.play(artist: shown) } label: { Label("Play", systemImage: "play.fill") }
                         .buttonStyle(PillButtonStyle(prominent: true))

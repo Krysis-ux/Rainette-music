@@ -1,8 +1,4 @@
-/* Track rows. Tap plays; swipe right queues next, swipe left queues last.
- *
- * The gesture axis-locks on first movement and never revisits it, or every
- * slightly-diagonal scroll catches a row and drags it sideways.
- */
+/* Track rows. Tap plays; swipe right queues next, swipe left queues last. */
 
 import { el, icon, iconButton, tap, toast, stagger } from './dom.js';
 import { dragGesture } from './gesture.js';
@@ -70,11 +66,8 @@ export function trackRow(track, { onPlay, onHold = null, swipe = true, showDurat
 		shell.append(behind);
 	}
 
-	// A container, not a button. The artist name inside it has to be its own
-	// control, and a button inside a button is invalid HTML that no engine
-	// makes keyboard-reachable. Instead the play affordance is a stretched
-	// sibling underneath everything, and anything that wants its own tap
-	// raises itself above it.
+	// A container, not a button. The artist name inside it has to be its own control, and a button
+	// inside a button is invalid HTML that no engine makes keyboard-reachable.
 	const row = el('div', 'track');
 
 	const art = document.createElement('img');
@@ -219,10 +212,8 @@ function wireGestures(shell, row, track, { swipe, onHold }) {
 	});
 }
 
-/* Called on every playback tick, so it has to be free when nothing changed:
- * walking every row in the document four times a second is enough to make the
- * transport buttons miss taps. `force` is for a fresh render, whose new rows
- * carry no marks yet even though the playing track is the same one. */
+/* Called on every playback tick, so it has to be free when nothing changed: walking every row in
+ * the document four times a second is enough to make the transport buttons miss taps. */
 let markedKey = null;
 let markedPlaying = false;
 

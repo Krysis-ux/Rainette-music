@@ -237,6 +237,21 @@ class PlayHistoryDeletionTests(unittest.TestCase):
     def recent_titles(self):
         return [t["title"] for t in self.state.list_recent_plays()]
 
+    def test_an_artist_never_wears_an_album_cover(self):
+        track = self.state.upsert_track(
+            source_id="cover-song", title="Cover Song", artist="Laufey",
+            duration_s=180, thumbnail_url="https://covers.example/album.jpg", metadata={},
+        )
+        self.state.log_play(track["id"])
+        index = self.state.music_library_index()
+        self.assertEqual(index["artists"][0]["thumbnail_url"], "")
+        self.assertEqual(self.state.list_top_artists()[0]["thumbnail_url"], "")
+
+        # A picture found by name is used everywhere the artist appears.
+        self.state.remember_artist_art([{"query": "laufey", "thumbnail_url": "https://people.example/laufey.jpg"}])
+        self.assertEqual(self.state.music_library_index()["artists"][0]["thumbnail_url"], "https://people.example/laufey.jpg")
+        self.assertEqual(self.state.list_top_artists()[0]["thumbnail_url"], "https://people.example/laufey.jpg")
+
     def test_deleting_a_track_removes_every_play_of_it(self):
         keep = self.play("Keep Me", times=2)
         drop = self.play("Drop Me", times=3)
@@ -347,13 +362,7 @@ class ClearUserDataTests(unittest.TestCase):
 
 
 class PlaybackTargetTests(unittest.TestCase):
-    """Which surface owns the audio, recorded rather than guessed.
-
-    Nothing used to record it: the desktop kept a write-only field no event
-    ever updated, the phone kept a boolean, and the wire carried a two-value
-    string defaulted to "desktop". That is why pause did not cross devices and
-    why every screen claimed the computer was playing regardless of the truth.
-    """
+    """Which surface owns the audio, recorded rather than guessed."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

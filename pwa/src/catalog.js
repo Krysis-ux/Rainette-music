@@ -1,12 +1,4 @@
-/* Artists and albums — the half of the catalog this client used to have no way
- * to reach. Search returned a flat track list, so tapping an artist tried to
- * play them and failed on a row that has no source_id.
- *
- * Both pages are full sheets rather than panels: they stack, the back gesture
- * pops them, and the tab you came from is still underneath. An artist opened
- * from search, from the queue, or from the now-playing card is the same sheet
- * either way.
- */
+/* Artists and albums — the half of the catalog this client used to have no way to reach. */
 
 import { el, icon, iconButton, toast, stagger } from './dom.js';
 import { openSheet } from './sheets.js';
@@ -27,9 +19,8 @@ export function configureCatalog(options = {}) {
 }
 
 /* ── Shapes ───────────────────────────────────────────────────────────────
- * The computer speaks one album shape everywhere, but which key holds the id
- * depends on whether it came from a search, an artist catalog, or a track's
- * own metadata. Normalising once here keeps that out of every call site. */
+ * The computer speaks one album shape everywhere, but which key holds the id depends on whether it
+ * came from a search, an artist catalog, or a track's own metadata. */
 
 export function albumRef(album) {
 	return {
@@ -55,15 +46,7 @@ export function trackArtist(track) {
 	return { id: String(primary?.id || meta.artist_id || ''), name, art: '', subscribers: '' };
 }
 
-/** The artist name, as a control when there is somewhere to go and a label when
- *  there is not.
- *
- *  A real `<button>` rather than a tappable `<span>`: a span gives no keyboard
- *  route and no accessible name, which is an app that looks like it has artist
- *  links while having none. Where there is no artist to open we return a plain
- *  span rather than a disabled button — a disabled button is still a tab stop
- *  in some engines and announces itself as one.
- */
+/** The artist name, as a control when there is somewhere to go and a label when there is not. */
 export function artistLink(track, { className = '' } = {}) {
 	const name = artistName(track) || 'Unknown artist';
 	const who = trackArtist(track);
@@ -270,7 +253,7 @@ export function openArtist(seed) {
 
 /* A placeholder about the artist rather than the app: their initial on a
  * neutral disc that reads in both themes. */
-function monogram(name) {
+export function monogram(name) {
 	const letter = (String(name || '').trim()[0] || '?').toUpperCase()
 		.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
 	const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 88 88">'
@@ -616,7 +599,7 @@ export function hydrateArtistArt(container) {
 		for (const image of pending) {
 			if (image.dataset.artistName?.trim().toLowerCase() !== resolvedKey) continue;
 			if (!image.isConnected) continue;
-			image.src = artworkFor(entry.art, 56);
+			image.src = artworkFor(entry.art, image.width || 56);
 			delete image.dataset.artistName;
 		}
 	});

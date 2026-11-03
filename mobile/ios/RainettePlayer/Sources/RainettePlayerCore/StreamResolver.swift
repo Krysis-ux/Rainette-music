@@ -85,10 +85,8 @@ public actor StreamResolver {
         }
     }
 
-    /// One request, as YouTube's visionOS client, whose addresses are the ones
-    /// the full extraction ended up serving anyway (the others are refused).
-    /// Measured from a Mac: ~0.3 s, where the full extraction took 5–7 s,
-    /// because that also downloads and runs YouTube's web player.
+    /// One request, as YouTube's visionOS client, whose addresses are the ones the full extraction
+    /// ended up serving anyway (the others are refused).
     private func quickResolve(_ id: String, now: Date) async throws -> ResolvedStream {
         let ranked = Self.rankAudio(try await Self.visionCandidates(id, visitor: try await visitorData()))
         guard !ranked.isEmpty else { throw PlayerError(PlayerError.sourceChanged) }
@@ -166,19 +164,25 @@ public actor StreamResolver {
         return try await firstServed(ranked, now: now, isServed: isServed)
     }
 
-    /// Audio-only AAC, highest bitrate first. AVPlayer cannot play WebM, so
-    /// Opus, which Android falls back to, is not an option here.
-    public static func rankAudio(_ candidates: [AudioCandidate]) -> [AudioCandidate] {
-        candidates
-            .filter { $0.hasAudio && !$0.hasVideo && $0.fileExtension == "m4a" && $0.url.scheme == "https" }
-            .sorted { $0.bitrate > $1.bitrate }
+    /// Data saver ranks the smallest stream first. Set through `setDataSaver`.
+    nonisolated(unsafe) public static var dataSaver = false
+
+    /// Switch quality. Addresses already found are dropped, so the next song uses it.
+    public func setDataSaver(_ on: Bool) {
+        guard Self.dataSaver != on else { return }
+        Self.dataSaver = on
+        cache.removeAll()
     }
 
-    /// The best address the source will actually serve. YouTubeKit asks as
-    /// several clients at once, and the source can refuse one client's
-    /// addresses for a song while serving another's (measured: 403 for
-    /// TVHTML5 and 206 for VISIONOS, same song, same minute), so the highest
-    /// bitrate alone is not trusted. One refusal rules out that client.
+    /// Audio-only AAC, highest bitrate first (lowest with data saver). AVPlayer
+    /// cannot play WebM, so Opus is not an option here.
+    public static func rankAudio(_ candidates: [AudioCandidate], dataSaver: Bool = StreamResolver.dataSaver) -> [AudioCandidate] {
+        candidates
+            .filter { $0.hasAudio && !$0.hasVideo && $0.fileExtension == "m4a" && $0.url.scheme == "https" }
+            .sorted { dataSaver ? $0.bitrate < $1.bitrate : $0.bitrate > $1.bitrate }
+    }
+
+    /// The best address the source will actually serve.
     static func firstServed(_ ranked: [AudioCandidate], now: Date,
                             isServed: (ResolvedStream) async throws -> Bool) async throws -> ResolvedStream {
         var refused = Set<String>()

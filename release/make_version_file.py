@@ -1,15 +1,4 @@
-"""Generate a PyInstaller ``--version-file`` from ``version.APP_VERSION``.
-
-Without a Win32 version resource, the built exe has empty CompanyName /
-ProductName / FileDescription. Task Manager reads FileDescription for its "Name"
-column, so an empty one falls back to the raw filename (and a source run shows
-the interpreter's own resource, which literally says "Python"). Generating the
-resource from ``version.py`` keeps it from drifting out of sync with the tag the
-release workflow enforces.
-
-Usage:
-    python release/make_version_file.py <output-path>
-"""
+"""Generate a PyInstaller ``--version-file`` from ``version.APP_VERSION``."""
 
 from __future__ import annotations
 

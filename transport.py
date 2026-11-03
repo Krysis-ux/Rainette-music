@@ -1,28 +1,4 @@
-"""How this computer becomes reachable from a phone, as a pluggable seam.
-
-Rainette has exactly one thing that works with no setup at all: a Cloudflare
-Quick Tunnel.  It is also the worst of the options once you have used it twice,
-because the address changes on every restart and every phone has to rescan.
-Better options exist, but every one of them costs the user a human step —
-installing an app, signing in through a browser, granting a one-time consent —
-and a human step that surfaces as "the tunnel failed" is a step nobody takes.
-
-So this module does two things.  It moves the Cloudflare specifics out of
-:mod:`tunnel` behind a small provider protocol, and it makes *unfinished setup*
-a first-class result rather than an error: :class:`PreflightResult` describes
-the next thing the person has to do, in words, with a link, so the settings page
-can render a checklist instead of a stack trace.
-
-Nothing here replaces the Quick Tunnel.  ``cloudflare-quick`` remains the
-default and behaves exactly as it did before this seam existed; the other
-providers are additional options a user may choose, never a migration they are
-pushed through.
-
-The module deliberately imports nothing from :mod:`tunnel` or :mod:`server`.
-Everything it needs from them — locating cloudflared, downloading it, probing an
-address for reachability — arrives by injection, so the dependency runs one way
-and the providers stay testable without a running app.
-"""
+"""How this computer becomes reachable from a phone, as a pluggable seam."""
 
 from __future__ import annotations
 
@@ -53,13 +29,7 @@ class TransportError(RuntimeError):
 
 
 class SetupRequired(TransportError):
-    """The user has to do something before this transport can work.
-
-    Carrying a :class:`PreflightResult` rather than only a message is the whole
-    point: "install Tailscale" and "approve Funnel for this tailnet" are both
-    single clicks *if* the UI is handed the link, and both look like an outage
-    if it is handed a sentence.
-    """
+    """The user has to do something before this transport can work."""
 
     def __init__(self, result: "PreflightResult") -> None:
         super().__init__(result.message or "this transport needs to be set up first")
@@ -95,16 +65,8 @@ class ProviderCapabilities:
 
 @dataclass(frozen=True)
 class PreflightResult:
-    """The next human step, or ``ok`` when there is not one.
-
-    ``can_fix`` is the difference between a checklist and a wizard.  An
-    unfinished step that only carries a ``url`` leaves the person to go and do
-    something in a browser and then come back and work out what changed; the
-    same step with ``can_fix`` set is a button in Rainette that performs it.
-    Providers should set it wherever the work is genuinely the app's to do, and
-    leave it clear where the step is unavoidably the user's -- creating an
-    account, consenting to expose a tailnet, buying a domain.
-    """
+    """The next human step, or ``ok`` when there is not one. ``can_fix`` is the difference between
+    a checklist and a wizard."""
 
     ok: bool
     action: str = ""  # "" | "install" | "signup" | "login" | "consent" | "configure" | "provision"
@@ -128,24 +90,13 @@ class PreflightResult:
 
 @dataclass
 class ProviderHandle:
-    """Whatever a running transport needs to be stopped again.
-
-    ``process`` is ``None`` for providers whose configuration lives in a daemon
-    (Tailscale) or nowhere at all (manual).  That is exactly why ``stop`` takes
-    a handle instead of "kill the process": without it those providers could not
-    participate in the supervisor at all.
-    """
+    """Whatever a running transport needs to be stopped again."""
 
     process: subprocess.Popen | None = None
     state: dict = field(default_factory=dict)
 
     def cancelled(self) -> bool:
-        """True once the supervisor has moved on from this launch.
-
-        The check is injected through ``state`` rather than passed as an
-        argument so the protocol's method signatures stay as narrow as they
-        read.  A handle nobody wired up simply never cancels.
-        """
+        """True once the supervisor has moved on from this launch."""
         check = self.state.get("cancelled")
         try:
             return bool(check()) if callable(check) else False
@@ -246,13 +197,7 @@ def _no_window_kwargs() -> dict:
 
 
 class _BaseProvider:
-    """Shared plumbing; every provider below is one of these.
-
-    Callables are injected rather than imported so this module never depends on
-    :mod:`tunnel`: ``probe`` is the reachability check, ``record`` is the
-    supervisor's log sink, and the cloudflared locator/installer come from the
-    module that owns the download policy.
-    """
+    """Shared plumbing; every provider below is one of these."""
 
     id = ""
     label = ""
@@ -313,11 +258,10 @@ class _BaseProvider:
             command,
             capture_output=True,
             text=True,
-            # Explicit, not left to locale.getpreferredencoding(): on Windows
-            # that is commonly a legacy code page rather than UTF-8, and a
-            # helper that prints anything outside it would otherwise raise
-            # UnicodeDecodeError -- which is neither OSError nor
-            # SubprocessError, so it would reach callers uncaught.
+            # Explicit, not left to locale.getpreferredencoding(): on Windows that is commonly a
+            # legacy code page rather than UTF-8, and a helper that prints anything outside it would
+            # otherwise raise UnicodeDecodeError -- which is neither OSError nor SubprocessError, so
+            # it would reach callers uncaught.
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
@@ -326,11 +270,7 @@ class _BaseProvider:
 
 
 class _ProcessProvider(_BaseProvider):
-    """A provider whose transport *is* a child process printing to a log.
-
-    The URL is discovered by watching that log, which means the pump has to
-    start with the process and outlive the discovery loop.
-    """
+    """A provider whose transport *is* a child process printing to a log."""
 
     url_pattern: re.Pattern[str] | None = None
 
@@ -370,11 +310,7 @@ class _ProcessProvider(_BaseProvider):
         return found.get("url", "")
 
     def await_ready(self, handle: ProviderHandle, deadline: float) -> None:
-        """Wait for the helper to report an edge connection, if it says so.
-
-        Advisory on purpose: the log wording is not a stable interface, so a
-        miss falls through to the reachability probe rather than failing.
-        """
+        """Wait for the helper to report an edge connection, if it says so."""
         if not self.ready_marker:
             return
         marker = self.ready_marker.lower()
@@ -409,11 +345,7 @@ class _CloudflareProvider(_ProcessProvider):
         self._binary: Path | None = None
 
     def ensure_binary(self, progress: Callable[[str], None] | None = None) -> Path | None:
-        """Locate cloudflared. Downloading stays a separate, named user step.
-
-        The one action that reaches the network on the user's behalf must be
-        something they chose, not a side effect of pressing "generate".
-        """
+        """Locate cloudflared. Downloading stays a separate, named user step."""
         if self._binary is not None:
             return self._binary
         self._binary = self._locate()
@@ -447,12 +379,8 @@ class _CloudflareProvider(_ProcessProvider):
 
 
 class CloudflareQuickProvider(_CloudflareProvider):
-    """Today's behaviour, unchanged, behind the provider seam.
-
-    Zero setup and a fresh ``*.trycloudflare.com`` hostname on every start.  It
-    is the default because it is the only option that asks the user for nothing,
-    and it must keep working exactly as it always has.
-    """
+    """Today's behaviour, unchanged, behind the provider seam. Zero setup and a fresh
+    ``*.trycloudflare.com`` hostname on every start."""
 
     id = CLOUDFLARE_QUICK
     label = "Works anywhere"
@@ -495,20 +423,7 @@ class CloudflareQuickProvider(_CloudflareProvider):
 
 
 class CloudflareNamedProvider(_CloudflareProvider):
-    """A tunnel the user owns, on a domain already sitting on Cloudflare.
-
-    Everything this provider needs beyond an account and a domain, it does
-    itself.  ``cloudflared`` already knows how to open a browser for consent
-    (``tunnel login``), mint a tunnel (``tunnel create``) and write the DNS
-    record that points at it (``tunnel route dns``); the only reason those ever
-    had to be typed into a terminal is that nothing was calling them.  So the
-    provider drives them, and :meth:`preflight` becomes a wizard: at every
-    moment it reports the single next step and whether Rainette can take it.
-
-    Two steps are genuinely not ours and stay as links: creating the account,
-    and putting a domain on Cloudflare.  Pretending otherwise would mean
-    automating somebody's signup, which is neither possible nor desirable.
-    """
+    """A tunnel the user owns, on a domain already sitting on Cloudflare."""
 
     id = CLOUDFLARE_NAMED
     label = "Your own permanent address"
@@ -555,13 +470,7 @@ class CloudflareNamedProvider(_CloudflareProvider):
     # -- step: sign in -----------------------------------------------------
 
     def begin_login(self) -> dict:
-        """Run ``cloudflared tunnel login``, which opens the browser itself.
-
-        The command blocks until the person has picked a domain in Cloudflare's
-        UI, so it cannot be waited on inline without freezing the settings page.
-        It goes on a thread; progress is observed through the certificate file
-        it writes, which is the same thing every later step checks anyway.
-        """
+        """Run ``cloudflared tunnel login``, which opens the browser itself."""
         if self.signed_in():
             return {"ok": True, "already": True}
         binary = self.ensure_binary()
@@ -604,12 +513,7 @@ class CloudflareNamedProvider(_CloudflareProvider):
     # -- step: work out which domain they picked ---------------------------
 
     def _cert_credentials(self) -> dict:
-        """Pull the zone and account ids out of the certificate cloudflared wrote.
-
-        ``cert.pem`` carries an extra PEM block holding a small JSON blob.  It is
-        the only place the chosen zone is recorded locally, and reading it is
-        what lets Rainette suggest a hostname instead of asking for one.
-        """
+        """Pull the zone and account ids out of the certificate cloudflared wrote."""
         try:
             raw = self.cert_path().read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -628,11 +532,7 @@ class CloudflareNamedProvider(_CloudflareProvider):
         return payload if isinstance(payload, dict) else {}
 
     def zone_name(self) -> str:
-        """The domain the user chose while signing in, or "" if it cannot be read.
-
-        Best effort on purpose.  A failure here costs a prefilled text box, not
-        the feature: :meth:`preflight` falls back to asking for the hostname.
-        """
+        """The domain the user chose while signing in, or "" if it cannot be read."""
         credentials = self._cert_credentials()
         zone_id = str(credentials.get("zoneID") or "").strip()
         token = str(credentials.get("apiToken") or "").strip()
@@ -668,12 +568,7 @@ class CloudflareNamedProvider(_CloudflareProvider):
     # -- step: create the tunnel and point the name at it ------------------
 
     def provision(self, hostname: str = "", tunnel_name: str = "") -> dict:
-        """Create the tunnel and its DNS record, tolerating both already existing.
-
-        Re-running this is the normal case, not the exception: somebody who
-        pressed the button, quit, and came back should land on "ready" rather
-        than on "a tunnel with that name already exists".
-        """
+        """Create the tunnel and its DNS record, tolerating both already existing."""
         binary = self.ensure_binary()
         if binary is None:
             raise TransportError("download the Cloudflare helper first")
@@ -840,12 +735,7 @@ _TAILSCALE_PATHS = (
 
 
 class _TailscaleProvider(_BaseProvider):
-    """Config lives in the Tailscale daemon, so there is no process to own.
-
-    That is the case ``long_lived_process = False`` exists for: ``launch``
-    returns as soon as the daemon has been reconfigured, and supervision becomes
-    "keep probing, and rewrite the config if it stops answering".
-    """
+    """Config lives in the Tailscale daemon, so there is no process to own."""
 
     mode = "serve"
     capabilities = ProviderCapabilities(
@@ -867,11 +757,7 @@ class _TailscaleProvider(_BaseProvider):
         self._login_error = ""
 
     def ensure_binary(self, progress: Callable[[str], None] | None = None) -> Path | None:
-        """Locate only. Tailscale cannot be installed silently and should not be.
-
-        It is a system-level VPN client; fetching and running one on somebody's
-        behalf is not a thing an app should do quietly.
-        """
+        """Locate only. Tailscale cannot be installed silently and should not be."""
         if self._binary is None:
             self._binary = self._locate()
         return self._binary
@@ -907,14 +793,7 @@ class _TailscaleProvider(_BaseProvider):
         return bool(thread and thread.is_alive())
 
     def begin_login(self) -> dict:
-        """Run ``tailscale up``, which is what makes the daemon mint an auth URL.
-
-        Logged out, ``tailscale status`` reports no ``AuthURL`` at all -- the
-        daemon only produces one once something has asked it to come up.  So the
-        button that used to send people to a login page they could do nothing
-        with instead starts the thing that generates the link, and the next
-        poll of :meth:`preflight` has a real URL to offer.
-        """
+        """Run ``tailscale up``, which is what makes the daemon mint an auth URL."""
         binary = self.ensure_binary()
         if binary is None:
             raise TransportError("install Tailscale first")
@@ -933,14 +812,7 @@ class _TailscaleProvider(_BaseProvider):
         return {"ok": True, "pending": True}
 
     def _wake_daemon(self) -> None:
-        """Start the Tailscale app if its daemon is not answering.
-
-        On macOS the CLI is a client of a daemon the *app* owns, so with the app
-        quit `tailscale status` returns nothing usable and `tailscale up` has
-        nothing to talk to either. Telling the user to "open the Tailscale app
-        once" is a step Rainette can simply take, and the button that offered to
-        connect was otherwise guaranteed to fail before it did anything.
-        """
+        """Start the Tailscale app if its daemon is not answering."""
         if not sys.platform == "darwin" or self._status_json() is not None:
             return
         try:
@@ -1046,12 +918,7 @@ class _TailscaleProvider(_BaseProvider):
                 detail="One switch on Tailscale's own settings page. Rainette cannot flip it for you.",
             )
         if not (status.get("CertDomains") or []):
-            # No cert domains means HTTPS is off for the whole tailnet. Without
-            # it `tailscale cert` answers "your Tailscale account does not
-            # support getting TLS certs", the phone has no certificate to
-            # trust, and the whole thing reads as "cannot connect" -- so this
-            # step has to name the switch precisely rather than gesture at a
-            # settings page. It is free, and it is nobody's to flip but theirs.
+            # No cert domains means HTTPS is off for the whole tailnet.
             return PreflightResult(
                 ok=False,
                 action="consent",
@@ -1128,15 +995,8 @@ class _TailscaleProvider(_BaseProvider):
 
 
 class TailscaleServeProvider(_TailscaleProvider):
-    """A stable name that is never on the public internet.
-
-    This is also the closest thing to "just use the local network" that a
-    browser will actually accept.  On the same Wi-Fi, Tailscale connects the two
-    devices directly and the audio never leaves the building -- but unlike a
-    bare ``http://192.168.x.x`` address it carries a real certificate, so the
-    phone client stays a secure context and keeps the two things that depend on
-    one: installing to the home screen, and working offline.
-    """
+    """A stable name that is never on the public internet. This is also the closest thing to "just
+    use the local network" that a browser will actually accept."""
 
     id = TAILSCALE_SERVE
     mode = "serve"
@@ -1168,12 +1028,7 @@ def _locate_tailscale() -> Path | None:
 
 
 class ManualProvider(_BaseProvider):
-    """An address the user brings themselves — a reverse proxy, a VPS, anything.
-
-    This has always half-existed as "whatever is in ``public_url`` that Rainette
-    did not mint".  Making it a provider gives it the one thing it never had:
-    supervision.  Until now a user's own proxy going down was invisible here.
-    """
+    """An address the user brings themselves — a reverse proxy, a VPS, anything."""
 
     id = MANUAL
     label = "Bring your own address"
@@ -1266,13 +1121,8 @@ def catalogue() -> list[dict]:
             "id": pid,
             "label": _PROVIDER_CLASSES[pid].label,
             "description": _PROVIDER_CLASSES[pid].description,
-            # The recommendation follows the default rather than the option
-            # that is technically nicest. Tailscale is faster and more private
-            # when it applies, but it asks for a VPN app on the computer *and*
-            # the phone, and most people will use the plain tunnel that needs
-            # nothing. Recommending what most people will actually use keeps
-            # the recommendation honest -- and makes the WAN path the one that
-            # has to work, which is where the effort belongs.
+            # The recommendation follows the default rather than the option that is technically
+            # nicest.
             "recommended": pid == DEFAULT_PROVIDER,
             "default": pid == DEFAULT_PROVIDER,
             **_PROVIDER_CLASSES[pid].capabilities.as_dict(),
@@ -1317,14 +1167,8 @@ class TransportSelection:
 
 
 def migrate_provider_id(payload: Mapping | None, *, legacy_public_url: str = "") -> str:
-    """Decide which provider an install was already using.
-
-    A build that predates this seam persisted only an address.  A
-    ``*.trycloudflare.com`` one was minted by Rainette, so it was the Quick
-    Tunnel; any other non-empty address was something the user brought
-    themselves, which is exactly what ``manual`` now describes.  An install with
-    no address at all has never been configured, so it lands on the default.
-    """
+    """Decide which provider an install was already using. A build that predates this seam
+    persisted only an address."""
     provider = str((payload or {}).get("provider") or "").strip()
     if known_provider(provider):
         return provider
@@ -1343,13 +1187,7 @@ def _selection_path(app_data_dir) -> Path:
 
 
 def read_selection(app_data_dir, *, legacy_public_url: str = "") -> TransportSelection:
-    """Load the chosen provider, migrating an older install on the way.
-
-    A missing or damaged file must never stop Rainette from starting, and must
-    never silently change which transport is in use: both paths resolve through
-    the same migration, so an unconfigured install always lands on
-    ``cloudflare-quick``.
-    """
+    """Load the chosen provider, migrating an older install on the way."""
     try:
         payload = json.loads(_selection_path(app_data_dir).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -1364,11 +1202,8 @@ def read_selection(app_data_dir, *, legacy_public_url: str = "") -> TransportSel
 
 
 def write_selection(app_data_dir, provider: str, config: Mapping | None = None) -> TransportSelection:
-    """Persist the chosen provider atomically.
-
-    Rejecting an unknown id here rather than at launch keeps the stored value
-    something every later read can trust.
-    """
+    """Persist the chosen provider atomically. Rejecting an unknown id here rather than at launch
+    keeps the stored value something every later read can trust."""
     provider_id = str(provider or "").strip() or DEFAULT_PROVIDER
     if not known_provider(provider_id):
         raise ValueError(f"unknown transport provider: {provider}")
@@ -1388,13 +1223,7 @@ def write_selection(app_data_dir, provider: str, config: Mapping | None = None) 
 
 
 def is_managed_url(value: str, *, provider: str = "", config: Mapping | None = None) -> bool:
-    """True for an address Rainette itself brought up and may clear again.
-
-    The legacy Quick Tunnel check is kept as a floor no matter which provider is
-    selected: a ``*.trycloudflare.com`` address is always one we minted, and it
-    always dies with the process, so leaving it baked into pairing links is the
-    exact failure this whole area exists to prevent.
-    """
+    """True for an address Rainette itself brought up and may clear again."""
     if _host_of(value).endswith(_QUICK_TUNNEL_HOST_SUFFIX):
         return True
     if not known_provider(provider):

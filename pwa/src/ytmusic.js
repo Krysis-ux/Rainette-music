@@ -1,17 +1,7 @@
-/* The phone's own catalog, for the app with no computer behind it.
- *
- * The computer answers search, artist pages, albums, artist pictures and lyrics
- * through ytmusicapi and LRCLIB. The native app can ask the same two places
- * itself, through Capacitor's native HTTP (a WebView's fetch would be refused
- * by CORS), and hands back the computer's own shapes so every screen renders
- * one way whoever answered. Nothing goes through a Rainette server.
- *
- * The parsers are plain functions over YouTube Music's answers and are tested
- * against saved copies of them (tests/test_pwa_ytmusic.py). A shape they do
- * not recognise is a failure, never an empty result: "nothing matched" would
- * be a lie about a page that changed. */
+/* The phone's own catalog, for the app with no computer behind it. */
 
 import { STORAGE } from './state.js';
+import { pref } from './prefs.js';
 import { nativeAvailable, nativeSearch } from './native-engine.js';
 
 const API = 'https://music.youtube.com/youtubei/v1/';
@@ -22,10 +12,7 @@ const FILTER = {
 	artists: 'EgWKAQIgAWoMEA4QChADEAQQCRAF',
 	albums: 'EgWKAQIYAWoMEA4QChADEAQQCRAF',
 };
-/* The web client's own User-Agent. Asked with the app's (Android WebView),
- * YouTube Music leaves the artist and album links out of every row, and
- * without them no song can open its album or its artist by id. The same one
- * the iPhone's own search sends (StreamResolver.safari). */
+/* The web client's own User-Agent. */
 const DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15';
 const TIMEOUT_MS = 15000;
 const ARTIST_IMAGE_WORKERS = 4;
@@ -59,11 +46,14 @@ function catalogFailure(message) {
 	return new Error(message);
 }
 
+/* The Developer setting, two capital letters, else the US. */
+const region = () => (/^[A-Z]{2}$/.test(String(pref('region'))) ? pref('region') : 'US');
+
 async function innertube(endpoint, payload) {
 	const { status, body } = await http(`${API}${endpoint}?prettyPrint=false`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json', Origin: 'https://music.youtube.com', 'User-Agent': DESKTOP_UA },
-		data: { context: { client: CLIENT }, ...payload },
+		data: { context: { client: { ...CLIENT, gl: region() } }, ...payload },
 	});
 	if (status === 429) throw catalogFailure('YouTube Music asked this phone to slow down. Try again in a minute.');
 	if (status !== 200 || !body || typeof body !== 'object') throw catalogFailure('YouTube Music did not answer. Try again.');
@@ -200,6 +190,20 @@ function albumFromCard(card, artist, fallbackType) {
 	});
 }
 
+/** One card in an artist page's "Fans might also like". */
+function artistFromCard(card) {
+	const id = String(dig(card, 'navigationEndpoint', 'browseEndpoint', 'browseId') || '');
+	const name = text(dig(card, 'title', 'runs'));
+	if (!id.startsWith('UC') || !name) return null;
+	const audience = text(dig(card, 'subtitle', 'runs'));
+	return {
+		id, name,
+		thumbnail_url: thumbOf(card?.thumbnailRenderer),
+		audience: / audience$/.test(audience) ? audience.replace(/ audience$/, ' listeners') : '',
+		result_type: 'artist',
+	};
+}
+
 function releaseShape({ id, title, artist, artistId, year, type, art }) {
 	return {
 		id, browse_id: id, title, artist, artist_id: artistId || '', year,
@@ -256,7 +260,7 @@ export function parseArtistPage(answer, seed = {}) {
 
 	// `more` is where each shelf's full list lives, when it has more than the
 	// page shows: YouTube Music's artist page lists ten singles of thirty.
-	const page = { artist, songs: [], songsBrowseId: '', albums: [], singles: [], videos: [], more: {} };
+	const page = { artist, songs: [], songsBrowseId: '', albums: [], singles: [], videos: [], related: [], more: {} };
 	for (const section of sections) {
 		const shelf = section.musicShelfRenderer;
 		if (shelf) {
@@ -275,7 +279,8 @@ export function parseArtistPage(answer, seed = {}) {
 		if (kind && more?.browseId) {
 			page.more[kind] = more.params ? { browseId: String(more.browseId), params: String(more.params) } : { browseId: String(more.browseId) };
 		}
-		if (kind === 'albums') page.albums = cards.map(card => albumFromCard(card, artist, 'Album')).filter(Boolean);
+		if (title.includes('also like')) page.related = cards.map(artistFromCard).filter(Boolean);
+		else if (kind === 'albums') page.albums = cards.map(card => albumFromCard(card, artist, 'Album')).filter(Boolean);
 		else if (kind === 'singles') page.singles = cards.map(card => albumFromCard(card, artist, 'Single')).filter(Boolean);
 		else if (kind === 'videos') page.videos = cards.map(card => songFromCard(card, artist)).filter(Boolean);
 	}
@@ -421,6 +426,26 @@ async function fullArtistCatalog({ artist_id: id = '', name = '', thumbnail_url:
 	return { artist, songs, albums, singles, videos, source: 'on-device' };
 }
 
+/** The artist page, for Home: their top songs and who their fans also play.
+ *  One request, where the full catalog is several; `allSongs` adds one more
+ *  for the whole songs list rather than the page's five. */
+export async function artistHighlights({ artist_id: id = '', name = '' } = {}, { allSongs = false } = {}) {
+	let seed = { id: String(id || ''), name: String(name || '') };
+	if (!seed.id) {
+		const found = await findArtist(seed.name);
+		if (!found) throw catalogFailure(`Couldn’t find ${seed.name || 'that artist'}.`);
+		seed = { id: found.id, name: found.name, art: found.thumbnail_url };
+	}
+	const page = parseArtistPage(await innertube('browse', { browseId: seed.id }), seed);
+	const hint = { artist: page.artist.name, artistId: page.artist.id };
+	const songs = allSongs && page.songsBrowseId
+		? await innertube('browse', { browseId: page.songsBrowseId })
+			.then(answer => parseTrackPage(answer).rows.map(row => songFromRow(row, hint)).filter(Boolean))
+			.catch(() => [])
+		: [];
+	return { artist: page.artist, songs: songs.length ? songs : page.songs, related: page.related };
+}
+
 /** An album's tracks, as `music_album_tracks` returns them. */
 export async function albumTracks(request = {}) {
 	try {
@@ -441,11 +466,13 @@ async function fullAlbumTracks({ album_id: id = '', title = '', artist = '' } = 
 		if (!albumId) throw catalogFailure(`Couldn’t find ${title || 'that album'}.`);
 	}
 	const page = parseTrackPage(await innertube('browse', { browseId: albumId }));
-	const album = releaseShape({
-		id: albumId, title: page.title || title, artist: page.artist || artist, artistId: page.artistId,
-		year: page.year, type: page.type || 'Album', art: page.art,
-	});
-	const hint = { artist: album.artist, artistId: album.artist_id, art: album.thumbnail_url, album: { name: album.title, id: albumId } };
+	// A playlist has a curator, not an artist, and its songs come from many albums.
+	const playlist = albumId.startsWith('VL');
+	const album = releaseShape(playlist
+		? { id: albumId, title: page.title || title, artist: '', artistId: '', year: '', type: 'Playlist', art: page.art }
+		: { id: albumId, title: page.title || title, artist: page.artist || artist, artistId: page.artistId,
+			year: page.year, type: page.type || 'Album', art: page.art });
+	const hint = playlist ? {} : { artist: album.artist, artistId: album.artist_id, art: album.thumbnail_url, album: { name: album.title, id: albumId } };
 	return { album, tracks: page.rows.map(row => songFromRow(row, hint)).filter(Boolean), source: 'on-device' };
 }
 
@@ -467,11 +494,61 @@ export async function artistImages({ names = [] } = {}) {
 	return { artists: found };
 }
 
+/* ── Browse: editors' playlists ───────────────────────────────────────────*/
+
+const sectionsOf = answer => dig(answer, 'contents', 'singleColumnBrowseResultsRenderer', 'tabs', 0, 'tabRenderer',
+	'content', 'sectionListRenderer', 'contents');
+
+/** Moods and genres, as YouTube Music's editors group them. */
+export function parseMoods(answer) {
+	const sections = sectionsOf(answer);
+	if (!Array.isArray(sections)) throw catalogFailure('Browse did not load.');
+	return sections.map(section => {
+		const grid = section?.gridRenderer;
+		const items = (grid?.items || []).map(item => item?.musicNavigationButtonRenderer).filter(Boolean).map(button => ({
+			title: text(dig(button, 'buttonText', 'runs')),
+			params: String(dig(button, 'clickCommand', 'browseEndpoint', 'params') || ''),
+			// ARGB as an integer; the low 24 bits are the colour.
+			color: `#${(Number(dig(button, 'solid', 'leftStripeColor')) & 0xffffff).toString(16).padStart(6, '0')}`,
+		})).filter(item => item.title && item.params);
+		return { title: text(dig(grid, 'header', 'gridHeaderRenderer', 'title', 'runs')), items };
+	}).filter(section => section.items.length);
+}
+
+/** One mood or genre: shelves of playlists. */
+export function parseMood(answer) {
+	const sections = sectionsOf(answer);
+	if (!Array.isArray(sections)) throw catalogFailure('That page did not load.');
+	const shelves = sections.map(section => {
+		const shelf = section?.musicCarouselShelfRenderer || section?.gridRenderer;
+		const cards = (shelf?.contents || shelf?.items || []).map(item => item?.musicTwoRowItemRenderer).filter(Boolean);
+		const title = text(dig(shelf, 'header', 'musicCarouselShelfBasicHeaderRenderer', 'title', 'runs'))
+			|| text(dig(shelf, 'header', 'gridHeaderRenderer', 'title', 'runs'));
+		const playlists = cards.map(card => {
+			const run = dig(card, 'title', 'runs', 0);
+			const id = browseId(run);
+			return id.startsWith('VL') ? {
+				id, title: run?.text || '', subtitle: text(dig(card, 'subtitle', 'runs')),
+				thumbnail_url: thumbOf(dig(card, 'thumbnailRenderer')),
+			} : null;
+		}).filter(Boolean);
+		return { title, playlists };
+	}).filter(shelf => shelf.playlists.length);
+	return { title: text(dig(answer, 'header', 'musicHeaderRenderer', 'title', 'runs')), shelves };
+}
+
+export async function moods() {
+	return { sections: parseMoods(await innertube('browse', { browseId: 'FEmusic_moods_and_genres' })) };
+}
+
+export async function moodPlaylists({ params = '' } = {}) {
+	if (!params) throw catalogFailure('Nothing to open.');
+	return parseMood(await innertube('browse', { browseId: 'FEmusic_moods_and_genres_category', params: String(params) }));
+}
+
 /* ── Lyrics ───────────────────────────────────────────────────────────────
- * Two sources at once: LRCLIB's own database, for lines timed to the song,
- * and YouTube Music's lyrics (Musixmatch, LyricFind), for the words of the
- * many songs LRCLIB lacks. Timed lines win; plain words are next. LRCLIB's
- * outside search is slow (seconds, for a miss), so it is only the last try. */
+ * Two sources at once: LRCLIB's own database, for lines timed to the song, and YouTube Music's
+ * lyrics (Musixmatch, LyricFind), for the words of the many songs LRCLIB lacks. */
 
 const LYRICS_TIMEOUT_MS = 8000;
 
@@ -569,9 +646,7 @@ function follow(payload = {}) {
 const unfollow = (payload = {}) => writeFollowed(readFollowed().filter(entry => !sameArtist(entry, payload)));
 
 /* ── Commands ─────────────────────────────────────────────────────────────
- * What the phone can answer itself, by the command name the computer uses.
- * `fallback` ones are also tried when a paired computer cannot answer; the
- * follow list is the computer's to keep while one is paired. */
+ * What the phone can answer itself, by the command name the computer uses. */
 
 const PHONE = {
 	music_catalog_search: { run: ({ query }) => catalogSearch(query), fallback: true },
@@ -580,6 +655,8 @@ const PHONE = {
 	music_album_tracks: { run: albumTracks, fallback: true },
 	music_artist_images: { run: artistImages, fallback: true },
 	music_lyrics: { run: lyrics, fallback: true },
+	music_moods: { run: moods, fallback: true },
+	music_mood_playlists: { run: moodPlaylists, fallback: true },
 	music_followed_artists: { run: async () => ({ followed_artists: readFollowed() }), fallback: false },
 	music_artist_follow: { run: async payload => follow(payload), fallback: false },
 	music_artist_unfollow: { run: async payload => unfollow(payload), fallback: false },
