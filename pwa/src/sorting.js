@@ -1,7 +1,7 @@
 /* Sorting, and the little control that drives it. Every list in this client arrived in whatever
  * order the computer happened to send it, with no way to reorder it. */
 
-import { el, icon } from './dom.js';
+import { iconButton } from './dom.js';
 import { actionSheet } from './sheets.js';
 import { artistName, trackDuration, trackPopularity } from './state.js';
 
@@ -120,16 +120,13 @@ function writeSort(scope, id) {
 export function sortControl({ scope, modes = TRACK_SORTS, onChange, label = 'Sort' }) {
 	let current = readSort(scope, modes);
 
-	const node = el('div', 'sort-bar');
-	const button = el('button', 'chip sort-chip');
-	button.type = 'button';
+	const button = iconButton('sort', { label, className: 'sort-button' });
 
 	const paint = () => {
 		const mode = findMode(modes, current);
-		button.innerHTML = icon('sort', 15);
-		button.append(el('span', '', mode.id === 'default' ? label : mode.label));
 		button.classList.toggle('on', mode.id !== 'default');
 		button.setAttribute('aria-label', `${label}: ${mode.label}`);
+		button.title = `${label}: ${mode.label}`;
 	};
 
 	button.addEventListener('click', async () => {
@@ -151,10 +148,9 @@ export function sortControl({ scope, modes = TRACK_SORTS, onChange, label = 'Sor
 	});
 
 	paint();
-	node.append(button);
 
 	return {
-		node,
+		node: button,
 		apply: () => onChange?.(current),
 		current: () => current,
 	};

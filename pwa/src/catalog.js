@@ -323,7 +323,7 @@ function renderArtistSection(container, section, { songs, videos, shelves, artis
 				});
 			},
 		});
-		container.append(control.node, rows);
+		container.append(catalogListHeading(section === 'songs' ? 'Songs' : 'Videos', list.length, control), rows);
 		control.apply();
 		return;
 	}
@@ -340,8 +340,14 @@ function renderArtistSection(container, section, { songs, videos, shelves, artis
 			stagger(grid, ':scope > .release-card');
 		},
 	});
-	container.append(control.node, grid);
+	const label = ARTIST_SECTIONS.find(item => item.id === section)?.label || 'Releases';
+	container.append(catalogListHeading(label, releases.length, control), grid);
 	control.apply();
+}
+
+function catalogListHeading(title, count, control) {
+	return el('div', 'list-heading',
+		el('h3', 'list-title', title, el('span', 'list-count', String(count))), control.node);
 }
 
 function releaseCard(album, artist) {
@@ -420,7 +426,7 @@ export function openAlbum(seed) {
 					});
 				},
 			});
-			body.append(control.node, rows);
+			body.append(catalogListHeading('Songs', tracks.length, control), rows);
 			control.apply();
 		},
 	});

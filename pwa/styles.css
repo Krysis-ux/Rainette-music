@@ -982,9 +982,24 @@ h2 {
 	color: var(--accent);
 	font: inherit;
 	font-size: 14px;
+	justify-self: start;
+	text-align: left;
 }
 
-.collection-title { margin: 2px 0 6px; font-size: 19px; font-weight: 600; }
+.collection-title {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	overflow: hidden;
+	color: var(--text);
+	font-family: var(--font-display);
+	font-size: 20px;
+	font-weight: 650;
+	letter-spacing: -0.018em;
+	text-overflow: ellipsis;
+	text-transform: none;
+	white-space: nowrap;
+}
 
 /* A short explanation attached to a control, not a paragraph of body copy. */
 .note {
@@ -2481,17 +2496,33 @@ img { -webkit-user-drag: none; }
 
 /* ── Sort control ─────────────────────────────────────────────────────── */
 
-.sort-bar { display: flex; justify-content: flex-end; margin: 10px 0 2px; }
-
-.sort-chip {
-	display: inline-flex;
+.list-heading {
+	display: flex;
 	align-items: center;
-	gap: 6px;
-	max-width: 100%;
+	justify-content: space-between;
+	gap: 12px;
+	min-width: 0;
+	margin: 12px 0 4px;
 }
 
-.sort-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sort-chip svg { flex: none; }
+.list-title {
+	min-width: 0;
+	margin: 0;
+	color: var(--text);
+	font-size: 17px;
+	font-weight: 620;
+	letter-spacing: -0.015em;
+	text-transform: none;
+}
+
+.list-count { margin-left: 8px; color: var(--text-muted); font-size: 13px; font-weight: 450; }
+.list-actions { display: flex; flex: none; align-items: center; gap: 4px; }
+.list-actions .icon,
+.sort-button { flex: none; width: var(--touch); height: var(--touch); }
+.sort-button { color: var(--text-soft); }
+.sort-button.on { background: var(--accent-wash); color: var(--accent); }
+.result-head { margin: 0 0 6px; }
+.result-head .result-heading { margin: 0; }
 
 /* ── Search results ───────────────────────────────────────────────────── */
 
@@ -2936,6 +2967,7 @@ img { -webkit-user-drag: none; }
 	align-items: center;
 	justify-content: space-between;
 	gap: 12px;
+	min-width: 0;
 	margin: 10px 0 4px;
 }
 

@@ -622,9 +622,11 @@ const LIBRARY_MODES = [
 	['#libraryModeLocal', 'local'],
 ];
 
-/* One control serves whichever list the panel is showing, because "sort" means
- * the same thing in all of them and a second chip per mode would be three
- * controls doing one job. */
+const librarySortHost = $('#librarySort');
+const libraryListHead = $('#libraryListHead');
+
+/* The same control follows the list into its heading, including a playlist's
+ * own title row. Keep the host reference while that row is being replaced. */
 const librarySort = sortControl({
 	scope: 'library',
 	onChange: () => {
@@ -633,7 +635,7 @@ const librarySort = sortControl({
 		else if (library.playlistId) renderPlaylistTracks(library.playlistId, library.playlistName);
 	},
 });
-$('#librarySort').append(librarySort.node);
+librarySortHost.append(librarySort.node);
 
 /* Artists are not tracks, so they get their own modes rather than a track sort
  * whose "album" and "longest" mean nothing on a person. */
@@ -642,7 +644,7 @@ const libraryArtistSort = sortControl({
 	modes: ARTIST_SORTS,
 	onChange: () => { if (library.mode === 'artists') renderLibraryArtists(); },
 });
-$('#librarySort').append(libraryArtistSort.node);
+librarySortHost.append(libraryArtistSort.node);
 // Both controls start visible; without this the first Library visit shows two
 // Sort chips whenever the library arrived before the tab was opened, because
 // that path never re-renders the panel.
@@ -665,7 +667,18 @@ function paintLibrarySort() {
 	const artists = library.mode === 'artists';
 	librarySort.node.hidden = !tracks;
 	libraryArtistSort.node.hidden = !artists;
-	$('#librarySort').hidden = !(tracks || artists);
+	librarySortHost.hidden = !(tracks || artists);
+	const playlist = library.mode === 'playlists' && !!library.playlistId;
+	libraryListHead.hidden = !(tracks || artists) || playlist;
+	if (!playlist) libraryListHead.append(librarySortHost);
+	paintLibraryHeading();
+}
+
+function paintLibraryHeading(count) {
+	const label = library.mode === 'artists' ? 'Artists' : library.mode === 'local' ? 'On this phone' : 'Songs';
+	const title = $('#libraryListTitle');
+	title.replaceChildren(label);
+	if (count !== undefined) title.append(el('span', 'list-count', String(count)));
 }
 
 /** Render the song list from a payload the computer pushed on its own. */
@@ -673,6 +686,7 @@ function showLibraryTracks(tracks) {
 	state.library = tracks;
 	if (library.mode !== 'songs' || library.playlistId) return;
 	claimLibrary();
+	paintLibraryHeading(tracks.length);
 	const sorted = sortTracks(tracks, librarySort.current());
 	renderTracks($('#libraryList'), sorted, {
 		emptyMessage: 'Tracks you save on your computer show up here.',
@@ -691,6 +705,7 @@ async function refreshLibrary() {
 	const target = $('#libraryList');
 	if (phoneOnly()) {
 		const sorted = sortTracks(readRecent(), librarySort.current());
+		paintLibraryHeading(sorted.length);
 		renderTracks(target, sorted, {
 			emptyMessage: 'Songs you play on this phone show up here. Search for one to start.',
 			onPlay: playFromList(sorted),
@@ -704,6 +719,7 @@ async function refreshLibrary() {
 		const result = await command('music_library_index', { limit: 250 });
 		if (!libraryOwns(token)) return;
 		state.library = result.tracks || result.items || [];
+		paintLibraryHeading(state.library.length);
 		const sorted = sortTracks(state.library, librarySort.current());
 		renderTracks(target, sorted, {
 			emptyMessage: 'Tracks you save on your computer show up here.',
@@ -734,6 +750,7 @@ async function renderLibraryArtists() {
 	if (!libraryOwns(token)) return;
 
 	const artists = artistsFromTracks(phone ? readRecent() : state.library, followedArtists);
+	paintLibraryHeading(artists.length);
 	if (!artists.length) {
 		target.replaceChildren(el('p', 'empty', phone
 			? 'Artists you play or follow show up here.'
@@ -758,6 +775,7 @@ async function renderLocalLibrary() {
 
 	const tracks = await listLocalTracks();
 	if (!libraryOwns(token)) return;
+	paintLibraryHeading(tracks.length);
 	if (!tracks.length) {
 		target.replaceChildren(el('p', 'empty',
 			'Nothing on this phone yet. Download a song from anywhere in Rainette to keep it here, or add your own files from Settings → Music on this phone. Either way they stay on the device.'));
@@ -943,8 +961,7 @@ async function renderPlaylistTracks(playlistId, name = '') {
 		if (name) head.append(el('h2', 'collection-title', name));
 		// Everything about a playlist is changeable from the playlist itself,
 		// which is where somebody looking at it expects to find that.
-		const edit = el('button', 'chip', 'Edit');
-		edit.type = 'button';
+		const edit = iconButton('sliders', { label: 'Edit playlist' });
 		edit.addEventListener('click', () => openPlaylistEditor(playlist, tracks, {
 			onChanged: updated => {
 				if (!updated) { library.playlistId = null; library.playlist = null; renderLibraryPanel(); return; }
@@ -955,11 +972,11 @@ async function renderPlaylistTracks(playlistId, name = '') {
 		}));
 		// "All of it" is a question only the head of a list can ask, which is why
 		// downloading a whole playlist lives here and not on any of its rows.
-		const download = el('button', 'chip', 'Download all');
-		download.type = 'button';
+		const download = iconButton('download', { label: 'Download all' });
 		download.disabled = !tracks.length;
 		download.addEventListener('click', () => runListDownload(tracks, { title: name || 'Playlist' }));
-		head.append(edit, download);
+		const actions = el('div', 'list-actions', edit, download, librarySortHost);
+		head.append(actions);
 		target.append(head);
 
 		const list = el('div', 'track-list');
@@ -1082,11 +1099,12 @@ function paintSearchFilter() {
  *  put all three kinds in one scroller without them reading as one list. */
 function resultSection(title, nodes, listClass = '') {
 	const section = el('section', 'result-section');
-	section.append(el('h2', 'result-heading', title));
+	const head = el('div', 'list-heading result-head', el('h2', 'result-heading', title));
+	section.append(head);
 	const list = el('div', listClass);
 	list.append(...nodes);
 	section.append(list);
-	return { section, list };
+	return { section, list, head };
 }
 
 function renderSearchResults() {
@@ -1109,7 +1127,8 @@ function renderSearchResults() {
 	if (filter === 'artists' || (filter === 'all' && artists.length)) {
 		const ordered = sortArtists(artists, searchArtistSort.current());
 		const shown = filter === 'all' ? ordered.slice(0, 4) : ordered;
-		const { section, list } = resultSection('Artists', shown.map(artistRow));
+		const { section, list, head } = resultSection('Artists', shown.map(artistRow));
+		if (sortArtistList) head.append(searchSortHost);
 		target.append(section);
 		hydrateArtistArt(list);
 	}
@@ -1118,7 +1137,8 @@ function renderSearchResults() {
 		target.append(section);
 	}
 	if (filter === 'songs' || filter === 'all') {
-		const { section, list } = resultSection('Songs', [], 'track-list');
+		const { section, list, head } = resultSection('Songs', [], 'track-list');
+		if (sortSongs) head.append(searchSortHost);
 		target.append(section);
 		renderTracks(list, orderedSongs, {
 			emptyMessage: 'No songs matched that.',
