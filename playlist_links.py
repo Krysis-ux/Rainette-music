@@ -10,6 +10,7 @@ import ipaddress
 import json
 import re
 import socket
+import unicodedata
 import urllib.parse
 import urllib.request
 from typing import Any, Callable
@@ -430,12 +431,14 @@ def _parse_csv(text: str) -> list[dict[str, str]]:
 # ── Matching ───────────────────────────────────────────────────────────────
 
 def _normalise(value: Any) -> str:
-    text = str(value or "").lower()
+    # NFKC folds full-width forms ("（", "：") into plain ones; casefold is lower() for every script.
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
     # "(feat. X)", "- Remastered 2011", "[Official Video]" are noise on one side only.
     text = re.sub(r"\((feat|ft|with)[^)]*\)", "", text)
     text = re.sub(r"\[[^\]]*\]", "", text)
     text = re.sub(r"\s+-\s+(remaster|remastered|radio edit|single version|official).*$", "", text)
-    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+    # Letters, marks and numbers of any script: Hindi vowel signs are marks, and 夜曲 has no a-z at all.
+    return " ".join("".join(ch if unicodedata.category(ch)[0] in "LMN" else " " for ch in text).split())
 
 
 def score(candidate: dict, wanted: dict) -> float:

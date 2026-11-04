@@ -106,14 +106,17 @@ function parseLine(line) {
 /* ── Matching against the computer ────────────────────────────────────────*/
 
 function normalise(value) {
+	// NFKC folds full-width forms; letters, marks and numbers of any script are kept
+	// (Hindi vowel signs are marks, and 夜曲 has no a-z at all).
 	return String(value || '')
+		.normalize('NFKC')
 		.toLowerCase()
 		// "(feat. X)", "- Remastered 2011", "[Official Video]" are noise for a
 		// title comparison and present on one side far more often than both.
 		.replace(/\((feat|ft|with)[^)]*\)/g, '')
 		.replace(/\[[^\]]*\]/g, '')
 		.replace(/\s+-\s+(remaster|remastered|radio edit|single version|official).*$/i, '')
-		.replace(/[^a-z0-9]+/g, ' ')
+		.replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ')
 		.trim();
 }
 

@@ -121,6 +121,16 @@ def test_matching_prefers_the_right_song_and_refuses_a_different_one():
     assert pl.best_match(candidates[2:], wanted) is None
 
 
+def test_matching_works_in_every_script():
+    chinese = {"source_id": "x", "title": "夜曲", "artist": "周杰伦"}
+    assert pl.best_match([chinese], {"title": "夜曲", "artist": "周杰伦"}) is chinese
+    # Two Hindi words that differ only by a vowel sign (a combining mark) are different songs.
+    kal, kaal = {"source_id": "1", "title": "कल", "artist": "A"}, {"source_id": "2", "title": "काल", "artist": "A"}
+    assert pl.best_match([kal, kaal], {"title": "काल", "artist": "A"}) is kaal
+    assert pl.best_match([{"source_id": "3", "title": "（又名：for ya）给你呀", "artist": "蒋小呢"}],
+                         {"title": "(又名:for ya)给你呀", "artist": "蒋小呢"})["source_id"] == "3"
+
+
 def test_the_engine_builds_the_playlist_in_order(tmp_path, monkeypatch):
     messages = []
     monkeypatch.setattr(music_bridge.shared, "STATE", MusicState(Path(tmp_path) / "music.db"))
