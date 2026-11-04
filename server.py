@@ -164,6 +164,7 @@ COMPANION_COMMAND_TYPES = frozenset({
     "music_playlist_add_track",
     "music_playlist_remove_track",
     "music_playlist_tracks",
+    "music_playlist_link",
     "music_recent",
     "music_top_artists",
     "music_insights",

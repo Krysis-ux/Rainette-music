@@ -18,6 +18,7 @@ from typing import Any
 
 import audio_outputs
 import local_library
+import playlist_links
 import shared
 
 # ``no-certifi`` asks yt-dlp's request layer to use the operating-system trust store rather than
@@ -831,6 +832,94 @@ def cmd_music_playlist_tracks(msg):
                                 "playlist_id": playlist_id, "tracks": shared.STATE.list_playlist_tracks(playlist_id)})
     except Exception as e:
         shared.notify_browsers({"type": "music_playlist_tracks_result", "id": req_id, "ok": False, "msg": str(e), "tracks": []})
+
+
+# ── A playlist from a link (Spotify, Apple Music, Deezer, YouTube) or a pasted list ──
+
+_IMPORT_WORKERS = 3   # one search at a time is too slow for 200 songs; more trips YouTube Music's limiter
+
+
+def _link_failure(exc: Exception) -> str:
+    if isinstance(exc, (playlist_links.LinkError, RuntimeError)):
+        return str(exc)
+    if isinstance(exc, OSError):
+        return "That service did not answer. Check the internet connection and try again."
+    return "That playlist could not be read."
+
+
+def _read_playlist_link(text: str) -> dict[str, Any]:
+    """The link's songs: `entries` to look up, or (YouTube) `tracks` ready to play."""
+    found = {**playlist_links.read(text), "tracks": []}
+    if found["youtube_playlist_id"]:
+        info = _ytmusic().get_playlist(found["youtube_playlist_id"], limit=None) or {}
+        found["name"] = str(info.get("title") or "YouTube playlist")
+        found["tracks"] = [t for t in (_ytm_track(raw) for raw in info.get("tracks") or [] if isinstance(raw, dict)) if t]
+        found["total"] = len(found["tracks"])
+    return found
+
+
+def cmd_music_playlist_link(msg):
+    _run_bg(_playlist_link_worker, msg.get("id"), str(msg.get("url") or ""))
+
+
+def _playlist_link_worker(req_id, url):
+    try:
+        found = _read_playlist_link(url)
+        shared.notify_browsers({"type": "music_playlist_link_result", "id": req_id, "ok": True, **found})
+    except Exception as exc:
+        shared.notify_browsers({"type": "music_playlist_link_result", "id": req_id, "ok": False, "msg": _link_failure(exc)})
+
+
+def _find_song(entry: dict[str, str]) -> dict[str, Any] | None:
+    query = " ".join(part for part in (entry.get("artist"), entry.get("title")) if part)
+    try:
+        if YTMUSIC_AVAILABLE:
+            candidates = [t for t in (_ytm_track(raw) for raw in _ytmusic().search(query, filter="songs", limit=5) or []) if t]
+        else:
+            candidates = _yt_dlp_search_items(query, limit=5)
+    except Exception:
+        return None
+    return playlist_links.best_match(candidates, entry)
+
+
+def cmd_music_playlist_import(msg):
+    _run_bg(_playlist_import_worker, msg.get("id"), str(msg.get("url") or msg.get("text") or ""), str(msg.get("name") or ""))
+
+
+def _playlist_import_worker(req_id, pasted, name):
+    try:
+        if playlist_links.looks_like_link(pasted):
+            found = _read_playlist_link(pasted)
+        else:
+            found = {"name": "", "source": "text", "partial": False, "tracks": [], "entries": playlist_links.parse_text(pasted)}
+        entries = found["entries"]
+        if not entries and not found["tracks"]:
+            raise playlist_links.LinkError("Paste a playlist link, or a list of songs.")
+        total = len(entries) + len(found["tracks"])
+        matched, missing = [], []
+        with ThreadPoolExecutor(max_workers=_IMPORT_WORKERS, thread_name_prefix="rainette-import") as pool:
+            # map keeps the playlist's order.
+            for done, (entry, song) in enumerate(zip(entries, pool.map(_find_song, entries)), 1):
+                (matched if song else missing).append(song or {"title": entry["title"], "artist": entry["artist"]})
+                # Not `id`: clients settle a request on the first message carrying its id.
+                shared.notify_browsers({"type": "music_playlist_import_progress", "request_id": req_id, "done": done, "total": len(entries)})
+        tracks, seen = [], set()
+        for track in found["tracks"] + matched:
+            if track["source_id"] not in seen:
+                seen.add(track["source_id"])
+                tracks.append(track)
+        if not tracks:
+            raise playlist_links.LinkError("None of those songs could be found.")
+        playlist = shared.STATE.create_playlist(name.strip() or found["name"] or "Imported playlist")
+        for track in tracks:
+            shared.STATE.add_track_to_playlist(playlist["id"], _upsert_track_from_msg(track))
+        _broadcast_playlist_state("music_playlist_import_result", req_id, extra={
+            "playlist": playlist, "added": len(tracks), "missing": missing[:50], "missing_count": len(missing),
+            "total": max(total, int(found.get("total") or 0)), "partial": bool(found.get("partial")),
+            "source": found["source"],
+        })
+    except Exception as exc:
+        shared.notify_browsers({"type": "music_playlist_import_result", "id": req_id, "ok": False, "msg": _link_failure(exc)})
 
 
 def cmd_music_recent(msg):
@@ -2099,6 +2188,8 @@ DISPATCH = {
     "music_playlist_add_track":     cmd_music_playlist_add_track,
     "music_playlist_remove_track":  cmd_music_playlist_remove_track,
     "music_playlist_tracks":        cmd_music_playlist_tracks,
+    "music_playlist_link":          cmd_music_playlist_link,
+    "music_playlist_import":        cmd_music_playlist_import,
     "music_recent":                 cmd_music_recent,
     "music_recent_delete":          cmd_music_recent_delete,
     "music_clear_data":             cmd_music_clear_data,

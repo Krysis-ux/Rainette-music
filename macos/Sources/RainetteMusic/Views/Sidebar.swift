@@ -40,6 +40,9 @@ struct Sidebar: View {
                 HStack {
                     Text("Playlists")
                     Spacer()
+                    Button { router.showImport = true } label: { Image(systemName: "square.and.arrow.down") }
+                        .buttonStyle(.plain)
+                        .help("Import Playlist")
                     Button { router.playlistPrompt = .create(adding: nil) } label: { Image(systemName: "plus") }
                         .buttonStyle(.plain)
                         .help("New Playlist")

@@ -26,6 +26,7 @@ final class Router {
     var settingsTab: SettingsTab = .general
     /// Naming a playlist, asked for from wherever "New Playlist…" was chosen.
     var playlistPrompt: PlaylistPrompt?
+    var showImport = false
     var confirmDelete: Playlist?
     /// Bumped when a playlist's contents change, so an open one reloads.
     var playlistChanged = 0

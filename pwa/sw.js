@@ -1,7 +1,7 @@
 /* The suffix is a digest of every file in SHELL, and it is not maintained by hand:
  * `tests/test_output_and_phone_sync.py` recomputes it and fails when it has drifted, printing the
  * value to paste back. */
-const CACHE = 'rainette-pwa-v41-aaf1dc3d';
+const CACHE = 'rainette-pwa-v42-c4cbf386';
 const SHELL = [
   './',
   './index.html',
@@ -42,6 +42,7 @@ const SHELL = [
   './src/playlists.js',
   './src/backup.js',
   './src/import.js',
+  './src/playlist-links.js',
   './src/settings.js',
   './src/ytmusic.js',
   './src/update.js',

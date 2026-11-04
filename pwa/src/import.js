@@ -1,10 +1,11 @@
-/* Bringing a playlist in from somewhere else — Spotify, Apple Music, a text file a friend sent. */
+/* Bringing a playlist in from somewhere else: a Spotify, Apple Music, Deezer or YouTube link, a CSV, a list. */
 
 import { el, toast } from './dom.js';
 import { openSheet } from './sheets.js';
 import { command, commandError } from './bridge.js';
 import { hasComputer } from './state.js';
 import { createLocalPlaylist } from './playlists.js';
+import { looksLikeLink } from './playlist-links.js';
 
 /* ── Parsing what was pasted ──────────────────────────────────────────────*/
 
@@ -179,22 +180,21 @@ export function openImportPlaylist({ onImported } = {}) {
 		full: true,
 		build: ({ body }) => {
 			body.append(el('h2', 'sheet-title sheet-drag', 'Import a playlist'));
-			body.append(el('p', 'sheet-message',
-				`Paste a track list, or pick a CSV exported from Spotify. Rainette looks each one up ${hasComputer() ? 'on your computer' : 'on YouTube Music'} and builds a playlist from what it finds. Nothing is sent to Spotify and no login is needed.`));
+			body.append(el('p', 'sheet-message', 'Paste a Spotify, Apple Music, Deezer or YouTube playlist link.'));
 
 			const nameField = el('label', 'field');
-			nameField.append(el('span', '', 'Playlist name'));
+			nameField.append(el('span', '', 'Name (optional)'));
 			const nameInput = document.createElement('input');
 			nameInput.type = 'text';
 			nameInput.maxLength = 80;
-			nameInput.placeholder = 'Imported playlist';
+			nameInput.placeholder = 'From the link';
 			nameField.append(nameInput);
 
 			const pasteField = el('label', 'field');
-			pasteField.append(el('span', '', 'Tracks, one per line'));
+			pasteField.append(el('span', '', 'Playlist link, or songs one per line'));
 			const paste = document.createElement('textarea');
-			paste.rows = 7;
-			paste.placeholder = 'Drake - Nokia\nNettspend - Drum Go Dum\n\n…or paste an Exportify CSV';
+			paste.rows = 5;
+			paste.placeholder = 'https://open.spotify.com/playlist/…\n\nor: Drake - Nokia';
 			pasteField.append(paste);
 
 			const fileRow = el('div', 'sheet-buttons');
@@ -207,48 +207,51 @@ export function openImportPlaylist({ onImported } = {}) {
 			fileRow.append(fileButton);
 
 			const status = el('p', 'sheet-message', '');
-			const go = el('button', 'primary', hasComputer() ? 'Find these on my computer' : 'Find these songs');
+			const go = el('button', 'primary', 'Import');
 			go.type = 'button';
 
-			go.addEventListener('click', async () => {
-				const entries = parseImport(paste.value);
-				if (!entries.length) {
-					status.textContent = 'Nothing to import yet — paste some tracks first.';
-					return;
-				}
-				go.disabled = true;
-				fileButton.disabled = true;
-				status.textContent = `Looking up ${entries.length} track${entries.length === 1 ? '' : 's'}…`;
+			const setBusy = busy => { go.disabled = busy; fileButton.disabled = busy; };
 
+			go.addEventListener('click', async () => {
+				setBusy(true);
 				try {
-					const { found, missing } = await matchAll(entries, (done, total) => {
-						status.textContent = `Looked up ${done} of ${total}…`;
-					});
-					if (!found.length) {
-						status.textContent = hasComputer() ? 'None of those could be found on your computer.' : 'None of those could be found.';
-						go.disabled = false;
-						fileButton.disabled = false;
+					// A link is read first: its songs (YouTube's are ready), and its name.
+					const link = looksLikeLink(paste.value);
+					if (link) status.textContent = 'Reading that playlist…';
+					const read = link ? await command('music_playlist_link', { url: paste.value.trim() }, 90000) : null;
+					const entries = read ? read.entries || [] : parseImport(paste.value);
+					const ready = read?.tracks || [];
+					if (!entries.length && !ready.length) {
+						status.textContent = 'Nothing to import yet. Paste a link or some songs first.';
+						setBusy(false);
 						return;
 					}
-					const name = nameInput.value.trim() || 'Imported playlist';
+					if (entries.length) status.textContent = `Looking up ${entries.length} song${entries.length === 1 ? '' : 's'}…`;
+					const { found: matched, missing } = await matchAll(entries, (done, total) => {
+						status.textContent = `Looked up ${done} of ${total}…`;
+					});
+					const found = [...ready, ...matched];
+					if (!found.length) {
+						status.textContent = 'None of those songs could be found.';
+						setBusy(false);
+						return;
+					}
+					const name = nameInput.value.trim() || read?.name || 'Imported playlist';
 					createLocalPlaylist(name, found);
 					onImported?.();
 					toast(`Imported ${found.length} track${found.length === 1 ? '' : 's'}`, { icon: 'check' });
-					status.textContent = missing.length
-						? `Added ${found.length}. ${missing.length} could not be matched: ${missing.slice(0, 3).map(entry => entry.title || 'a Spotify link').join(', ')}${missing.length > 3 ? '…' : ''}`
-						: `Added all ${found.length} to “${name}”.`;
-					go.disabled = false;
-					fileButton.disabled = false;
+					const skipped = read?.partial ? ` Only the first ${read.entries.length + ready.length} of ${read.total} could be read.` : '';
+					status.textContent = (missing.length
+						? `Added ${found.length}. ${missing.length} not found: ${missing.slice(0, 3).map(entry => entry.title || 'a Spotify link').join(', ')}${missing.length > 3 ? '…' : ''}`
+						: `Added all ${found.length} to “${name}”.`) + skipped;
 				} catch (error) {
-					status.textContent = commandError(error, 'Your computer could not answer that.');
-					go.disabled = false;
-					fileButton.disabled = false;
+					status.textContent = commandError(error, 'That playlist could not be read.');
 				}
+				setBusy(false);
 			});
 
-			body.append(nameField, pasteField, fileRow, go, status);
-			body.append(el('p', 'catalog-note',
-				'To get a list out of Spotify: open the playlist on a computer, select every track, and copy. For a CSV, exportify.net reads your account and gives you a file — Rainette never sees your Spotify account either way.'));
+			body.append(pasteField, nameField, fileRow, go, status);
+			body.append(el('p', 'catalog-note', 'Private playlist? Make it public, or export a CSV at exportify.net.'));
 		},
 	});
 }

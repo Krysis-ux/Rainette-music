@@ -1144,7 +1144,8 @@ function renderPlaylists() {
 	nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') create.click(); });
 	const folder = btn('New folder', 'rw-btn rw-btn-ghost', createFolderFlow);
 	const smart = btn('New smart playlist', 'rw-btn rw-btn-ghost', () => smartPlaylistDialog());
-	bar.append(nameInput, create, folder, smart);
+	const importer = btn('Import', 'rw-btn rw-btn-ghost', importPlaylistFlow);
+	bar.append(nameInput, create, folder, smart, importer);
 	body.appendChild(bar);
 
 	body.appendChild(compactFilterToolbar('playlists', 'Filter playlists', [
@@ -1318,6 +1319,54 @@ async function removePlaylistArtwork(pl) {
 	} catch (error) {
 		await infoDialog({ title: 'Artwork unavailable', message: error?.message || 'Could not remove the image.' });
 	}
+}
+
+/* A playlist from a pasted Spotify, Apple Music, Deezer or YouTube link (or a list), built by the engine. */
+const IMPORT_TIMEOUT_MS = 900000;   // each song is a search; a long playlist takes minutes
+
+function importPlaylistFlow() {
+	const wrap = el('div', '');
+	wrap.style.cssText = 'display: grid; gap: 10px;';
+	const pasted = el('textarea', 'rw-textarea');
+	pasted.rows = 4;
+	pasted.placeholder = 'https://open.spotify.com/playlist/…\n\nor: Drake - Nokia';
+	const name = el('input', 'rw-input');
+	name.placeholder = 'Name (optional)';
+	name.maxLength = 120;
+	const status = el('p', 'rw-modal-message', 'Paste a Spotify, Apple Music, Deezer or YouTube playlist link.');
+	wrap.append(pasted, name, status, el('p', 'rw-modal-message', 'Private? Make it public, or export a CSV at exportify.net.'));
+	customDialog({ title: 'Import playlist', bodyNode: wrap, wire: close => {
+		const go = btn('Import', 'rw-btn rw-btn-primary', async () => {
+			const text = pasted.value.trim();
+			if (!text || go.disabled) return;
+			go.disabled = true;
+			status.textContent = 'Reading that playlist…';
+			const id = 'mpi_' + Math.random().toString(36).slice(2);
+			const onProgress = event => {
+				const msg = event.detail;
+				if (msg?.type === 'music_playlist_import_progress' && msg.request_id === id) status.textContent = `Looked up ${msg.done} of ${msg.total}…`;
+			};
+			document.addEventListener('rainette:helper-message', onProgress);
+			const res = await helperRequest('music_playlist_import', { id, url: text, name: name.value.trim() }, IMPORT_TIMEOUT_MS);
+			document.removeEventListener('rainette:helper-message', onProgress);
+			go.disabled = false;
+			if (!res.ok || !res.playlist) { status.textContent = res.msg || 'That playlist could not be read.'; return; }
+			close(true);
+			pageState.tab = 'playlists';
+			pageState.view = null;
+			applyTab();
+			openPlaylist(res.playlist);
+			if (res.missing_count || res.partial) {
+				const missed = (res.missing || []).slice(0, 5).map(song => song.title).join(', ');
+				infoDialog({ title: `Imported ${res.added} songs`, message: [
+					res.missing_count ? `${res.missing_count} not found: ${missed}${res.missing_count > 5 ? '…' : ''}` : '',
+					res.partial ? `Only ${res.added + res.missing_count} of ${res.total} could be read.` : '',
+				].filter(Boolean).join(' ') });
+			}
+		});
+		return [btn('Cancel', 'rw-btn rw-btn-ghost', () => close(null)), go];
+	} });
+	pasted.focus();
 }
 
 async function createFolderFlow() {
@@ -3462,6 +3511,7 @@ function onHelperMessage(msg) {
 		case 'music_smart_playlist_created':
 		case 'music_smart_playlist_updated':
 		case 'music_smart_playlist_deleted':
+		case 'music_playlist_import_result':
 			if (Array.isArray(msg.playlists)) pageState.playlists = msg.playlists;
 			if (Array.isArray(msg.folders)) pageState.folders = msg.folders;
 			if (pageState.openPlaylist && Array.isArray(msg.playlists)) {

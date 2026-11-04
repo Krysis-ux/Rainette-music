@@ -135,6 +135,7 @@ private struct MainView: View {
             Button(promptConfirm) { commitPrompt() }
                 .keyboardShortcut(.defaultAction)
         }
+        .sheet(isPresented: Binding(get: { router.showImport }, set: { router.showImport = $0 })) { ImportSheet() }
         .onChange(of: router.playlistPrompt?.id) {
             if case .rename(let playlist) = router.playlistPrompt { promptText = playlist.name } else { promptText = "" }
         }

@@ -3,6 +3,7 @@
 import { STORAGE } from './state.js';
 import { pref } from './prefs.js';
 import { nativeAvailable, nativeSearch } from './native-engine.js';
+import { readPlaylistLink } from './playlist-links.js';
 
 const API = 'https://music.youtube.com/youtubei/v1/';
 const CLIENT = { clientName: 'WEB_REMIX', clientVersion: '1.20251020.01.00', hl: 'en', gl: 'US' };
@@ -13,7 +14,7 @@ const FILTER = {
 	albums: 'EgWKAQIYAWoMEA4QChADEAQQCRAF',
 };
 /* The web client's own User-Agent. */
-const DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15';
+export const DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15';
 const TIMEOUT_MS = 15000;
 const ARTIST_IMAGE_WORKERS = 4;
 const LRCLIB = 'https://lrclib.net/api/';
@@ -473,7 +474,8 @@ async function fullAlbumTracks({ album_id: id = '', title = '', artist = '' } = 
 		: { id: albumId, title: page.title || title, artist: page.artist || artist, artistId: page.artistId,
 			year: page.year, type: page.type || 'Album', art: page.art });
 	const hint = playlist ? {} : { artist: album.artist, artistId: album.artist_id, art: album.thumbnail_url, album: { name: album.title, id: albumId } };
-	return { album, tracks: page.rows.map(row => songFromRow(row, hint)).filter(Boolean), source: 'on-device' };
+	const rows = playlist ? await allRows(page) : page.rows;
+	return { album, tracks: rows.map(row => songFromRow(row, hint)).filter(Boolean), source: 'on-device' };
 }
 
 /** Pictures for a list of artist names, as `music_artist_images` returns them. */
@@ -657,6 +659,7 @@ const PHONE = {
 	music_lyrics: { run: lyrics, fallback: true },
 	music_moods: { run: moods, fallback: true },
 	music_mood_playlists: { run: moodPlaylists, fallback: true },
+	music_playlist_link: { run: payload => readPlaylistLink(payload), fallback: true },
 	music_followed_artists: { run: async () => ({ followed_artists: readFollowed() }), fallback: false },
 	music_artist_follow: { run: async payload => follow(payload), fallback: false },
 	music_artist_unfollow: { run: async payload => unfollow(payload), fallback: false },

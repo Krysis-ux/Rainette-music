@@ -65,6 +65,8 @@ final class LibraryModel {
     var localTracks: [Track] { tracks.filter(\.isLocal) }
     var loadedOnce = false
     var catalogNote = ""
+    /// Songs looked up so far by a running import.
+    var importProgress: (done: Int, total: Int)?
 
     @ObservationIgnored weak var app: AppModel?
     private var client: RainetteClient? { app?.client }
@@ -264,6 +266,29 @@ final class LibraryModel {
         return Playlist(reply["playlist"])
     }
 
+    /// A playlist from a pasted link or list, built on the computer. Returns it, and a line to show.
+    func importPlaylist(_ pasted: String, name: String) async -> (Playlist?, String) {
+        guard let client else { return (nil, "Not connected.") }
+        let id = Self.id("mpi")
+        importID = id
+        importProgress = nil
+        defer { importID = ""; importProgress = nil }
+        // Each song is a search; a long playlist takes minutes.
+        let reply = await client.request("music_playlist_import", [
+            "id": .string(id), "url": .string(pasted), "name": .string(name.trimmingCharacters(in: .whitespacesAndNewlines)),
+        ], timeout: 900)
+        guard reply["ok"].bool, !reply["playlist"].isNull else {
+            return (nil, reply["msg"].string ?? "That playlist could not be read.")
+        }
+        let playlist = Playlist(reply["playlist"])
+        let missing = reply["missing_count"].int ?? 0
+        app?.toasts.show("Imported \(reply["added"].int ?? 0) songs" + (missing > 0 ? ", \(missing) not found" : ""),
+                         symbol: "checkmark.circle.fill", style: .success)
+        return (playlist, "")
+    }
+
+    @ObservationIgnored private var importID = ""
+
     func add(_ track: Track, to playlist: Playlist) async {
         guard let client else { return }
         let reply = await client.request("music_playlist_add_track", [
@@ -408,6 +433,8 @@ final class LibraryModel {
             } else if !message["ok"].bool, let reason = message["msg"].string {
                 app?.toasts.show(reason, symbol: "exclamationmark.triangle.fill", style: .error)
             }
+        case "music_playlist_import_progress" where message["request_id"].text == importID:
+            importProgress = (message["done"].int ?? 0, message["total"].int ?? 0)
         case "music_download_result":
             let done = message["ok"].bool
             app?.toasts.show(done ? "Saved to this Mac" : (message["msg"].string ?? "The download did not finish."),
