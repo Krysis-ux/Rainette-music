@@ -14,13 +14,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 
-const [count, importing] = JSON.parse(process.argv[1]);
+const [count, importing, source = 'youtube'] = JSON.parse(process.argv[1]);
 const requested = [];
 const list = 'PL1234567890123456789';
 const context = vm.createContext({
     Capacitor: {
         isPluginAvailable: name => name === 'CapacitorHttp',
         nativePromise: async (plugin, method, options) => {
+            if (source === 'web') {
+                if (plugin !== 'CapacitorHttp' || method !== 'request'
+                    || options.url !== 'https://public.example/playlist') {
+                    throw new Error('Unexpected structured-data request');
+                }
+                requested.push(options.url);
+                const schema = { '@type': 'MusicPlaylist', name: 'Large shared playlist', numTracks: count,
+                    track: Array.from({ length: count }, (_, i) => ({ name: `Song ${i}`, byArtist: 'Artist' })) };
+                return { status: 200, url: options.url,
+                    data: `<script type="application/ld+json">${JSON.stringify(schema)}</script>` };
+            }
             if (plugin !== 'CapacitorHttp' || method !== 'request'
                 || !options.url.startsWith('https://music.youtube.com/youtubei/v1/browse?')) {
                 throw new Error('Unexpected transport request');
@@ -83,15 +94,30 @@ const reader = load(path.resolve('pwa/src', file));
 await reader.link((specifier, parent) => load(path.resolve(path.dirname(parent.identifier), specifier)));
 await reader.evaluate();
 const result = importing
-    ? await reader.namespace.readPlaylistLink({ url: `https://music.youtube.com/playlist?list=${list}` })
+    ? await reader.namespace.readPlaylistLink({ url: source === 'web'
+        ? 'https://public.example/playlist' : `https://music.youtube.com/playlist?list=${list}` })
     : await reader.namespace.albumTracks({ album_id: `VL${list}` });
 console.log(JSON.stringify({
     ids: result.tracks.map(track => track.source_id),
+    titles: (result.entries || []).map(entry => entry.title),
     partial: result.partial,
     total: result.total,
     requested
 }));
 """
+
+
+def read_phone_playlist(count, importing=True, source="youtube"):
+    completed = subprocess.run(
+        ["node", "--experimental-vm-modules", "--input-type=module", "-e", NODE_READER,
+         json.dumps([count, importing, source])],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return json.loads(completed.stdout)
 
 
 @pytest.mark.parametrize(
@@ -106,19 +132,19 @@ console.log(JSON.stringify({
     ids=["short-import", "full-import", "exact-ceiling", "partial-import", "bounded-browse"],
 )
 def test_playlist_import_reads_all_pages_and_reports_the_ceiling(count, importing, kept, partial, requests):
-    completed = subprocess.run(
-        ["node", "--experimental-vm-modules", "--input-type=module", "-e", NODE_READER,
-         json.dumps([count, importing])],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        timeout=15,
-    )
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-    result = json.loads(completed.stdout)
+    result = read_phone_playlist(count, importing)
     assert result["ids"] == [str(i).zfill(11) for i in range(kept)]
     assert result["partial"] is partial
     assert len(result["requested"]) == requests
     assert result["requested"][0] == "VLPL1234567890123456789"
     if importing:
         assert result["total"] == kept
+
+
+def test_structured_data_import_reports_tracks_cut_at_the_ceiling():
+    result = read_phone_playlist(2500, source="web")
+    assert len(result["titles"]) == 2000
+    assert result["titles"][0] == "Song 0"
+    assert result["titles"][-1] == "Song 1999"
+    assert result["total"] == 2500
+    assert result["partial"] is True
