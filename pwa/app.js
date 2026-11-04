@@ -921,7 +921,7 @@ function playlistRow(playlist) {
 
 	// Editing is one tap from the list rather than buried inside the playlist,
 	// because renaming one is far more common than opening it to rename it.
-	const more = iconButton('sliders', {
+	const more = iconButton('pencil', {
 		label: `Edit ${playlist.name || 'playlist'}`,
 		className: 'collection-more',
 		size: 18,
@@ -961,7 +961,7 @@ async function renderPlaylistTracks(playlistId, name = '') {
 		if (name) head.append(el('h2', 'collection-title', name));
 		// Everything about a playlist is changeable from the playlist itself,
 		// which is where somebody looking at it expects to find that.
-		const edit = iconButton('sliders', { label: 'Edit playlist' });
+		const edit = iconButton('pencil', { label: 'Edit playlist' });
 		edit.addEventListener('click', () => openPlaylistEditor(playlist, tracks, {
 			onChanged: updated => {
 				if (!updated) { library.playlistId = null; library.playlist = null; renderLibraryPanel(); return; }
