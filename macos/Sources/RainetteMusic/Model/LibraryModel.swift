@@ -281,9 +281,12 @@ final class LibraryModel {
             return (nil, reply["msg"].string ?? "That playlist could not be read.")
         }
         let playlist = Playlist(reply["playlist"])
-        let missing = reply["missing_count"].int ?? 0
-        app?.toasts.show("Imported \(reply["added"].int ?? 0) songs" + (missing > 0 ? ", \(missing) not found" : ""),
-                         symbol: "checkmark.circle.fill", style: .success)
+        let added = reply["added"].int ?? 0, missing = reply["missing_count"].int ?? 0, total = reply["total"].int ?? 0
+        let partial = reply["partial"].bool
+        // A cut-off read (Spotify past 100, a long Apple page) must say so, as the other apps do.
+        let cutOff = !partial ? "" : total > added + missing ? ". Only \(added + missing) of \(total) could be read" : ". Not every song could be read"
+        app?.toasts.show("Imported \(added) songs" + (missing > 0 ? ", \(missing) not found" : "") + cutOff,
+                         symbol: partial ? "exclamationmark.triangle.fill" : "checkmark.circle.fill", style: partial ? .info : .success)
         return (playlist, "")
     }
 

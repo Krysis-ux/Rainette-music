@@ -324,18 +324,21 @@ export function parseReleaseGrid(answer) {
 /* A long list arrives a hundred rows at a time. Three more pages is three
  * hundred more songs, which is past what anyone scrolls an artist page for. */
 const MORE_PAGES = 3;
+/* A playlist being imported is read to the end, up to the import's 2,000-song ceiling. */
+const IMPORT_PAGES = 19;
 
-async function allRows(page) {
+/** `more` says rows were left unread. */
+async function allRows(page, morePages = MORE_PAGES) {
 	const rows = [...page.rows];
 	let token = page.continuation;
-	for (let n = 0; token && n < MORE_PAGES; n += 1) {
+	for (let n = 0; token && n < morePages; n += 1) {
 		const next = await innertube('browse', { continuation: token });
 		const items = (next?.onResponseReceivedActions || [])
 			.flatMap(action => dig(action, 'appendContinuationItemsAction', 'continuationItems') || []);
 		rows.push(...items.map(item => item?.musicResponsiveListItemRenderer).filter(Boolean));
 		token = continuationOf(items);
 	}
-	return rows;
+	return { rows, more: Boolean(token) };
 }
 
 /* ── Asking ───────────────────────────────────────────────────────────────*/
@@ -412,7 +415,7 @@ async function fullArtistCatalog({ artist_id: id = '', name = '', thumbnail_url:
 	};
 	const tracks = async (browse, fallback) => {
 		if (!browse) return fallback;
-		const rows = await allRows(parseTrackPage(await innertube('browse', browse)));
+		const { rows } = await allRows(parseTrackPage(await innertube('browse', browse)));
 		const songs = rows.map(row => songFromRow(row, hint)).filter(Boolean);
 		return songs.length ? songs : fallback;
 	};
@@ -459,7 +462,7 @@ export async function albumTracks(request = {}) {
 	}
 }
 
-async function fullAlbumTracks({ album_id: id = '', title = '', artist = '' } = {}) {
+async function fullAlbumTracks({ album_id: id = '', title = '', artist = '', all_pages: allPages = false } = {}) {
 	let albumId = String(id || '');
 	if (!albumId) {
 		const rows = await searchKind(`${artist} ${title}`.trim(), 'albums');
@@ -474,8 +477,8 @@ async function fullAlbumTracks({ album_id: id = '', title = '', artist = '' } = 
 		: { id: albumId, title: page.title || title, artist: page.artist || artist, artistId: page.artistId,
 			year: page.year, type: page.type || 'Album', art: page.art });
 	const hint = playlist ? {} : { artist: album.artist, artistId: album.artist_id, art: album.thumbnail_url, album: { name: album.title, id: albumId } };
-	const rows = playlist ? await allRows(page) : page.rows;
-	return { album, tracks: rows.map(row => songFromRow(row, hint)).filter(Boolean), source: 'on-device' };
+	const { rows, more } = playlist ? await allRows(page, allPages ? IMPORT_PAGES : MORE_PAGES) : { rows: page.rows, more: false };
+	return { album, tracks: rows.map(row => songFromRow(row, hint)).filter(Boolean), source: 'on-device', partial: more };
 }
 
 /** Pictures for a list of artist names, as `music_artist_images` returns them. */

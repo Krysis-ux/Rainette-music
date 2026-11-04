@@ -240,7 +240,9 @@ export function openImportPlaylist({ onImported } = {}) {
 					createLocalPlaylist(name, found);
 					onImported?.();
 					toast(`Imported ${found.length} track${found.length === 1 ? '' : 's'}`, { icon: 'check' });
-					const skipped = read?.partial ? ` Only the first ${read.entries.length + ready.length} of ${read.total} could be read.` : '';
+					const readCount = (read?.entries?.length || 0) + ready.length;
+					const skipped = !read?.partial ? ''
+						: read.total > readCount ? ` Only the first ${readCount} of ${read.total} could be read.` : ` Only the first ${readCount} could be read.`;
 					status.textContent = (missing.length
 						? `Added ${found.length}. ${missing.length} not found: ${missing.slice(0, 3).map(entry => entry.title || 'a Spotify link').join(', ')}${missing.length > 3 ? '…' : ''}`
 						: `Added all ${found.length} to “${name}”.`) + skipped;

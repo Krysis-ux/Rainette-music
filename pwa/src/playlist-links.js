@@ -147,8 +147,8 @@ async function deezer([, rawKind, id]) {
 
 async function youtube([, list]) {
 	// Already YouTube's songs: nothing to look up.
-	const { album, tracks } = await albumTracks({ album_id: `VL${list}` });
-	return result('youtube', album?.title || 'YouTube playlist', [], tracks.length, { tracks });
+	const { album, tracks, partial } = await albumTracks({ album_id: `VL${list}`, all_pages: true });
+	return result('youtube', album?.title || 'YouTube playlist', [], tracks.length, { tracks, partial: Boolean(partial) });
 }
 
 const READERS = { spotify, apple, deezer, youtube };
