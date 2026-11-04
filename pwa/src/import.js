@@ -9,17 +9,26 @@ import { looksLikeLink } from './playlist-links.js';
 
 /* ── Parsing what was pasted ──────────────────────────────────────────────*/
 
-/* The shapes that actually turn up: Exportify CSV "Track Name","Artist Name(s)","Album Name",... */
+/* The words a converter's CSV uses for each column (Exportify, TuneMyMusic, Soundiiz...). */
+const TITLE_WORDS = ['track name', 'title', 'song', 'name', 'track'];
+const AUDIO_FILE = /\.(mp3|m4a|aac|flac|wav|ogg|opus|aiff?|wma|alac)$/i;
+
+/* A converter's CSV, an M3U playlist file, or one "Artist - Title" per line. */
 export function parseImport(text) {
-	const lines = String(text || '')
+	let lines = String(text || '')
 		.split(/\r?\n/)
 		.map(line => line.trim())
 		.filter(Boolean);
 	if (!lines.length) return [];
 
 	const header = lines[0].toLowerCase();
-	const isCsv = header.includes('track name') || (header.includes('name') && header.includes('artist'));
-	if (isCsv) return parseCsv(lines);
+	if (header.includes(',') && header.includes('artist') && TITLE_WORDS.some(word => header.includes(word))) return parseCsv(lines);
+
+	const extinf = lines.filter(line => /^#EXTINF:/i.test(line));
+	lines = extinf.length
+		? extinf.map(line => line.slice(line.indexOf(',') + 1)) // "#EXTINF:215,Artist - Title"
+		// A bare M3U is file paths; their names usually read "Artist - Title.mp3".
+		: lines.filter(line => !line.startsWith('#')).map(line => (AUDIO_FILE.test(line) ? line.split(/[\\/]/).pop().replace(AUDIO_FILE, '') : line));
 
 	// An unresolvable line is kept rather than dropped: a paste of bare Spotify
 	// URIs would otherwise look like it imported nothing for no stated reason.
@@ -28,11 +37,23 @@ export function parseImport(text) {
 		.filter(entry => entry && (entry.title || entry.unresolvable));
 }
 
+/* Earlier words win; a column naming an id, a link or another field is never the one
+ * (Exportify's "Artist URI(s)" sits before "Artist Name(s)"). */
+function columnFor(columns, words, avoid) {
+	const skip = ['uri', 'url', 'id', 'isrc', 'playlist', ...avoid];
+	for (const word of words) {
+		const at = columns.findIndex(name => name.includes(word)
+			&& !name.replace(/[()]/g, ' ').split(/\s+/).some(part => skip.includes(part)));
+		if (at >= 0) return at;
+	}
+	return -1;
+}
+
 function parseCsv(lines) {
 	const columns = splitCsvRow(lines[0]).map(name => name.trim().toLowerCase());
-	const titleAt = columns.findIndex(name => name.includes('track name') || name === 'name' || name === 'title');
-	const artistAt = columns.findIndex(name => name.includes('artist'));
-	const albumAt = columns.findIndex(name => name.includes('album'));
+	const titleAt = columnFor(columns, TITLE_WORDS, ['artist', 'album']);
+	const artistAt = columnFor(columns, ['artist'], ['album']);
+	const albumAt = columnFor(columns, ['album'], ['artist']);
 	if (titleAt < 0) return [];
 
 	return lines.slice(1).map(line => {
@@ -180,7 +201,7 @@ export function openImportPlaylist({ onImported } = {}) {
 		full: true,
 		build: ({ body }) => {
 			body.append(el('h2', 'sheet-title sheet-drag', 'Import a playlist'));
-			body.append(el('p', 'sheet-message', 'Paste a Spotify, Apple Music, Deezer or YouTube playlist link.'));
+			body.append(el('p', 'sheet-message', 'Paste a playlist link from Spotify, Apple Music, YouTube, SoundCloud, Tidal and more.'));
 
 			const nameField = el('label', 'field');
 			nameField.append(el('span', '', 'Name (optional)'));
@@ -198,7 +219,7 @@ export function openImportPlaylist({ onImported } = {}) {
 			pasteField.append(paste);
 
 			const fileRow = el('div', 'sheet-buttons');
-			const fileButton = el('button', 'ghost', 'Choose a CSV or text file');
+			const fileButton = el('button', 'ghost', 'Choose a CSV or playlist file');
 			fileButton.type = 'button';
 			fileButton.addEventListener('click', () => pickTextFile(text => {
 				paste.value = text;
@@ -261,7 +282,7 @@ export function openImportPlaylist({ onImported } = {}) {
 function pickTextFile(onRead) {
 	const input = document.createElement('input');
 	input.type = 'file';
-	input.accept = '.csv,.txt,.tsv,text/csv,text/plain';
+	input.accept = '.csv,.txt,.tsv,.m3u,.m3u8,text/csv,text/plain,audio/x-mpegurl';
 	input.style.display = 'none';
 	document.body.append(input);
 	input.addEventListener('change', async () => {

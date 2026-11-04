@@ -141,10 +141,91 @@ def test_the_engine_builds_the_playlist_in_order(tmp_path, monkeypatch):
     assert [t["source_id"] for t in tracks] == ["v1", "v3"]
 
 
-def test_the_engine_reports_a_bad_link_plainly(monkeypatch):
+def test_the_engine_reports_a_page_without_a_playlist_plainly(monkeypatch):
     messages = []
     monkeypatch.setattr(music_bridge.shared, "notify_browsers", messages.append)
     monkeypatch.setattr(music_bridge, "_run_bg", lambda target, *args: target(*args))
+    monkeypatch.setattr(pl, "fetch", fake_web({"https://example.com/": "<html>no playlist here</html>"}))
     music_bridge.DISPATCH["music_playlist_link"]({"id": "r", "url": "https://example.com/x"})
-    assert messages[-1] == {"type": "music_playlist_link_result", "id": "r", "ok": False,
-                            "msg": "Paste a Spotify, Apple Music, Deezer or YouTube playlist link."}
+    assert messages[-1]["ok"] is False and messages[-1]["msg"].startswith("Rainette can't read a playlist from that page")
+
+
+def test_soundcloud_fills_in_the_tracks_its_page_leaves_out():
+    hydration = [{"hydratable": "playlist", "data": {"title": "Set", "track_count": 3, "tracks": [
+        {"id": 1, "title": "One", "user": {"username": "uploader"}, "publisher_metadata": {"artist": "Real Artist"}},
+        {"id": 2}, {"id": 3}]}}]
+    page = (f'<script>window.__sc_hydration = {json.dumps(hydration)};</script>'
+            '<script crossorigin src="https://a-v2.sndcdn.com/assets/1-a.js"></script>')
+    get = fake_web({
+        "https://soundcloud.com/user/sets/set": page,
+        "https://a-v2.sndcdn.com/assets/1-a.js": 'x={client_id:"' + "c" * 32 + '"}',
+        "https://api-v2.soundcloud.com/tracks?ids=2,3&client_id=" + "c" * 32:
+            json.dumps([{"id": 3, "title": "Three", "user": {"username": "C"}}, {"id": 2, "title": "Two", "user": {"username": "B"}}]),
+    })
+    found = pl.read("https://m.soundcloud.com/user/sets/set?si=1", get=get)
+    assert [(e["title"], e["artist"]) for e in found["entries"]] == [("One", "Real Artist"), ("Two", "B"), ("Three", "C")]
+    assert found["partial"] is False
+
+
+def test_tidal_keeps_the_embed_order_and_reads_the_size():
+    embed = 'window.tidalMediaSessionMetadata={"9":{"title":"B","artist":"X, Y","album":"L"},"1":{"title":"A","artist":"Z"}};\n'
+    share = '<meta property="og:title" content="Mix &amp; Match"><meta property="og:description" content="Playlist - Mix - 120 items">'
+    get = fake_web({"https://embed.tidal.com/playlists/": embed, "https://tidal.com/browse/playlist/": share})
+    found = pl.read("https://listen.tidal.com/playlist/1cbce60c-2412-451e-a1e1-39faf87b617b", get=get)
+    assert [e["title"] for e in found["entries"]] == ["B", "A"] and found["entries"][0]["artist"] == "X"
+    assert (found["name"], found["total"], found["partial"]) == ("Mix & Match", 120, True)
+
+
+def test_jiosaavn_and_netease_read_their_open_apis():
+    song = {"title": "Chann (From &quot;Udta Teer&quot;)", "more_info": {"album": "Udta Teer", "artistMap": {"primary_artists": [{"name": "Arijit"}]}}}
+    get = fake_web({
+        "https://www.jiosaavn.com/api.php": json.dumps({"title": "Hits", "list_count": "1", "list": [song]}),
+        "https://music.163.com/api/playlist/detail?id=3778678": json.dumps({"result": {"name": "热歌榜", "trackCount": 1,
+            "tracks": [{"name": "Hong Kong", "artists": [{"name": "The Weeknd"}], "album": {"name": "HK"}}]}}),
+    })
+    saavn = pl.read("https://www.jiosaavn.com/featured/weekly-top-songs/8MT-LQlP35c_", get=get)
+    assert saavn["entries"] == [{"title": 'Chann (From "Udta Teer")', "artist": "Arijit", "album": "Udta Teer"}]
+    assert get.asked[0][0].startswith("https://www.jiosaavn.com/api.php?__call=webapi.get&token=8MT-LQlP35c_&type=playlist")
+    netease = pl.read("https://music.163.com/#/playlist?id=3778678", get=get)
+    assert netease["entries"] == [{"title": "Hong Kong", "artist": "The Weeknd", "album": "HK"}]
+
+
+def test_any_page_with_a_schema_org_track_list_can_be_read():
+    playlist = {"@type": "MusicPlaylist", "name": "Classical", "numTracks": 2, "track": [
+        {"@type": "MusicRecording", "name": "Allegro", "byArtist": "Edith", "inAlbum": "Tour"},
+        {"@type": "MusicRecording", "name": "Adagio", "byArtist": {"name": "Karl"}}]}
+    album = {"@type": "MusicAlbum", "name": "Alpha", "byArtist": {"name": "C418"}, "numTracks": 3,
+             "track": {"itemListElement": [{"item": {"name": "Key"}}, {"item": {"name": "Door"}}]}}
+    ld = lambda data: f'<script type="application/ld+json">{json.dumps(data)}</script>'  # noqa: E731
+    get = fake_web({"https://www.qobuz.com/": ld(playlist), "https://c418.bandcamp.com/": ld({"@type": "Organization"}) + ld(album)})
+    qobuz = pl.read("https://www.qobuz.com/us-en/playlists/classical/6862731", get=get)
+    assert [(e["title"], e["artist"], e["album"]) for e in qobuz["entries"]] == [("Allegro", "Edith", "Tour"), ("Adagio", "Karl", "")]
+    bandcamp = pl.read("https://c418.bandcamp.com/album/alpha", get=get)
+    assert [(e["title"], e["artist"], e["album"]) for e in bandcamp["entries"]] == [("Key", "C418", "Alpha"), ("Door", "C418", "Alpha")]
+    assert bandcamp["partial"] is True
+
+
+def test_a_list_past_the_ceiling_says_it_was_cut():
+    big = {"@type": "MusicPlaylist", "name": "Huge", "track": [{"name": f"Song {i}", "byArtist": "A"} for i in range(2500)]}
+    page = f'<script type="application/ld+json">{json.dumps(big)}</script>'
+    found = pl.read("https://example.org/huge", get=fake_web({"https://example.org/": page}))
+    assert (len(found["entries"]), found["total"], found["partial"]) == (2000, 2500, True)
+
+
+def test_the_computer_never_opens_its_own_network():
+    for url in ("https://127.0.0.1/x", "https://[::1]/x", "https://10.0.0.5/", "https://169.254.169.254/latest", "http://example.com/"):
+        with pytest.raises(pl.LinkError):
+            pl._check_public(url)
+
+
+def test_other_converters_csvs_and_m3u_files():
+    exportify = ('"Track URI","Track Name","Artist URI(s)","Artist Name(s)","Album URI","Album Name"\n'
+                 '"spotify:track:x","Nokia","spotify:artist:y","Drake","spotify:album:z","Some Album"\n')
+    wanted = [{"title": "Nokia", "artist": "Drake", "album": "Some Album"}]
+    assert pl.parse_text(exportify) == wanted
+    assert pl.parse_text("Track name,Artist name,Album,Playlist name,Type,ISRC\nNokia,Drake,Some Album,Mine,Favorite,US1\n") == wanted
+    assert pl.parse_text("title,artist,album,isrc\nNokia,Drake,Some Album,US1\n") == wanted
+    m3u = "#EXTM3U\n#EXTINF:215,Drake - Nokia\nC:\\Music\\x.mp3\n"
+    assert pl.parse_text(m3u) == [{"title": "Nokia", "artist": "Drake", "album": ""}]
+    assert pl.parse_text("/Users/me/Music/Drake - Nokia.mp3\n") == [{"title": "Nokia", "artist": "Drake", "album": ""}]
+    assert pl.parse_text("AC/DC - Back In Black\n") == [{"title": "Back In Black", "artist": "AC/DC", "album": ""}]

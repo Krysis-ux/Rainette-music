@@ -13,7 +13,7 @@ struct ImportSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Import Playlist").font(.title2.bold())
-            Text("Paste a Spotify, Apple Music, Deezer or YouTube playlist link.")
+            Text("Paste a playlist link from Spotify, Apple Music, YouTube, SoundCloud, Tidal and more.")
                 .font(.callout).foregroundStyle(.secondary)
             TextEditor(text: $pasted)
                 .font(.body)
@@ -34,6 +34,12 @@ struct ImportSheet: View {
         }
         .padding(22)
         .frame(width: 480)
+        .onAppear {
+            guard !router.importDraft.isEmpty else { return }
+            pasted = router.importDraft
+            router.importDraft = ""
+            run()
+        }
     }
 
     private var progressText: String {

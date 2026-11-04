@@ -27,6 +27,8 @@ final class Router {
     /// Naming a playlist, asked for from wherever "New Playlist…" was chosen.
     var playlistPrompt: PlaylistPrompt?
     var showImport = false
+    /// Development: a debug route's link, pasted and imported as the sheet opens.
+    var importDraft = ""
     var confirmDelete: Playlist?
     /// Bumped when a playlist's contents change, so an open one reloads.
     var playlistChanged = 0
@@ -208,6 +210,7 @@ final class AppModel {
                 for step in 1...10 { send(.leftMouseDragged, x + dx * Double(step) / 10, y + dy * Double(step) / 10) }
                 send(.leftMouseUp, x + dx, y + dy)
             }
+        case "import": router.importDraft = value; router.showImport = true
         case "layout": UserDefaults.standard.set(value, forKey: Preference.layout)
         default: break
         }

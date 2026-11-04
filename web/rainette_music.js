@@ -1333,7 +1333,7 @@ function importPlaylistFlow() {
 	const name = el('input', 'rw-input');
 	name.placeholder = 'Name (optional)';
 	name.maxLength = 120;
-	const status = el('p', 'rw-modal-message', 'Paste a Spotify, Apple Music, Deezer or YouTube playlist link.');
+	const status = el('p', 'rw-modal-message', 'Paste a playlist link from Spotify, Apple Music, YouTube, SoundCloud, Tidal and more.');
 	wrap.append(pasted, name, status, el('p', 'rw-modal-message', 'Private? Make it public, or export a CSV at exportify.net.'));
 	customDialog({ title: 'Import playlist', bodyNode: wrap, wire: close => {
 		const go = btn('Import', 'rw-btn rw-btn-primary', async () => {
